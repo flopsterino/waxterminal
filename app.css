@@ -452,3 +452,6 @@ a.btn:hover { text-decoration: none; }
 .warnish { color: var(--accent-ink); }
 .tokhead { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
 .tokhead .tokmark { width: 34px; height: 34px; font-size: 14px; }
+.aprmove { display: inline-flex; align-items: baseline; gap: 5px; justify-content: flex-end; }
+.aprmove .was { color: var(--muted); font-family: var(--font-data); font-size: 12px; text-decoration: line-through; text-decoration-color: var(--line-2); }
+.aprmove .arrow { color: var(--muted); font-size: 11px; }

@@ -135,7 +135,7 @@ export async function readBalances(pool, me = account()) {
 // it is a forced deposit of everything they own in that token. The only safe
 // definition of "the rewards" is the difference the harvest made, so the
 // balances are read before and after and only the delta is redeposited.
-export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before, expected = null, me = account(), auth = null }) {
+export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = '', before, expected = null, me = account(), auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 

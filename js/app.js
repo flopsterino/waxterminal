@@ -405,10 +405,12 @@ function fillMarks(root) {
 function trustChip(tokenId) {
   const m = tokenMeta(tokenId);
   if (!m) return '';
-  if (m.scam) return `<span class="trust bad" title="Alcor flags this token as a scam">scam</span>`;
-  if (m.safeUsd === 0) return `<span class="trust bad" title="Alcor refuses to publish a safe price for this token">no safe price</span>`;
-  if (m.trusted && m.score >= 80) return `<span class="trust ok" title="Alcor trust score ${m.score}/100">${m.score}</span>`;
-  if (m.score != null) return `<span class="trust" title="Alcor trust score ${m.score}/100">${m.score}</span>`;
+  if (m.scam) return `<span class="trust bad" title="Alcor has flagged this token as a scam">flagged</span>`;
+  // "no safe price" was Alcor's internal field name leaking onto the page. What
+  // it means to a reader is that the exchange will not stand behind a price.
+  if (m.safeUsd === 0) return `<span class="trust bad" title="Alcor will not quote a price for this token — treat any figure here as indicative only">unpriced by Alcor</span>`;
+  if (m.trusted && m.score >= 80) return `<span class="trust ok" title="Alcor rates this ${m.score} out of 100">${m.score}</span>`;
+  if (m.score != null) return `<span class="trust" title="Alcor rates this ${m.score} out of 100">${m.score}</span>`;
   return '';
 }
 
@@ -803,7 +805,7 @@ function renderFarms() {
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'aprAt', label: farmFilters.size > 0 ? `APR after adding ${usd(farmFilters.size)}` : 'APR now', r: true, s: true },
+    { k: 'aprAt', label: 'APR', r: true, s: true },
     { k: 'share', label: 'You\u2019d own', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Pool', r: true, s: true },
@@ -841,12 +843,15 @@ function renderFarms() {
       + (list.length > 3 ? `<span class="rew more" title="${list.slice(3).map(([, r]) => qty(r.perDay) + ' ' + r.symbol).join(', ')}">+${list.length - 3}</span>` : '');
     // Show what you would get, with the headline underneath only when the two
     // differ enough to matter — that gap IS the size of the farm.
+    // Show the move, not the destination. "62% → 43%" says what adding your
+    // money does to the rate; a lone diluted number just looks like a worse farm.
+    const moved = farmFilters.size > 0 && g.aprReal != null && g.aprAt != null && g.aprReal > g.aprAt * 1.02;
     const aprCell = g.tooSmall
       ? `<span class="dim" title="This pool holds ${usd(g.pool?.tvlReal || 0)}. Adding ${usd(farmFilters.size)} would make you ${(g.share * 100).toFixed(0)}% of it — you would mostly be trading against yourself.">too small for that</span>`
       : g.aprAt != null
-        ? `<span class="apr">${pct(g.aprAt)}</span>`
-          + (farmFilters.size > 0 && g.aprReal != null && g.aprReal > g.aprAt * 1.3
-              ? `<span class="nominal">${pct(g.aprReal)} before your deposit</span>` : '')
+        ? (moved
+            ? `<span class="aprmove"><span class="was">${pct(g.aprReal)}</span><span class="arrow">&rarr;</span><span class="apr">${pct(g.aprAt)}</span></span>`
+            : `<span class="apr">${pct(g.aprAt)}</span>`)
         : `<span class="dim">—</span>`;
     const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
@@ -901,7 +906,10 @@ async function computeVisibleApr() {
 function wireWallet() {
   $('#walletGo').onclick = () => lookupWallet($('#walletInput').value.trim());
   $('#walletInput').onkeydown = e => { if (e.key === 'Enter') lookupWallet(e.target.value.trim()); };
-  $('#walletDemo').onclick = () => { $('#walletInput').value = 'maestrobeatz'; lookupWallet('maestrobeatz'); };
+  // No demo button. It held a stranger's account name, and pointing thousands
+  // of visitors at someone's wallet because it made a convenient example is not
+  // ours to do.
+  $('#walletDemo')?.remove();
 }
 
 async function lookupWallet(account) {
@@ -1032,7 +1040,7 @@ async function showCompound(btn, pos) {
     harvest = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
     plan = planCompound({
       pool: pos.pool, position: pos, basket: harvest.basket,
-      feeBps: CFG?.commercial?.feeAccount ? (CFG.commercial.compoundFeeBps ?? 75) : 0,
+      feeBps: 0,
       sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64),
     });
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
@@ -1164,7 +1172,7 @@ async function runOne(box, entry, feeBps, feeAccount) {
 function wireCompound() {
   $('#compGo').onclick = () => runCompound($('#compInput').value.trim());
   $('#compInput').onkeydown = e => { if (e.key === 'Enter') runCompound(e.target.value.trim()); };
-  $('#compDemo').onclick = () => { $('#compInput').value = 'liquidcheese'; runCompound('liquidcheese'); };
+  $('#compDemo')?.remove();
 }
 
 async function runCompound(account) {
@@ -1185,7 +1193,10 @@ async function runCompound(account) {
   // No fee account configured means no fee is charged, so the plan must not
   // deduct one — it was quietly under-reporting every result by 0.75% and
   // listing a transfer that would never be in the transaction.
-  const feeBps = (CFG?.commercial?.feeAccount ? (CFG.commercial.compoundFeeBps ?? 75) : 0);
+  // No fee. It was the last action in the second transaction, so dropping it
+  // costs nothing and removes a step, an approval line and a deduction from
+  // every projection.
+  const feeBps = 0;
   // Positions are independent, so read them in small parallel batches. Serial
   // was correct and far too slow: a 13-position wallet took minutes.
   const plans = [];
@@ -1367,11 +1378,20 @@ async function openToken(id) {
         <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${meta?.score != null ? ` &middot; Alcor rates it ${meta.score}/100` : ''}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
       </div>
       <span style="flex:1"></span>
+      <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
       ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
     </div>
 
     <div class="stats" id="tokStats">
-      <div class="stat"><span class="v">${t.price == null ? '—' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</span><span class="k">price</span></div>
+      <div class="stat"><span class="v">${t.price == null ? '—' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</span><span class="k">price</span>${(() => {
+        // Change from the deepest pool that reports one — a thin pool's 24h move
+        // is noise, so it takes the number from where the trading actually is.
+        const src = pools.filter(p => p.change24 != null && p.vol24 > 0).sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0))[0];
+        if (!src) return '<span class="sub">&nbsp;</span>';
+        const inv = src.tokenB === id;               // change is quoted on A
+        const ch = inv ? -src.change24 : src.change24;
+        return `<span class="sub ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : ''}">${ch > 0 ? '+' : ''}${ch.toFixed(1)}% in 24h</span>`;
+      })()}</div>
       <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating × price</span></div>
       <div class="stat"><span class="v" id="tokCirc">—</span><span class="k">circulating</span><span class="sub" id="tokBurn">&nbsp;</span></div>
       <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pools on ${[...t.venues].length} venue${[...t.venues].length === 1 ? '' : 's'}</span></div>
@@ -1396,6 +1416,13 @@ async function openToken(id) {
           <div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
         <div class="card"><h3>Holder map <span class="dim">— lines mean they have moved ${esc(t.symbol)} to each other</span></h3>
           <div id="tokBubbles"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
+      </div>
+    </div>
+
+    <div class="section"><h3>Distribution</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Who the supply sits with</h3><div id="tokDist"></div></div>
+        <div class="card"><h3>Recent trades</h3><div id="tokTrades"><div class="loading"><span class="spinner"></span><span>Reading the feed…</span></div></div></div>
       </div>
     </div>
 
@@ -1473,6 +1500,22 @@ async function openToken(id) {
       <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it — the largest supplier often does not appear there at all.</p>`;
   }).catch(e => { $('#tokLps').innerHTML = `<div class="chart-empty">Positions unavailable.</div>`; });
 
+  // ---- recent trades -------------------------------------------------------
+  if (!SNAPSHOT_ONLY) {
+    recentSwaps({ minutes: 360, maxPages: 3 }).then(sw => {
+      const mine = sw.filter(x => x.pool && (x.pool.tokenA === id || x.pool.tokenB === id));
+      const box = $('#tokTrades');
+      if (!mine.length) { box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades on Alcor in the last six hours.</div>`; return; }
+      box.innerHTML = `<div class="tablewrap" style="max-height:260px;border:0"><table style="font-size:12px"><tbody>${
+        mine.slice(0, 20).map(x => `<tr>
+          <td class="num dim">${ago(x.ts)}</td>
+          <td>${esc(x.pool.symA)}/${esc(x.pool.symB)}</td>
+          <td class="mono dim">${esc(x.trader)}</td>
+          <td class="r num">${usd(x.volumeReal ?? x.volumeUsd)}</td></tr>`).join('')}</tbody></table></div>
+        <p class="sub" style="margin:8px 0 0">${mine.length} trades in six hours.</p>`;
+    }).catch(() => { $('#tokTrades').innerHTML = '<div class="chart-empty">Trade feed unavailable.</div>'; });
+  } else $('#tokTrades').innerHTML = '<div class="chart-empty">Snapshot mode — live feed not fetched.</div>';
+
   // ---- holders and the map -------------------------------------------------
   let holders = [];
   try {
@@ -1501,6 +1544,18 @@ async function openToken(id) {
         <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
       </tr>`).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
+
+    // Distribution: contracts, the largest wallets, and everything else.
+    if (supply > 0) {
+      const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
+      const slices = top.filter(h => !h.contractRole).slice(0, 5)
+        .map(h => ({ label: h.account, value: h.total }));
+      const named = slices.reduce((a, x) => a + x.value, 0);
+      if (inContracts > 0) slices.unshift({ label: 'held by contracts', value: inContracts });
+      const rest = supply - named - inContracts;
+      if (rest > 0) slices.push({ label: 'everyone else', value: rest });
+      $('#tokDist').appendChild(donut(slices, { fmt: v => qty(v) + ' ' + t.symbol, top: 8 }));
+    }
 
     try {
       const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });

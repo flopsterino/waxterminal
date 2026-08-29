@@ -105,7 +105,7 @@ export async function harvestFor(position, pool, { prices, tokens }) {
 // never swapped, because swapping them would pay fees to arrive where they are.
 // Whatever is foreign is then split across the two sides in proportion to what
 // each side is still short, which usually removes the need for a final trim.
-export function planCompound({ pool, position, basket, feeBps = 75, sqrtP }) {
+export function planCompound({ pool, position, basket, feeBps = 0, sqrtP }) {
   const ratio = depositRatio(sqrtP, position.tickLower, position.tickUpper);
 
   const priced = basket.filter(b => b.priced && b.usd > 0);

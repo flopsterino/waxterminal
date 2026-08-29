@@ -4,8 +4,7 @@
 // A holder list alone is easy to misread: four wallets holding 10% each looks
 // like distribution until you notice one account created all four. WAX records
 // the creator of every account, which is a cheap and unusually strong signal —
-// among the top CHEESE holders, `liquidcheese` and `cheesebuildr` were both
-// created by `zeebigcheese`.
+// two of the top holders of a token frequently turn out to share one.
 //
 // That is not proof of common ownership and is not presented as such. It is the
 // same kind of fact as a bubble map edge: worth seeing, yours to interpret.
@@ -28,8 +27,8 @@ const KNOWN = new Map([
 ]);
 
 // An account carrying code is not a person. Locker, vault, bridge and pool
-// contracts otherwise show up as the biggest "whale" on every token — 78.7% of
-// CHEESE sits in waxdaolocker, which holds it for everyone rather than owning it.
+// contracts otherwise show up as the biggest "whale" on every token — a locker contract can hold most of a
+// token's supply, for everyone, rather than owning any of it.
 const codeCache = new Map();
 export async function hasCode(account) {
   if (codeCache.has(account)) return codeCache.get(account);
@@ -230,8 +229,8 @@ export async function tokenStats(contract, symbol) {
 }
 
 // Everyone providing liquidity in this token, summed across its pools. The
-// wallet list misses them: illustration is the largest CHEESE LP at 192k and
-// does not appear among the top token holders at all.
+// wallet list misses them entirely: a token's largest supplier often holds
+// almost none of it in their own account.
 export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
   const { getAllRows } = await import('./chain.js');
   const { sqrtPriceFromX64, amountsForLiquidity, parseAsset } = await import('./math.js');
