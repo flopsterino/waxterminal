@@ -217,13 +217,14 @@ function renderOverview() {
   const pools = state.pools.filter(p => p.tvl > 0);
   const groups = farmGroups();
   const nominal = pools.reduce((s, p) => s + p.tvl, 0);
-  const real = pools.reduce((s, p) => s + (p.tvlReal || 0), 0);
+  const selfBackedVal = pools.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked)
+    .reduce((s, p) => s + (p.tvl || 0), 0);
   const rewardsReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
   const rewardsNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
   // Same measure as the farms page: what a real deposit would earn, in pools you
   // could actually enter. Ranking on the headline rate here would contradict the
   // page it links to.
-  const SIZE = 500;
+  const SIZE = 0;
   for (const g of groups) {
     const tvl = g.pool?.tvlReal;
     g.share = tvl > 0 ? SIZE / (tvl + SIZE) : 1;
@@ -239,7 +240,7 @@ function renderOverview() {
   const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(real)}</span><span class="k">exit value</span><span class="sub">of ${usd(nominal)} at face value</span></div>
+    <div class="stat"><span class="v">${usd(nominal)}</span><span class="k">total value locked</span><span class="sub">${(selfBackedVal / nominal * 100).toFixed(0)}% sits in tokens that mostly back each other</span></div>
     <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
@@ -248,8 +249,8 @@ function renderOverview() {
   const box = $('#ovCharts');
   box.innerHTML = `
     <div class="section"><h3>Best farm returns</h3>
-      <div class="card"><h3>What a $500 deposit would earn <span class="dim">— after it dilutes the rate</span>
-        <span class="hero">${bestApr.length} of ${groups.length} are enterable</span></h3>
+      <div class="card"><h3>Best farm rates <span class="dim">— what they pay today</span>
+        <span class="hero">${bestApr.length} of ${groups.length} farms</span></h3>
         <div id="ovBest"></div></div>
     </div>
     <div class="section"><h3>Where the liquidity is</h3>
@@ -267,7 +268,7 @@ function renderOverview() {
     <div class="section"><h3>Farms</h3>
       <div class="grid g2">
         <div class="card"><h3>Biggest daily payouts <span class="dim">— sustainable ones only</span></h3><div id="ovRew"></div></div>
-        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} enterable farms at $500</span></h3><div id="ovApr"></div></div>
+        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} farms</span></h3><div id="ovApr"></div></div>
       </div>
     </div>
     <div class="section"><h3>Market</h3>
@@ -291,13 +292,17 @@ function renderOverview() {
     })), { fmt: v => v.toFixed(0) + '%', color: 'var(--c3)' }));
     const n = document.createElement('p');
     n.className = 'sub'; n.style.marginTop = '10px';
-    n.textContent = 'Hover for how much of each pool you would own. Pools too small to take $500 are left out.';
+    n.textContent = 'Enter an amount on the Farms page to see what each rate becomes once your deposit joins the pot.';
     bestBox.appendChild(n);
   }
 
-  const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
-  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
-  $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0, note: `${usd(p.tvl)} at face value · ${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
+  const top = [...pools].sort((a, b) => (b.tvl || 0) - (a.tvl || 0)).slice(0, 8);
+  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvl || 0), 0)) + ' in the top 8';
+  $('#ovTop').appendChild(bars(top.map(p => {
+    const c = state.depth.get(p.tokenA)?.topPartner, d2 = state.depth.get(p.tokenB)?.topPartner;
+    return { label: `${p.symA}/${p.symB}`, value: p.tvl || 0,
+      note: `${(p.feeBps / 100).toFixed(2)}% fee · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}` };
+  }), { fmt: usd }));
 
   const toks = tokenTable().filter(t => t.depth1 >= 5);
   const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
@@ -308,7 +313,8 @@ function renderOverview() {
   $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%` })), { fmt: usd, color: 'var(--c1)' }));
 
   const byDex = new Map();
-  for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + (p.tvlReal || 0));
+  const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
+  for (const p of pools) { const n = venueName[p.dex] || p.dex; byDex.set(n, (byDex.get(n) || 0) + (p.tvl || 0)); }
   $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
 
   // A farm emitting more in a day than its pool is worth is not a payout, it is
@@ -344,7 +350,7 @@ function renderOverview() {
   for (const p of pools) {
     if (p.dex !== 'alcor') continue;
     const k = `${(p.feeBps / 100).toFixed(2)}%`;
-    byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0));
+    byFee.set(k, (byFee.get(k) || 0) + (p.tvl || 0));
   }
   $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
 
@@ -436,7 +442,7 @@ function wireFilterPanel(panel, store, onChange) {
 }
 
 // ---------------------------------------------------------------- POOLS -----
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvlReal', dir: -1,
+const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvl', dir: -1,
   tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
 function wirePools() {
@@ -465,9 +471,9 @@ function filteredPools() {
   const min = CFG?.content?.minTvlUsd ?? 100;
   return state.pools.filter(p => {
     if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
-    if (poolFilters.hideDust && !((p.tvlReal ?? 0) >= min)) return false;
+    if (poolFilters.hideDust && !((p.tvl ?? 0) >= min)) return false;
     if (poolFilters.hideThin && p.thin) return false;
-    if (!inRange(p.tvlReal ?? -1, poolFilters.tvl)) return false;
+    if (!inRange(p.tvl ?? -1, poolFilters.tvl)) return false;
     if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
     if (!inRange(isFinite(p.routeDepth) ? p.routeDepth : Infinity, poolFilters.depth)) return false;
     if (poolFilters.farmed !== 'any') {
@@ -486,7 +492,7 @@ function filteredPools() {
 const POOL_COLS = [
   { k: 'rank', label: '', sortable: false },
   { k: 'pair', label: 'Pool', sortable: false },
-  { k: 'tvlReal', label: 'Exit value', r: true, sortable: true },
+  { k: 'tvl', label: 'TVL', r: true, sortable: true },
   { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
   { k: 'vol7d', label: '7d', r: true, sortable: true },
   { k: 'turnover', label: 'Turnover', r: true, sortable: true },
@@ -508,8 +514,9 @@ function renderPools() {
     return (x - y) * poolFilters.dir;
   });
 
-  const total = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
-  const nominalTotal = rows.reduce((s, p) => s + (p.tvl || 0), 0);
+  const total = rows.reduce((s, p) => s + (p.tvl || 0), 0);
+  const concentrated = rows.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked);
+  const concVal = concentrated.reduce((s, p) => s + (p.tvl || 0), 0);
   // state.pools holds what the snapshot kept (anything above $100 or farmed).
   // Printing that under "Alcor pools" claimed 723 where the chain has 11,585.
   const shownA = state.pools.filter(p => p.dex === 'alcor').length;
@@ -518,7 +525,7 @@ function renderPools() {
   const taco = (state.counts?.taco ?? shownT);
   const priced = [...state.prices.values()].length;
   $('#poolStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(total)}</span><span class="k">exit value shown</span><span class="sub">${usd(nominalTotal)} at face value</span></div>
+    <div class="stat"><span class="v">${usd(total)}</span><span class="k">total value locked</span><span class="sub">${usd(concVal)} of it in pools whose tokens mostly back each other</span></div>
     <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools worth listing</span><span class="sub">of ${alcor.toLocaleString()} in existence</span></div>
     <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">of ${taco.toLocaleString()}</span></div>
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
@@ -548,7 +555,7 @@ function renderPools() {
       <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
         <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
         <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
-      <td class="r num" title="What this pool could pay out. Face value ${usd(p.tvl)}.">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)} at face value; most of it has no buyer"></i>` : ''}</td>
+      <td class="r num">${usd(p.tvl)}</td>
       <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${p.vol7d > 0 ? usd(p.vol7d) : '—'}</td>
       <td class="r num" title="24h volume against pooled value — how hard the liquidity is working">${p.turnover > 0 ? p.turnover.toFixed(2) + '×' : '<span class="dim">—</span>'}</td>
@@ -579,6 +586,8 @@ function wireTokens() {
 function renderTokens() {
   if (!tokRows || tokRows._at !== state.loadedAt) { tokRows = tokenTable(); tokRows._at = state.loadedAt; }
   let rows = tokRows.filter(t => {
+    // A depth floor, not a safety judgement: a small token can be perfectly
+    // sound and still be thin. The label must not imply otherwise.
     if (tokFilters.solidOnly && !(t.depth1 >= 5)) return false;
     if (tokFilters.q && !`${t.symbol} ${t.contract}`.toLowerCase().includes(tokFilters.q)) return false;
     return true;
@@ -597,7 +606,7 @@ function renderTokens() {
   $('#tokStats').innerHTML = `
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
-    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
+    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">across all four venues</span></div>
     <div class="stat"><span class="v">${rows.reduce((s, t) => s + t.pools, 0).toLocaleString()}</span><span class="k">pools holding them</span></div>`;
   $('#tokCount').innerHTML = rows.length > 300
     ? `showing top 300 of ${rows.length.toLocaleString()}`
@@ -610,6 +619,7 @@ function renderTokens() {
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol24', label: 'Volume 24h', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
+    { k: 'backing', label: 'Backed by', s: false },
     { k: 'pools', label: 'Pools', r: true, s: true },
     { k: 'bornAt', label: 'First seen', r: true, s: true },
   ];
@@ -630,6 +640,14 @@ function renderTokens() {
       <td class="r num">${usd(t.tvl)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
+      <td class="dim" style="font-size:11.5px">${(() => {
+        const d = state.depth.get(t.id);
+        if (!d?.topPartner) return '—';
+        const sym = d.topPartner.token.split('@')[0];
+        const pctv = (d.topPartner.share * 100).toFixed(0);
+        const heavy = d.topPartner.share > 0.5;
+        return `<span class="${heavy ? 'warnish' : ''}" title="${pctv}% of the value standing opposite ${esc(t.symbol)} is ${esc(sym)}${d.selfBacked ? ', and most of what backs it comes from the same issuer' : ''}">${esc(sym)} ${pctv}%</span>`;
+      })()}</td>
       <td class="r num dim">${t.pools}</td>
       <td class="r num dim">${age(t.bornAt)}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
@@ -646,7 +664,7 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1, size: 500,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1, size: 0,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 

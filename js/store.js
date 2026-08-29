@@ -9,7 +9,7 @@
 import { getRows, getAllRows, getAllRowsSharded, hyperion, warmHosts } from './chain.js';
 import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX64, depositRatio } from './math.js';
 import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
-import { computeDepth, poolRealisable } from './depth.js';
+import { computeDepth, poolRealisable, counterparties } from './depth.js';
 import { tradeDepth } from './depthmath.js';
 
 const ALCOR = 'swap.alcor', TACO = 'swap.taco', BOX = 'swap.box', ADEX = 'swap.adex';
@@ -65,7 +65,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null };
+export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null, facing: new Map() };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -195,6 +195,39 @@ function applyPrices(pools, prices) {
 function applyDepth(pools, prices) {
   const { tokens, solid } = computeDepth(pools, prices, STABLES);
   state.depth = tokens; state.solidTokens = solid;
+  state.facing = counterparties(pools);
+  // Concentration is the checkable version of the depth model's verdict, and it
+  // travels with the token so the UI can show the evidence rather than a score.
+  for (const [id, d] of tokens) {
+    const f = state.facing.get(id);
+    d.topPartner = f?.top ?? null;
+    d.sameIssuerShare = f?.sameIssuerShare ?? 0;
+    d.partners = f?.partners ?? [];
+    // Not a verdict — a fact. "92% of what backs HOLE is CHEESE" is true and
+    // worth knowing whether the project is sound or not, and calling it
+    // "circular" turned a concentration measure into an accusation aimed at
+    // perfectly honest small tokens.
+    d.concentrated = (f?.top?.share ?? 0) > 0.5;
+    d.selfBacked = d.sameIssuerShare > 0.4;
+  }
+  // Standing opposite a circle is the same problem one step removed. PARAUSD
+  // issues nothing itself and faces no single partner heavily, yet every one of
+  // its counterparties is a goldenvaults token propping up the others — which is
+  // why $998,192 of it sits in pools against a $1,411 exit.
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = 0;
+    for (const [id, d] of tokens) {
+      if (d.selfBacked || d.anchored) continue;
+      const f = state.facing.get(id);
+      if (!f) continue;
+      let sus = 0;
+      for (const [other, v] of Object.entries(Object.fromEntries(f.partners.map(x => [x.token, x.usd])))) {
+        if (tokens.get(other)?.selfBacked) sus += v;
+      }
+      if (sus / f.total > 0.5) { d.selfBacked = true; d.viaPartners = true; changed++; }
+    }
+    if (!changed) break;
+  }
   for (const p of pools) {
     p.tvlReal = poolRealisable(p, tokens);
     const da = tokens.get(p.tokenA), db = tokens.get(p.tokenB);
@@ -203,11 +236,16 @@ function applyDepth(pools, prices) {
     // Turnover says whether a pool is working or just parked: $1k of volume on
     // $1k of liquidity is a different animal from $1k on $200k.
     p.turnover = (p.vol24 > 0 && p.tvlReal > 0) ? p.vol24 / p.tvlReal : null;
-    // Trade depth is about price impact in THIS pool right now. It was being
-    // multiplied by the graph-wide dumpability ratio as well, which is a
-    // different question applied twice — it put pool 314's depth at $138 where
-    // an exact tick walk says $197-213.
-    p.depth1 = tradeDepth(p, 0.01);
+    // Trade depth is price impact in THIS pool, so it must not be scaled by the
+    // graph-wide dumpability ratio — that put pool 314 at $138 where an exact
+    // tick walk says $197-213. But it must still be CAPPED by what can actually
+    // leave: without that, five self-issued goldenvaults tokens each claimed
+    // $13,324 of depth against a real exit of $612, and took over the token
+    // list. You cannot trade out more than there is to trade out.
+    const raw = tradeDepth(p, 0.01);
+    const exitCap = Math.min(da?.anchored ? Infinity : (da?.exit ?? 0),
+                             db?.anchored ? Infinity : (db?.exit ?? 0));
+    p.depth1 = raw == null ? null : Math.min(raw, isFinite(exitCap) ? exitCap : raw);
   }
 }
 
@@ -879,12 +917,20 @@ export function tokenTable() {
       // credited in full. That is the convention every DEX tracker uses, and it
       // means token volumes deliberately do not sum to venue volume.
       r.vol24 += p.vol24 || 0;
-      // Depth adds across pools: you can split a trade over all of them.
+      // Depth adds across pools — you can split an order — but only up to what
+      // can actually leave. Summing 57 buzzingarden pools gave LADYZ $13,324 of
+      // "depth" against a $6,220 exit, because moving it 1% in one pool moves it
+      // in the other 56: arbitrage closes them in the same block. The cap is
+      // applied after the sum.
       r.depth1 += p.depth1 || 0;
       // A token is as new as the first pool anyone made for it.
       if (p.bornAt && (r.bornAt == null || p.bornAt < r.bornAt)) r.bornAt = p.bornAt;
       r.pools++; r.venues.add(p.dex);
     }
+  }
+  for (const r of rows.values()) {
+    const d = state.depth.get(r.id);
+    if (d && !d.anchored && isFinite(d.exit)) r.depth1 = Math.min(r.depth1, d.exit);
   }
   return [...rows.values()];
 }

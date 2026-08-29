@@ -449,3 +449,4 @@ tbody tr.faded:hover td { opacity: .85; }
 .sizesel input:focus { outline: none; }
 a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 a.btn:hover { text-decoration: none; }
+.warnish { color: var(--accent-ink); }

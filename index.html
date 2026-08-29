@@ -67,7 +67,7 @@
   <!-- ----------------------------------------------------------- TOKENS -->
   <section class="view" id="view-tokens">
     <h2 class="vt">Tokens</h2>
-    <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell in one go before moving the price 1% — the number that decides whether a position is worth taking.</p>
+    <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell in one go before moving the price 1%. It measures how thick a market is, not whether a project is sound — a good token can be small.</p>
     <div class="stats" id="tokStats"></div>
     <div class="toolbar">
       <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
@@ -80,7 +80,7 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs">Type what you would add and every rate updates: your money joins the pot, so it dilutes the return. Set it to zero to see the headline rates farms advertise.</p>
+    <p class="vs">Every live farm, with what it pays each day. Type an amount you would add and every rate updates — your money joins the pot, so it dilutes the return.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
@@ -91,7 +91,7 @@
       <button class="chip" id="fExpired"   aria-pressed="false">Show expired</button>
       <span class="sizesel">
         <label for="depositSize">If I add</label>
-        <span class="amt"><span class="cur">$</span><input id="depositSize" type="number" min="0" step="any" value="500" inputmode="decimal"></span>
+        <span class="amt"><span class="cur">$</span><input id="depositSize" type="number" min="0" step="any" value="" inputmode="decimal"></span>
         <button class="chip" data-size="100"   aria-pressed="false">100</button>
         <button class="chip" data-size="1000"  aria-pressed="false">1k</button>
         <button class="chip" data-size="10000" aria-pressed="false">10k</button>
