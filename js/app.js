@@ -10,6 +10,7 @@ import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.j
 import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
+import { topHolders, clusterHolders, transferClusters, tokenSupply } from './holders.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -94,6 +95,7 @@ async function boot() {
   });
   $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
   $('#poolBack').onclick = () => show(lastView || 'pools');
+  $('#tokBack').onclick = () => show(lastView || 'tokens');
 
   // Wire everything BEFORE loading. Handlers do not need data, and hanging the
   // first render off a progress callback meant one early return anywhere in
@@ -182,7 +184,7 @@ async function boot() {
 const banner = html => { $('#banner').innerHTML = html; };
 let lastView = 'pools';
 function show(v, arg = null) {
-  if (v !== 'pool') lastView = v;
+  if (v !== 'pool' && v !== 'token') lastView = v;
   hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
@@ -197,6 +199,7 @@ function routeFromHash() {
   const [view, arg] = location.hash.replace(/^#/, '').split('/');
   if (!view) return false;
   if (view === 'pool' && arg) { openPool(decodeURIComponent(arg)); return true; }
+  if (view === 'token' && arg) { openToken(decodeURIComponent(arg)); return true; }
   if (view === 'wallet' && arg) {
     const acct = decodeURIComponent(arg);
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
@@ -632,7 +635,7 @@ function renderTokens() {
   });
 
   $('#tokTable tbody').innerHTML = rows.slice(0, 300).map((t, i) => `
-    <tr class="clickable" data-tok="${esc(t.symbol)}">
+    <tr class="clickable" data-tok="${esc(t.symbol)}" data-tokid="${esc(t.id)}">
       <td class="rank">${i + 1}</td>
       <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>
         <span class="sub">${esc(t.contract)}</span>${trustChip(t.id)}</td>
@@ -652,12 +655,7 @@ function renderTokens() {
       <td class="r num dim">${age(t.bornAt)}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
-  // Clicking a token filters the pools list to it — the natural next question.
-  $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => {
-    poolFilters.q = tr.dataset.tok.toLowerCase();
-    $('#poolSearch').value = tr.dataset.tok;
-    renderPools(); show('pools');
-  });
+  $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
 }
 
 // ---------------------------------------------------------------- FARMS -----
@@ -1343,6 +1341,96 @@ async function renderActivity() {
   $('#actDonut').appendChild(donut([...byPool].map(([label, value]) => ({ label, value })), { fmt: usd }));
   $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
     .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
+}
+
+// --------------------------------------------------------- TOKEN DETAIL -----
+async function openToken(id) {
+  const rows = tokRows || tokenTable();
+  const t = rows.find(x => x.id === id);
+  if (!t) return;
+  show('token', encodeURIComponent(id));
+  const d = state.depth.get(id);
+  const meta = tokenMeta(id);
+  const pools = state.pools.filter(p => (p.tokenA === id || p.tokenB === id) && p.tvl > 0)
+    .sort((a, b) => (b.tvl || 0) - (a.tvl || 0));
+
+  $('#tokenDetail').innerHTML = `
+    <h2 class="vt"><span id="tokMark"></span>${esc(t.symbol)} <span class="dim" style="font-weight:400;font-size:15px">${esc(t.contract)}</span></h2>
+    <p class="vs">${t.pools} pool${t.pools === 1 ? '' : 's'} across ${[...t.venues].length} venue${[...t.venues].length === 1 ? '' : 's'}${t.bornAt ? ` &middot; first seen ${age(t.bornAt)} ago` : ''}${meta?.score != null ? ` &middot; Alcor rates it ${meta.score}/100` : ''}</p>
+    <div class="stats">
+      <div class="stat"><span class="v">${t.price == null ? '—' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</span><span class="k">price</span></div>
+      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span></div>
+      <div class="stat"><span class="v">${t.vol24 > 0 ? usd(t.vol24) : '—'}</span><span class="k">traded 24h</span></div>
+      <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
+      <div class="stat"><span class="v" id="tokSupply">—</span><span class="k">supply</span></div>
+    </div>
+
+    <div class="section"><h3>Who holds it</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Largest holders</h3><div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
+        <div class="card"><h3>Wallets that move size to each other <span class="dim">— transfers of ${esc(t.symbol)} between top holders</span></h3><div id="tokClusters"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
+      </div>
+    </div>
+
+    <div class="section"><h3>Where its liquidity is</h3>
+      <div class="card">
+        <p class="sub" style="margin:0 0 10px">${d?.topPartner
+          ? `${(d.topPartner.share * 100).toFixed(0)}% of the value standing opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
+            + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% comes from tokens issued by the same account, which is the part worth a second look.` : '')
+          : 'No priced counterparty found.'}</p>
+        <div id="tokPools"></div>
+      </div>
+    </div>`;
+
+  $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 26 }));
+  $('#tokPools').appendChild(bars(pools.slice(0, 10).map(p => ({
+    label: `${p.symA}/${p.symB}`,
+    value: p.tvl || 0,
+    note: `${p.dex} · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}`,
+  })), { fmt: usd }));
+
+  // Holders and clusters are per-token work, so they load after the page shows.
+  const [contract, symbol] = [t.contract, t.symbol];
+  let supply = null;
+  try { supply = await tokenSupply(contract, symbol); if (supply) $('#tokSupply').textContent = qty(supply); } catch {}
+
+  let holders = [];
+  try {
+    holders = await topHolders(contract, symbol, 25);
+    await clusterHolders(holders);
+  } catch (e) {
+    $('#tokHolders').innerHTML = `<div class="chart-empty">Holder list unavailable (${esc(e.message)}).</div>`;
+  }
+
+  if (holders.length) {
+    const share = b => supply > 0 ? (b / supply * 100) : null;
+    $('#tokHolders').innerHTML = `<table style="font-size:12.5px"><tbody>${holders.slice(0, 14).map((h, i) => `
+      <tr><td class="rank">${i + 1}</td>
+        <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for others rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
+        <td class="r num">${qty(h.balance)}</td>
+        <td class="r num ${share(h.balance) > 10 ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
+      </tr>`).join('')}</tbody></table>
+      <p class="sub" style="margin:9px 0 0">Contracts are marked: pools, lockers and bridges hold tokens for other people, so counting them as holders makes every token look owned by one whale.</p>`;
+  }
+
+  try {
+    const clusters = await transferClusters(contract, symbol, holders, { supply });
+    const box = $('#tokClusters');
+    if (!clusters.length) {
+      box.innerHTML = '<div class="chart-empty">No transfers between the top holders. Nothing suggesting one hand behind several wallets.</div>';
+    } else {
+      box.innerHTML = clusters.slice(0, 3).map(g => `
+        <div style="margin-bottom:14px">
+          <div style="font-size:13px;margin-bottom:5px"><b>${g.members.length} wallets</b>
+            ${g.share != null ? `holding <b>${(g.share * 100).toFixed(1)}%</b> of supply between them` : ''}</div>
+          <div class="mono" style="font-size:11.5px;color:var(--ink-2);margin-bottom:6px">${g.members.map(m => esc(m.account)).join(' · ')}</div>
+          ${g.links.slice(0, 4).map(l => `<div class="sub" style="font-size:11.5px">${esc(l.pair[0])} &harr; ${esc(l.pair[1])} &nbsp;<span class="mono">${qty(l.amount)} ${esc(symbol)}</span></div>`).join('')}
+        </div>`).join('')
+        + '<p class="sub" style="margin:4px 0 0">Wallets that have moved this token between each other. That is a fact, not an accusation — projects legitimately run several accounts. It is the same thing a bubble map draws.</p>';
+    }
+  } catch (e) {
+    $('#tokClusters').innerHTML = `<div class="chart-empty">Could not trace transfers (${esc(e.message)}).</div>`;
+  }
 }
 
 // ---------------------------------------------------------- POOL DETAIL -----
