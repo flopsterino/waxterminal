@@ -62,9 +62,10 @@ export function findPath(fromToken, toToken, { maxHops = 3 } = {}) {
 
 // --------------------------------------------------------- transaction 1 ----
 // Collect fees, claim every farm, and swap whatever is not already a pool token.
-export function buildHarvest({ pool, position, basket, plan }) {
-  const auth = authorization();
-  const me = account();
+// `me`/`auth` are overridable so the action set can be built and validated
+// against the chain's serialiser without a wallet attached.
+export function buildHarvest({ pool, position, basket, plan, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
 
   if (basket.some(b => b.source === 'fees')) {
@@ -118,8 +119,7 @@ export function buildHarvest({ pool, position, basket, plan }) {
 // Read what actually landed, deposit it into the same band, pay the fee.
 // Read both sides before the harvest runs, so the redeposit can tell what the
 // harvest actually produced.
-export async function readBalances(pool) {
-  const me = account();
+export async function readBalances(pool, me = account()) {
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
   const [a, b] = await Promise.all([
     balanceOf(me, ta.contract, ta.symbol),
@@ -135,9 +135,8 @@ export async function readBalances(pool) {
 // it is a forced deposit of everything they own in that token. The only safe
 // definition of "the rewards" is the difference the harvest made, so the
 // balances are read before and after and only the delta is redeposited.
-export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before }) {
-  const me = account();
-  const auth = authorization();
+export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 
   const [afterA, afterB] = await Promise.all([
@@ -209,8 +208,8 @@ export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount =
 
 // Restaking is separate: a position staked in several incentives needs one
 // stake action each, and only after the liquidity is in.
-export function buildRestake({ position, incentiveIds }) {
-  const auth = authorization();
+export function buildRestake({ position, incentiveIds, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
   return incentiveIds.map(id => ({
     account: ALCOR, name: 'stake', authorization: auth,
     data: { incentiveId: Number(id), posId: Number(position.posId) },

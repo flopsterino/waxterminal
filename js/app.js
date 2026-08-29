@@ -83,6 +83,14 @@ async function boot() {
     catch (e) { banner(`<div class="err"><b>Could not draw the page.</b> <code class="mono">${esc(e.message)}</code></div>`); }
   };
 
+  // Token marks and Alcor's scores. Started now so they are usually ready by
+  // the time there is anything to draw; if they are late the page paints without
+  // them and repaints when they land. This call went missing in an earlier
+  // rewrite of this function, which is why every row showed a generated mark
+  // even though 1,035 real logos were sitting in data/logos.
+  let marksReady = false;
+  const marks = loadTokenMeta().then(() => { marksReady = true; }).catch(() => {});
+
   banner('<div class="loading"><span class="spinner"></span><span id="loadmsg">Loading…</span></div>');
 
   let loadError = null;
@@ -95,7 +103,11 @@ async function boot() {
 
   // Whatever came back — snapshot, cache, or a full read — draw it.
   if (state.pools.length) {
+    // Give the marks a moment so the first paint carries them, but never wait on
+    // them: a slow logo host must not hold up the whole terminal.
+    await Promise.race([marks, new Promise(r => setTimeout(r, 2000))]);
     paint();
+    if (!marksReady) marks.then(() => paint());
     if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
     const alive = state.hosts.filter(h => h.ok).length;
     $('#freshness').innerHTML = `${state.pools.length.toLocaleString()} pools &middot; ${state.farms.length.toLocaleString()} farms`
@@ -205,7 +217,7 @@ function renderOverview() {
 
   $('#ovStats').innerHTML = `
     <div class="stat"><span class="v">${usd(real)}</span><span class="k">real value locked</span><span class="sub">of ${usd(nominal)} nominal &middot; ${(real / nominal * 100).toFixed(0)}%</span></div>
-    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">across every pool, before moving price 1%</span></div>
+    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">routed to a bridged dollar</span></div>`;
@@ -554,7 +566,7 @@ function renderTokens() {
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
-    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">before moving price 1%</span></div>`;
+    <div class="stat"><span class="v">${rows.reduce((s, t) => s + t.pools, 0).toLocaleString()}</span><span class="k">pools holding them</span></div>`;
   $('#tokCount').textContent = `${rows.length.toLocaleString()} shown`;
 
   const cols = [
