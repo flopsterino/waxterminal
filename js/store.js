@@ -65,7 +65,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set() };
+export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -203,11 +203,11 @@ function applyDepth(pools, prices) {
     // Turnover says whether a pool is working or just parked: $1k of volume on
     // $1k of liquidity is a different animal from $1k on $200k.
     p.turnover = (p.vol24 > 0 && p.tvlReal > 0) ? p.vol24 / p.tvlReal : null;
-    // Scaled to the same terms as tvlReal: a band holding $3,000 of a token
-    // nobody can buy is not $3,000 of tradeable depth. Left nominal, depth came
-    // out larger than the pool it lives in. exitRatio must be set first.
-    const raw = tradeDepth(p, 0.01);
-    p.depth1 = raw == null ? null : raw * p.exitRatio;
+    // Trade depth is about price impact in THIS pool right now. It was being
+    // multiplied by the graph-wide dumpability ratio as well, which is a
+    // different question applied twice — it put pool 314's depth at $138 where
+    // an exact tick walk says $197-213.
+    p.depth1 = tradeDepth(p, 0.01);
   }
 }
 
@@ -237,6 +237,7 @@ function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens
       rewardSolid: !!state.depth.get(rt)?.solid,
       stakedReal: null, aprReal: null,
       periodFinish: finish, ended,
+      runwayDays: ended ? 0 : (finish - now) / 86400e3,
       totalWeight: Number(inc.totalStakingWeight),
       numStakes: stakedCount.get(String(inc.id)) ?? Number(inc.numberOfStakes) ?? 0,
       creator: inc.creator,
@@ -262,7 +263,13 @@ function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens
     const stakedReal = (pool?.tvlReal != null && pool.lpSupply > 0) ? pool.tvlReal * (st.amount / pool.lpSupply) : null;
     const rewardRatio = state.depth.get(rt)?.ratio ?? 0;
     const rewardRealDay = rewardUsdDay != null ? rewardUsdDay * rewardRatio : null;
-    const live = Number(fr.remaining) > 0 && perDay > 0;
+    // `remaining` is in raw units, so ten units of a six-decimal token — a
+    // hundred-thousandth of one — passed as "live". Measured: 1,934 of 2,504
+    // Taco farms had under a day of funding left and together accounted for 95%
+    // of the daily reward figure this terminal published. Runway is the honest
+    // test, and it is also what a person wants to know before entering.
+    const runwayDays = Number(fr.daily_reward) > 0 ? Number(fr.remaining) / Number(fr.daily_reward) : 0;
+    const live = runwayDays >= 1 && perDay > 0;
     farms.push({
       dex: 'taco', id: String(fr.id), poolDex: 'taco', poolId: pool ? pool.id : st.symbol, pool,
       rewardToken: rt, rewardSymbol: rsym, rewardPerDay: perDay, rewardUsdDay,
@@ -307,7 +314,7 @@ async function loadSnapshot() {
       routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
       vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null,
       turnover: (p.v1 > 0 && p.vr > 0) ? p.v1 / p.vr : null,
-      depth1: p.d1 ?? null,
+      depth1: p.d1 ?? null, bornAt: p.bd ?? null,
       lpSupply: p.d === 'taco' ? p.l : undefined,
     };
   });
@@ -316,6 +323,7 @@ async function loadSnapshot() {
   state.prices = new Map(d.prices.map(([id, usd, via, depth]) => [id, { usd, via, depth: depth ?? Infinity }]));
   state.waxUsd = d.waxUsd;
   state.loadedAt = d.at;
+  state.counts = d.counts || null;
   const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
   // Depth comes from the snapshot per token. It used to be faked as N entries of
   // a placeholder so the counters read right, which meant every token looked
@@ -334,6 +342,16 @@ async function loadSnapshot() {
     creator: f.cr, stakedUsd: f.su, apr: f.ap, aprStatus: f.st,
     stakedReal: f.sr ?? null, rewardRealDay: f.rr ?? 0, aprReal: f.ar ?? null, rewardSolid: !!f.so,
   }));
+  // Keep the snapshot's farm rows around. A live chain read cannot value an
+  // Alcor farm — that needs two extra calls per pool, which is why the daily job
+  // does it — so without this every Alcor APR vanished a few seconds after the
+  // page painted, taking the best farms on WAX with it.
+  state.snapshotFarms = new Map();
+  for (const f of (d.farms || [])) {
+    if (f.sr == null && f.su == null) continue;
+    const k = `${f.d}:${f.i}`;
+    state.snapshotFarms.set(k, { stakedUsd: f.su, stakedReal: f.sr, at: d.at });
+  }
   state.fromSnapshot = true;
   return d;
 }
@@ -405,6 +423,19 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
   applyPrices(pools, prices);
   applyDepth(pools, prices);
   const farms = buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens });
+
+  // Backfill what only the daily job can compute, and mark how old it is.
+  let backfilled = 0;
+  for (const f of farms) {
+    if (f.stakedReal != null || f.dex !== 'alcor') continue;
+    const snap = state.snapshotFarms.get(`${f.dex}:${f.id}`);
+    if (!snap) continue;
+    f.stakedUsd = snap.stakedUsd; f.stakedReal = snap.stakedReal; f.stakedAt = snap.at;
+    if (f.stakedReal >= MIN_STAKE_FOR_APR_USD && f.rewardRealDay > 0) f.aprReal = (f.rewardRealDay * 365 / f.stakedReal) * 100;
+    if (f.stakedUsd >= MIN_STAKE_FOR_APR_USD && f.rewardUsdDay > 0) f.apr = (f.rewardUsdDay * 365 / f.stakedUsd) * 100;
+    backfilled++;
+  }
+  if (backfilled) onProgress({ phase: 'derive', msg: `restored staked value for ${backfilled} farms` });
 
   state.pools = pools; state.farms = farms; state.prices = prices; state.tokens = tokens;
   state.loadedAt = Date.now(); state.stale = false; state.fromSnapshot = false;
@@ -720,6 +751,9 @@ export function farmGroups({ liveOnly = true } = {}) {
       groups.set(key, g);
     }
     g.farms.push(f);
+    g.newestId = Math.max(g.newestId, Number(f.id) || 0);
+    if (f.ended) g.expired = true;
+    if (f.runwayDays != null) g.runwayDays = g.runwayDays == null ? f.runwayDays : Math.max(g.runwayDays, f.runwayDays);
     g.rewards.push({ symbol: f.rewardSymbol, token: f.rewardToken, perDay: f.rewardPerDay, usdDay: f.rewardUsdDay, id: f.id });
     if (f.rewardUsdDay != null) g.rewardUsdDay += f.rewardUsdDay; else g.anyUnpriceable = true;
     if (f.periodFinish && (!g.endsAt || f.periodFinish < g.endsAt)) g.endsAt = f.periodFinish;
@@ -826,7 +860,7 @@ export function tokenTable() {
         id, symbol: t.symbol, contract: t.contract,
         price: state.prices.get(id)?.usd ?? null,
         tvl: 0, tvlNominal: 0, vol24: 0, pools: 0, venues: new Set(),
-        exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0, depth1: 0,
+        exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0, depth1: 0, bornAt: null,
       };
       rows.set(id, r);
     }
@@ -847,6 +881,8 @@ export function tokenTable() {
       r.vol24 += p.vol24 || 0;
       // Depth adds across pools: you can split a trade over all of them.
       r.depth1 += p.depth1 || 0;
+      // A token is as new as the first pool anyone made for it.
+      if (p.bornAt && (r.bornAt == null || p.bornAt < r.bornAt)) r.bornAt = p.bornAt;
       r.pools++; r.venues.add(p.dex);
     }
   }

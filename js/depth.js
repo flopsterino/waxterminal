@@ -24,6 +24,20 @@
 const SEED_SOLID_USD = 2000;
 const ROUNDS = 4;
 
+// Assets whose value does not depend on WAX's own pool graph: bridged dollars,
+// bridged BTC/ETH, and WAX itself, which trades on centralised exchanges with
+// orders of magnitude more depth than anything on this chain.
+//
+// Without this the model asked "what if the entire WAX inventory of every pool
+// were dumped at once", answered 0.65, and wrote $31,122 off the chain's own
+// currency — including $2,056 from WAX/WAXUSDC, the flagship pair. That is a
+// real question, but it is not the one a value figure is answering.
+const ANCHORED = new Set([
+  'WAX@eosio.token',
+  'WAXUSDC@eth.token', 'WAXUSDT@eth.token', 'USDT@usdt.alcor',
+  'WAXWBTC@eth.token', 'WAXWETH@eth.token', 'WAXDAI@eth.token',
+]);
+
 export function computeDepth(pools, prices, stables) {
   const nominal = new Map();          // token -> USD sitting in pools
   for (const p of pools) {
@@ -31,7 +45,7 @@ export function computeDepth(pools, prices, stables) {
     if (p.priceUsdB != null) nominal.set(p.tokenB, (nominal.get(p.tokenB) || 0) + p.reserveB * p.priceUsdB);
   }
 
-  const solid = new Set(stables);
+  const solid = new Set([...stables, ...ANCHORED]);
   let exit = new Map();
 
   for (let round = 0; round < ROUNDS; round++) {
@@ -54,8 +68,9 @@ export function computeDepth(pools, prices, stables) {
   const out = new Map();
   for (const [t, nom] of nominal) {
     const ex = exit.get(t) || 0;
-    const realisable = stables.has(t) ? nom : Math.min(nom, ex);
+    const realisable = (stables.has(t) || ANCHORED.has(t)) ? nom : Math.min(nom, ex);
     out.set(t, {
+      anchored: ANCHORED.has(t) || stables.has(t),
       nominal: nom,
       exit: ex,
       realisable,

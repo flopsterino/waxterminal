@@ -86,6 +86,9 @@ try {
       volByPool.set(String(p.id), {
         d1: p.volumeUSD24 ?? null, d7: p.volumeUSDWeek ?? null, d30: p.volumeUSDMonth ?? null,
         ch24: p.change24 ?? null,
+        // When Alcor first saw the pool — the only reliable age we can get, and
+        // new pools are where both the yield and the rug live.
+        born: p.firstSeenAt ? Date.parse(p.firstSeenAt) || null : null,
       });
     }
     console.log(`volume: ${volByPool.size} Alcor pools`);
@@ -149,6 +152,7 @@ const pools = state.pools
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
+    bd: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.born ?? null) : null,
     v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null),
     v7: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d7 ?? null) : null,
     ch: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.ch24 ?? null) : null,

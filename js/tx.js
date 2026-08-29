@@ -135,7 +135,7 @@ export async function readBalances(pool, me = account()) {
 // it is a forced deposit of everything they own in that token. The only safe
 // definition of "the rewards" is the difference the harvest made, so the
 // balances are read before and after and only the delta is redeposited.
-export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before, me = account(), auth = null }) {
+export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before, expected = null, me = account(), auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 
@@ -147,9 +147,23 @@ export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount =
   if (!before) throw new Error('Cannot tell rewards from holdings: balances before the harvest are missing');
   // A negative delta means something else spent that token between the two
   // reads; compound nothing rather than guess.
-  const balA = Math.max(0, afterA - before.a);
-  const balB = Math.max(0, afterB - before.b);
+  let balA = Math.max(0, afterA - before.a);
+  let balB = Math.max(0, afterB - before.b);
   if (!(balA > 0) && !(balB > 0)) throw new Error('The harvest produced nothing to redeposit');
+
+  // Belt and braces. The delta is the right answer, but if the "before" read
+  // ever came back wrong — a failed call defaulting to zero, a stale value — the
+  // delta becomes the whole wallet and this would sweep it into the pool. So the
+  // deposit is also capped against what the plan said the harvest was worth.
+  // Anything far past that is a measurement error, not a windfall.
+  if (expected) {
+    const capA = expected.a * 3, capB = expected.b * 3;
+    if (capA > 0 && balA > capA) balA = capA;
+    if (capB > 0 && balB > capB) balB = capB;
+    if ((capA > 0 && balA >= capA) || (capB > 0 && balB >= capB)) {
+      console.warn('[compound] harvest delta exceeded the plan by 3x; capped', { balA, balB, expected });
+    }
+  }
 
   const actions = [];
   let feeA = 0, feeB = 0;

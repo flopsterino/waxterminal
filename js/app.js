@@ -42,6 +42,29 @@ const ago = t => {
   if (s < 86400) return Math.round(s / 3600) + 'h ago';
   return Math.round(s / 86400) + 'd ago';
 };
+// How long something has existed. New pools are where both the best yields and
+// the worst rugs are, so it earns a column rather than a footnote.
+function age(ts) {
+  if (!ts) return '—';
+  const d = (Date.now() - ts) / 86400000;
+  if (d < 1) return Math.max(1, Math.round(d * 24)) + 'h';
+  if (d < 60) return Math.round(d) + 'd';
+  if (d < 730) return Math.round(d / 30) + 'mo';
+  return (d / 365).toFixed(1) + 'y';
+}
+// Seeing that CHEESE/LSWAX is the best farm on WAX is only half of it; the other
+// half is being able to go and do something about it.
+const venueUrl = {
+  alcor: p => `https://wax.alcor.exchange/analytics/pools/${p.id}`,
+  taco: () => 'https://swap.tacocrypto.io/pools',
+  defibox: () => 'https://wax.defibox.io',
+  adex: () => 'https://alcor.exchange',
+};
+const swapUrl = p => p.dex === 'alcor'
+  ? `https://wax.alcor.exchange/swap?input=${p.symA.toLowerCase()}-${p.tokenA.split('@')[1]}&output=${p.symB.toLowerCase()}-${p.tokenB.split('@')[1]}`
+  : venueUrl[p.dex]?.(p) || '#';
+const farmUrl = p => p.dex === 'alcor' ? 'https://wax.alcor.exchange/positions' : 'https://swap.tacocrypto.io/farms';
+
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
 const $ = s => document.querySelector(s);
@@ -216,7 +239,7 @@ function renderOverview() {
   const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(real)}</span><span class="k">real value locked</span><span class="sub">of ${usd(nominal)} nominal &middot; ${(real / nominal * 100).toFixed(0)}%</span></div>
+    <div class="stat"><span class="v">${usd(real)}</span><span class="k">exit value</span><span class="sub">of ${usd(nominal)} at face value</span></div>
     <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
@@ -231,7 +254,7 @@ function renderOverview() {
     </div>
     <div class="section"><h3>Where the liquidity is</h3>
       <div class="grid g2">
-        <div class="card"><h3>Top pools by TVL <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
+        <div class="card"><h3>Deepest pools <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
         <div class="card"><h3>Split by venue</h3><div id="ovDex"></div></div>
       </div>
     </div>
@@ -463,13 +486,14 @@ function filteredPools() {
 const POOL_COLS = [
   { k: 'rank', label: '', sortable: false },
   { k: 'pair', label: 'Pool', sortable: false },
-  { k: 'tvlReal', label: 'TVL', r: true, sortable: true },
+  { k: 'tvlReal', label: 'Exit value', r: true, sortable: true },
   { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
   { k: 'vol7d', label: '7d', r: true, sortable: true },
   { k: 'turnover', label: 'Turnover', r: true, sortable: true },
   { k: 'price', label: 'Price', r: true, sortable: false },
   { k: 'change24', label: '24h', r: true, sortable: true },
   { k: 'feeBps', label: 'Fee', r: true, sortable: true },
+  { k: 'bornAt', label: 'Age', r: true, sortable: true },
 ];
 
 function renderPools() {
@@ -486,19 +510,26 @@ function renderPools() {
 
   const total = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
   const nominalTotal = rows.reduce((s, p) => s + (p.tvl || 0), 0);
-  const alcor = state.pools.filter(p => p.dex === 'alcor').length;
-  const taco = state.pools.filter(p => p.dex === 'taco').length;
+  // state.pools holds what the snapshot kept (anything above $100 or farmed).
+  // Printing that under "Alcor pools" claimed 723 where the chain has 11,585.
+  const shownA = state.pools.filter(p => p.dex === 'alcor').length;
+  const shownT = state.pools.filter(p => p.dex !== 'alcor').length;
+  const alcor = state.counts?.alcor ?? shownA;
+  const taco = (state.counts?.taco ?? shownT);
   const priced = [...state.prices.values()].length;
   $('#poolStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(total)}</span><span class="k">real TVL shown</span><span class="sub">${usd(nominalTotal)} at face value</span></div>
-    <div class="stat"><span class="v">${alcor.toLocaleString()}</span><span class="k">Alcor pools</span></div>
-    <div class="stat"><span class="v">${taco.toLocaleString()}</span><span class="k">TacoSwap pairs</span></div>
+    <div class="stat"><span class="v">${usd(total)}</span><span class="k">exit value shown</span><span class="sub">${usd(nominalTotal)} at face value</span></div>
+    <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools worth listing</span><span class="sub">of ${alcor.toLocaleString()} in existence</span></div>
+    <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">of ${taco.toLocaleString()}</span></div>
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">deepest stable route</span></div>`;
 
-  const partial = rows.filter(p => p.tvlPartial).length;
-  $('#poolCount').innerHTML = `${rows.length.toLocaleString()} shown` +
-    (partial ? ` &middot; <span title="Marked * — only one side could be priced">${partial} partly priced</span>` : '');
+  // The body renders the first 400. Reporting rows.length made a search for
+  // something ranked 900th look like it does not exist.
+  const CAP = 400;
+  $('#poolCount').innerHTML = rows.length > CAP
+    ? `showing top ${CAP} of ${rows.length.toLocaleString()}<span class="dim"> &mdash; narrow it with search or filters</span>`
+    : `${rows.length.toLocaleString()} pools`;
 
   const thead = $('#poolTable thead');
   thead.innerHTML = '<tr>' + POOL_COLS.map(c =>
@@ -517,13 +548,14 @@ function renderPools() {
       <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
         <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
         <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
-      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)} at face value, but most of it has no buyer"></i>` : ''}</td>
+      <td class="r num" title="What this pool could pay out. Face value ${usd(p.tvl)}.">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)} at face value; most of it has no buyer"></i>` : ''}</td>
       <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${p.vol7d > 0 ? usd(p.vol7d) : '—'}</td>
       <td class="r num" title="24h volume against pooled value — how hard the liquidity is working">${p.turnover > 0 ? p.turnover.toFixed(2) + '×' : '<span class="dim">—</span>'}</td>
       <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
       <td class="r num ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : 'dim'}">${ch == null ? '—' : (ch > 0 ? '+' : '') + ch.toFixed(1) + '%'}</td>
       <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
+      <td class="r num dim">${age(p.bornAt)}</td>
     </tr>`;
   }).join('');
   $('#poolTable tbody').innerHTML = body || '<tr><td colspan="9" class="empty">No pools match.</td></tr>';
@@ -567,16 +599,19 @@ function renderTokens() {
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
     <div class="stat"><span class="v">${rows.reduce((s, t) => s + t.pools, 0).toLocaleString()}</span><span class="k">pools holding them</span></div>`;
-  $('#tokCount').textContent = `${rows.length.toLocaleString()} shown`;
+  $('#tokCount').innerHTML = rows.length > 300
+    ? `showing top 300 of ${rows.length.toLocaleString()}`
+    : `${rows.length.toLocaleString()} tokens`;
 
   const cols = [
     { k: 'rank', label: '' },
     { k: 'symbol', label: 'Token' },
     { k: 'price', label: 'Price', r: true, s: true },
-    { k: 'tvl', label: 'Pooled', r: true, s: true },
+    { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol24', label: 'Volume 24h', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
     { k: 'pools', label: 'Pools', r: true, s: true },
+    { k: 'bornAt', label: 'First seen', r: true, s: true },
   ];
   const thead = $('#tokTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${tokFilters.sort === c.k ? ` <span class="dir">${tokFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -596,6 +631,7 @@ function renderTokens() {
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${t.pools}</td>
+      <td class="r num dim">${age(t.bornAt)}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
   // Clicking a token filters the pools list to it — the natural next question.
@@ -610,7 +646,7 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprAt', dir: -1, size: 500,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1, size: 500,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
@@ -642,6 +678,11 @@ function wireFarms() {
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
+  $('#fExpired').onclick = e => {
+    farmFilters.expired = !farmFilters.expired;
+    e.target.setAttribute('aria-pressed', String(farmFilters.expired));
+    groups._key = null; renderFarms();
+  };
   const sizeInput = $('#depositSize');
   const applySize = v => {
     const n = Math.max(0, Number(v) || 0);
@@ -692,8 +733,16 @@ function filteredGroups() {
   });
 }
 
+let groupsAll = [];
 function renderFarms() {
-  if (!groups.length || groups._at !== state.loadedAt) { groups = farmGroups(); groups._at = state.loadedAt; }
+  const key = `${state.loadedAt}:${farmFilters.expired}`;
+  if (groups._key !== key) {
+    // Expired farms are excluded by default: their reward rate is zero, so any
+    // APR computed from one is arithmetic on a farm that stopped paying. They
+    // are still worth being able to look at, which is what the toggle is for.
+    groups = farmGroups({ liveOnly: !farmFilters.expired });
+    groups._key = key; groups._at = state.loadedAt;
+  }
   const rows = filteredGroups();
   for (const g of rows) {
     g.share = poolShare(g, farmFilters.size);
@@ -730,9 +779,10 @@ function renderFarms() {
     <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">paid out daily</span><span class="sub">across every farm, in sellable tokens</span></div>
     <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
-  $('#farmCount').innerHTML = farmFilters.size > 0
+  $('#farmCount').innerHTML = (farmFilters.size > 0
     ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} farms</span>`
-    : `${rows.length.toLocaleString()} farms`;
+    : `${rows.length.toLocaleString()} farms`)
+    + (rows.length > 250 ? '<span class="dim"> &middot; top 250 listed</span>' : '');
 
   const cols = [
     { k: 'rank', label: '', s: false },
@@ -782,7 +832,7 @@ function renderFarms() {
           + (farmFilters.size > 0 && g.aprReal != null && g.aprReal > g.aprAt * 1.3
               ? `<span class="nominal">${pct(g.aprReal)} before your deposit</span>` : '')
         : `<span class="dim">—</span>`;
-    const ends = g.endsAt ? Math.round((g.endsAt - Date.now()) / 86400000) : null;
+    const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
@@ -791,9 +841,14 @@ function renderFarms() {
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
-      <td class="r num dim">${ends == null ? 'open' : ends > 0 ? ends + 'd' : 'ending'}</td>
+      <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
+        g.expired ? '<span class="badge bad">expired</span>'
+        : rw == null ? '—'
+        : rw < 1 ? Math.round(rw * 24) + 'h'
+        : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
+      <td class="r num dim">#${g.newestId}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">No farms match.</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="empty">No farms match.</td></tr>';
   fillMarks($('#farmTable tbody'));
   $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
@@ -961,7 +1016,7 @@ async function showCompound(btn, pos) {
     harvest = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
     plan = planCompound({
       pool: pos.pool, position: pos, basket: harvest.basket,
-      feeBps: CFG?.commercial?.compoundFeeBps ?? 75,
+      feeBps: CFG?.commercial?.feeAccount ? (CFG.commercial.compoundFeeBps ?? 75) : 0,
       sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64),
     });
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
@@ -982,7 +1037,7 @@ async function showCompound(btn, pos) {
       ${!b.viable ? `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">${esc(b.reason)}</div>` : ''}
       <div class="stats" style="margin-bottom:10px">
         <div class="stat"><span class="v">${usd(b.grossUsd)}</span><span class="k">claimable now</span><span class="sub">${harvest.basket.length} item${harvest.basket.length === 1 ? '' : 's'}</span></div>
-        <div class="stat"><span class="v">${usd(b.netUsd)}</span><span class="k">redeposited</span><span class="sub">after ${usd(b.feeUsd)} fee</span></div>
+        <div class="stat"><span class="v">${usd(b.netUsd)}</span><span class="k">redeposited</span><span class="sub">${b.feeUsd > 0 ? 'after ' + usd(b.feeUsd) + ' fee' : 'no fee charged'}</span></div>
         <div class="stat"><span class="v">${(b.ratio.shareA * 100).toFixed(1)}/${(b.ratio.shareB * 100).toFixed(1)}</span><span class="k">this band needs</span><span class="sub">${esc(pos.pool.symA)} / ${esc(pos.pool.symB)}</span></div>
         <div class="stat"><span class="v">${b.actions.length}</span><span class="k">actions, one signature</span>${b.needsSplit ? '<span class="sub neg">must be split</span>' : ''}</div>
       </div>
@@ -1002,7 +1057,7 @@ async function showCompound(btn, pos) {
         <ol style="margin:0;padding-left:20px;font-size:12.5px;line-height:1.75">
           ${b.actions.map(a => `<li><code class="mono">${esc(a.name)}</code> <span class="dim">${esc(a.note)}</span></li>`).join('')}
         </ol>
-        <p class="sub" style="margin:10px 0 0">One signature, one transaction. No contract holds your funds and no permission is delegated — if you do not sign, nothing happens.</p>
+        <p class="sub" style="margin:10px 0 0">Two signatures, because a swap's output is only known once it runs: the first claims and swaps, then we read what actually landed and the second puts it back. No contract holds your funds and no permission is delegated.</p>
       </div>
     </div>`;
 }
@@ -1066,7 +1121,14 @@ async function runOne(box, entry, feeBps, feeAccount) {
 
     render(1, 'Measuring what the harvest produced…');
     await new Promise(r => setTimeout(r, 2500));
-    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before });
+    // What the plan said the harvest is worth, in token terms — the cap the
+    // redeposit checks itself against.
+    const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
+    const expected = {
+      a: pxA > 0 ? (plan.netUsd * plan.ratio.shareA) / pxA : 0,
+      b: pxB > 0 ? (plan.netUsd * plan.ratio.shareB) / pxB : 0,
+    };
+    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected });
     const r2 = await wallet.transact(dep.actions);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
@@ -1104,7 +1166,10 @@ async function runCompound(account) {
     return;
   }
 
-  const feeBps = CFG?.commercial?.compoundFeeBps ?? 75;
+  // No fee account configured means no fee is charged, so the plan must not
+  // deduct one — it was quietly under-reporting every result by 0.75% and
+  // listing a transfer that would never be in the transaction.
+  const feeBps = (CFG?.commercial?.feeAccount ? (CFG.commercial.compoundFeeBps ?? 75) : 0);
   // Positions are independent, so read them in small parallel batches. Serial
   // was correct and far too slow: a 13-position wallet took minutes.
   const plans = [];
@@ -1134,10 +1199,10 @@ async function runCompound(account) {
 
   let html = `<div class="stats">
       <div class="stat"><span class="v">${usd(gross)}</span><span class="k">claimable now</span><span class="sub">${tokensSeen.size} distinct token${tokensSeen.size === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${usd(gross - fee)}</span><span class="k">back to work</span><span class="sub">after ${usd(fee)} fee at ${(feeBps / 100).toFixed(2)}%</span></div>
+      <div class="stat"><span class="v">${usd(gross - fee)}</span><span class="k">back to work</span><span class="sub">${feeBps > 0 ? `after ${usd(fee)} fee at ${(feeBps / 100).toFixed(2)}%` : 'no fee charged'}</span></div>
       <div class="stat"><span class="v">${worth.length}/${plans.length}</span><span class="k">positions with something to claim</span></div>
       <div class="stat"><span class="v">${swaps}</span><span class="k">swaps needed</span><span class="sub">across all positions</span></div>
-      <div class="stat"><span class="v">${worth.length}</span><span class="k">transaction${worth.length === 1 ? '' : 's'} to sign</span><span class="sub">${actions} actions, one tx per position</span></div>
+      <div class="stat"><span class="v">${worth.length * 2}</span><span class="k">signatures</span><span class="sub">${actions} actions, two per position</span></div>
     </div>`;
 
   if (unpriceable) {
@@ -1164,7 +1229,7 @@ async function runCompound(account) {
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
           <div><span class="dim">No swap needed</span><br><span class="mono">${plan.alreadyRight.map(b => esc(b.symbol)).join(', ') || '—'}</span></div>
           <div><span class="dim">Swaps</span><br><span class="mono">${plan.swaps.map(s => `${esc(s.from)}&rarr;${esc(s.to)}`).join(', ') || 'none'}</span></div>
-          <div><span class="dim">Transaction</span><br><span class="mono">${plan.actions.length} actions, 1 signature</span></div>
+          <div><span class="dim">To sign</span><br><span class="mono">${plan.actions.length} actions, 2 signatures</span></div>
         </div>
         <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button>
           ${!plan.ratio.inRange ? '<span class="sub" style="margin-left:10px">Out of range — this adds to a band the price has left.</span>' : ''}</div>
@@ -1174,7 +1239,7 @@ async function runCompound(account) {
   html += '</div>';
 
   html += `<div class="card" style="margin-top:14px"><h3>How this executes</h3>
-    <p style="font-size:13px;color:var(--ink-2);margin:0 0 8px;max-width:74ch">Each position becomes one transaction: collect fees, claim every farm reward, swap only what is not already the right token, redeposit into the same band, and pay the service fee inline. Your wallet shows all of it before you approve.</p>
+    <p style="font-size:13px;color:var(--ink-2);margin:0 0 8px;max-width:74ch">Each position takes two signatures. The first collects fees, claims every farm reward and swaps what is not already the right token. Then we read what actually arrived in your wallet, and the second puts exactly that back — never anything you already held.</p>
     <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">There is no compounding contract and no delegated permission. Nothing can move your funds without a signature you give at that moment — which also means a position in ten farms is ten claims in one transaction, not ten separate approvals.</p>
   </div>`;
 
@@ -1272,9 +1337,16 @@ async function openPool(key) {
 
   $('#poolDetail').innerHTML = `
     <h2 class="vt">${pairName(p)} <span class="badge ${p.dex}">${p.dex}</span> <span class="dim" style="font-weight:400">#${esc(p.id)}</span></h2>
-    <p class="vs">${(p.feeBps / 100).toFixed(2)}% fee tier${p.tick != null ? ` &middot; tick ${p.tick}` : ''} &middot; reserves read live from <code class="mono">${dex === 'alcor' ? 'swap.alcor' : 'swap.taco'}</code></p>
+    <p class="vs">${(p.feeBps / 100).toFixed(2)}% fee tier on ${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'TacoSwap' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}${p.bornAt ? ` &middot; first seen ${age(p.bornAt)} ago` : ''}</p>
+    <div class="toolbar" style="margin-bottom:16px">
+      <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
+      <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
+      ${farms.length ? `<a class="btn ghost" href="${farmUrl(p)}" target="_blank" rel="noopener">Go to the farm &nearr;</a>` : ''}
+    </div>
     <div class="stats">
-      <div class="stat"><span class="v">${usd(p.tvl)}</span><span class="k">TVL</span></div>
+      <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">exit value</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
+      <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span>${p.turnover > 0 ? `<span class="sub">${p.turnover.toFixed(2)}× its own liquidity</span>` : ''}</div>
+      <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
       <div class="stat"><span class="v">${qty(p.priceAB)}</span><span class="k">${esc(p.symB)} per ${esc(p.symA)}</span></div>
       <div class="stat"><span class="v">${qty(p.reserveA)}</span><span class="k">${esc(p.symA)} in pool</span><span class="sub">${usd(p.priceUsdA ? p.reserveA * p.priceUsdA : null)}</span></div>
       <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${esc(p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>

@@ -447,3 +447,5 @@ tbody tr.faded:hover td { opacity: .85; }
 }
 .sizesel input::-webkit-outer-spin-button, .sizesel input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .sizesel input:focus { outline: none; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+a.btn:hover { text-decoration: none; }
