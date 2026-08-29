@@ -540,13 +540,21 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
     const ta = parseAsset(x.tokenA), tb = parseAsset(x.tokenB);
     // One leg is negative (leaving the pool). Value the swap on whichever side
     // we can actually price.
+    // A swap is ONE trade with two sides, so it must be valued once — on the
+    // side whose price we trust more. Taking side A whenever it exists valued
+    // trades in whichever junk token happened to be listed first.
+    const dA = state.depth.get(pool?.tokenA), dB = state.depth.get(pool?.tokenB);
     const usdA = pool?.priceUsdA != null ? Math.abs(ta.amount) * pool.priceUsdA : null;
     const usdB = pool?.priceUsdB != null ? Math.abs(tb.amount) * pool.priceUsdB : null;
+    const preferA = (dA?.exit ?? 0) >= (dB?.exit ?? 0);
+    const nominal = preferA ? (usdA ?? usdB) : (usdB ?? usdA);
+    const ratio = Math.max(dA?.ratio ?? 0, dB?.ratio ?? 0);
     out.push({
       ts: a.timestamp, trx: a.trx_id, pool, poolId: String(x.poolId),
       trader: x.sender, symA: ta.symbol, symB: tb.symbol,
       amountA: ta.amount, amountB: tb.amount,
-      volumeUsd: usdA ?? usdB ?? null,
+      volumeUsd: nominal ?? null,
+      volumeReal: nominal != null ? nominal * ratio : null,
       dir: ta.amount > 0 ? 'buyB' : 'buyA',
     });
   }

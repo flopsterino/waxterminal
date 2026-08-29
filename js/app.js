@@ -968,20 +968,28 @@ async function renderActivity() {
   activityLoaded = true;
 
   const priced = swaps.filter(s => s.volumeUsd != null);
-  const vol = priced.reduce((s, x) => s + x.volumeUsd, 0);
+  const vol = priced.reduce((s, x) => s + (x.volumeReal ?? 0), 0);
+  const volNominal = priced.reduce((s, x) => s + x.volumeUsd, 0);
   const byPool = new Map();
   for (const s of priced) {
     const key = s.pool ? pairName(s.pool) : `#${s.poolId}`;
-    byPool.set(key, (byPool.get(key) || 0) + s.volumeUsd);
+    byPool.set(key, (byPool.get(key) || 0) + (s.volumeReal ?? 0));
   }
+  // Two different questions: who moved the most value, and who traded the most
+  // often. On WAX those are almost never the same account — arbitrage bots
+  // dominate the count and barely register on the size.
   const traders = new Map();
-  for (const s of priced) traders.set(s.trader, (traders.get(s.trader) || 0) + s.volumeUsd);
+  for (const s of priced) {
+    const t = traders.get(s.trader) || { usd: 0, n: 0 };
+    t.usd += s.volumeReal ?? 0; t.n++;
+    traders.set(s.trader, t);
+  }
 
   $('#actMeta').innerHTML = `${swaps.length.toLocaleString()} swaps over ${actWindow} min &middot; ${priced.length.toLocaleString()} priceable`
     + (swaps.truncated ? ` &middot; <span class="neg">showing the most recent ${swaps.length.toLocaleString()} of ${swaps.reportedTotal.toLocaleString()}</span>` : '');
 
   out.innerHTML = `<div class="stats">
-      <div class="stat"><span class="v">${usd(vol)}</span><span class="k">volume, last ${actWindow} min</span><span class="sub">${swaps.truncated ? 'partial window' : usd(vol / actWindow * 60) + ' / hour at this rate'}</span></div>
+      <div class="stat"><span class="v">${usd(vol)}</span><span class="k">volume, last ${actWindow} min</span><span class="sub">${usd(volNominal)} counted at face value</span></div>
       <div class="stat"><span class="v">${swaps.length.toLocaleString()}</span><span class="k">swaps</span><span class="sub">${(swaps.length / actWindow).toFixed(0)} per minute</span></div>
       <div class="stat"><span class="v">${byPool.size}</span><span class="k">pools touched</span></div>
       <div class="stat"><span class="v">${traders.size}</span><span class="k">unique traders</span></div>
@@ -999,11 +1007,12 @@ async function renderActivity() {
         <td class="mono">${esc(s.trader)}</td>
         <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${esc(inA ? s.symA : s.symB)}</span></td>
         <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${esc(inA ? s.symB : s.symA)}</span></td>
-        <td class="r num">${usd(s.volumeUsd)}</td></tr>`;
+        <td class="r num">${usd(s.volumeReal ?? s.volumeUsd)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 
   $('#actDonut').appendChild(donut([...byPool].map(([label, value]) => ({ label, value })), { fmt: usd }));
-  $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([label, value]) => ({ label, value })), { fmt: usd }));
+  $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
+    .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
 }
 
 // ---------------------------------------------------------- POOL DETAIL -----
@@ -1036,7 +1045,7 @@ async function openPool(key) {
           <button class="chip" data-iv="900" aria-pressed="false">15m</button>
           <button class="chip" data-iv="3600" aria-pressed="true">1h</button>
           <button class="chip" data-iv="14400" aria-pressed="false">4h</button>
-          <button class="chip" data-iv="86400" aria-pressed="false">1d</button>
+          <button class="chip" data-iv="86400" aria-pressed="false">24h</button>
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>`;
