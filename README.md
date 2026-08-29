@@ -162,16 +162,17 @@ $1 inflated headline TVL by half a million dollars of value nobody could realise
 $2.20M of the $2.90M the terminal reports stands on routes under $1,000; it says
 so on the front page.
 
-### Sharing an IP with trading bots
+### Developing without hammering the public nodes
 
 This terminal is client-side, so in production every visitor's browser calls the
 public nodes from their own address and nothing is shared. The daily snapshot
-runs on GitHub's runners, not yours.
+runs on GitHub's runners.
 
-The one case that does share an IP is developing locally on a machine that also
-runs bots against the same public nodes. Append `?snapshot=1` to the URL while
-working on the UI: the page renders entirely from `data/pools.json` and makes
-zero chain calls. Use it instead of reloading a full sweep to check a layout.
+Local development is the exception: reloading a full sweep every time you nudge
+a stylesheet is thousands of requests to shared infrastructure for no reason, and
+worse if the same machine runs anything else against those nodes. Append
+`?snapshot=1` to the URL while working on the UI — the page renders entirely from
+`data/pools.json` and makes zero chain calls.
 
 ### Real value versus face value
 
