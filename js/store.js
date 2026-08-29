@@ -283,6 +283,7 @@ async function loadSnapshot() {
       priceUsdA: p.pa, priceUsdB: p.pb, usdA: p.pa, usdB: p.pb,
       tvlPartial: (p.pa == null) !== (p.pb == null), active: true,
       routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
+      vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null,
       lpSupply: p.d === 'taco' ? p.l : undefined,
     };
   });
@@ -715,4 +716,45 @@ export async function loadHistory({ months = 24 } = {}) {
     } catch { return []; }
   }));
   return files.flat().sort((a, b) => a.at - b.at);
+}
+
+
+// ----------------------------------------------------------------- tokens ---
+// A token's standing across every venue at once: what it is worth, how much of
+// it is pooled, how much actually trades, and how many pools would have to be
+// wrong for that to be wrong.
+export function tokenTable() {
+  const rows = new Map();
+  const touch = id => {
+    let r = rows.get(id);
+    if (!r) {
+      const t = state.tokens.get(id) || { symbol: id.split('@')[0], contract: id.split('@')[1] };
+      const d = state.depth.get(id);
+      r = {
+        id, symbol: t.symbol, contract: t.contract,
+        price: state.prices.get(id)?.usd ?? null,
+        tvl: 0, tvlNominal: 0, vol24: 0, pools: 0, venues: new Set(),
+        exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0,
+      };
+      rows.set(id, r);
+    }
+    return r;
+  };
+
+  for (const p of state.pools) {
+    if (!(p.tvl > 0) && !(p.vol24 > 0)) continue;
+    const half = (p.tvlReal || 0) / 2, halfNom = (p.tvl || 0) / 2;
+    for (const [id, side] of [[p.tokenA, 'a'], [p.tokenB, 'b']]) {
+      const r = touch(id);
+      // Split the pool's value between its two sides rather than crediting each
+      // with the whole thing, or the totals add up to twice the market.
+      r.tvl += half; r.tvlNominal += halfNom;
+      // Volume is the trade, and a trade touches both tokens — so both are
+      // credited in full. That is the convention every DEX tracker uses, and it
+      // means token volumes deliberately do not sum to venue volume.
+      r.vol24 += p.vol24 || 0;
+      r.pools++; r.venues.add(p.dex);
+    }
+  }
+  return [...rows.values()];
 }

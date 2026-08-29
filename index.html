@@ -19,6 +19,7 @@
   <nav class="tabs" id="tabs" role="tablist">
     <button role="tab" data-view="overview" aria-selected="true">Overview</button>
     <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
+    <button role="tab" data-view="tokens"   aria-selected="false">Tokens</button>
     <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My liquidity</button>
     <button role="tab" data-view="compound" aria-selected="false">Compound</button>
@@ -61,6 +62,19 @@
     </div>
     <div class="filters" id="poolFilters" hidden></div>
     <div class="tablewrap"><table id="poolTable"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- ----------------------------------------------------------- TOKENS -->
+  <section class="view" id="view-tokens">
+    <h2 class="vt">Tokens</h2>
+    <p class="vs">Every token across all four venues, with what is pooled behind it and what actually trades.</p>
+    <div class="stats" id="tokStats"></div>
+    <div class="toolbar">
+      <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
+      <button class="chip" id="fTokSolid" aria-pressed="true">Tradeable only</button>
+      <span class="dim" id="tokCount" style="font-size:12px"></span>
+    </div>
+    <div class="tablewrap"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
   </section>
 
   <!-- ------------------------------------------------------------ FARMS -->

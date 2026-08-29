@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildRedeposit, buildRestake } from './tx.js';
@@ -109,12 +109,12 @@ async function boot() {
     banner(`<div class="err">Part of the chain read did not come back (${state.shardsFailed} shard${state.shardsFailed === 1 ? '' : 's'}), so some pools are missing. Everything shown is real; the list is just incomplete. Reload to try again.</div>`);
   }
 
-  wirePools(); wireFarms(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
+  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
   renderOverview();
-  renderPools(); renderFarms();
+  renderPools(); renderFarms(); renderTokens();
   // Marks and Alcor's scores are cosmetic-plus-corroboration, so the terminal
   // paints without them and fills them in when they arrive.
-  loadTokenMeta().then(() => { renderPools(); renderFarms(); }).catch(() => {});
+  loadTokenMeta().then(() => { renderPools(); renderFarms(); renderTokens(); }).catch(() => {});
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
 
@@ -161,7 +161,7 @@ function routeFromHash() {
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
   }
   if (view === 'compound' && arg) { const a = decodeURIComponent(arg); show('compound'); $('#compInput').value = a; runCompound(a); return true; }
-  if (['overview', 'pools', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
+  if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
     return true;
@@ -202,6 +202,12 @@ function renderOverview() {
         <div class="card"><h3>Split by venue</h3><div id="ovDex"></div></div>
       </div>
     </div>
+    <div class="section"><h3>Tokens</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Most traded <span class="dim">— 24h volume</span></h3><div id="ovTokVol"></div></div>
+        <div class="card"><h3>Most pooled <span class="dim">— value behind the token</span></h3><div id="ovTokTvl"></div></div>
+      </div>
+    </div>
     <div class="section"><h3>Farms</h3>
       <div class="grid g2">
         <div class="card"><h3>Biggest daily payouts <span class="dim">— USD per day</span></h3><div id="ovRew"></div></div>
@@ -236,6 +242,14 @@ function renderOverview() {
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
   $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
   $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0, note: `${usd(p.tvl)} at face value · ${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
+
+  const toks = tokenTable().filter(t => t.exit >= 100);
+  const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
+  const byTvl = [...toks].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
+  $('#ovTokVol').appendChild(byVol.length
+    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools` })), { fmt: usd, color: 'var(--c2)' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Volume arrives with the next daily snapshot.' }));
+  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.exit)} sellable` })), { fmt: usd, color: 'var(--c1)' }));
 
   const byDex = new Map();
   for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + (p.tvlReal || 0));
@@ -406,6 +420,7 @@ const POOL_COLS = [
   { k: 'dex', label: 'DEX', sortable: false },
   { k: 'tvlReal', label: 'Real TVL', r: true, sortable: true },
   { k: 'price', label: 'Price', r: true, sortable: false },
+  { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
   { k: 'feeBps', label: 'Fee', r: true, sortable: true },
   { k: 'reserveA', label: 'Reserves', r: true, sortable: false },
 ];
@@ -448,12 +463,81 @@ function renderPools() {
       <td><span class="badge ${p.dex}">${p.dex}</span></td>
       <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)}, but most of it cannot be sold — the tokens have no depth behind them"></i>` : ''}</td>
       <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
+      <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num">${(p.feeBps / 100).toFixed(2)}%</td>
       <td class="r num dim">${qty(p.reserveA)} ${esc(p.symA)} <span style="opacity:.55">/</span> ${qty(p.reserveB)} ${esc(p.symB)}</td>
     </tr>`).join('');
   $('#poolTable tbody').innerHTML = body || '<tr><td colspan="6" class="empty">No pools match.</td></tr>';
   fillMarks($('#poolTable tbody'));
   $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
+}
+
+// --------------------------------------------------------------- TOKENS -----
+const tokFilters = { q: '', solidOnly: true, sort: 'tvl', dir: -1 };
+let tokRows = null;
+
+function wireTokens() {
+  $('#tokSearch').oninput = e => { tokFilters.q = e.target.value.trim().toLowerCase(); renderTokens(); };
+  $('#fTokSolid').onclick = e => {
+    tokFilters.solidOnly = !tokFilters.solidOnly;
+    e.target.setAttribute('aria-pressed', String(tokFilters.solidOnly));
+    renderTokens();
+  };
+}
+
+function renderTokens() {
+  if (!tokRows || tokRows._at !== state.loadedAt) { tokRows = tokenTable(); tokRows._at = state.loadedAt; }
+  let rows = tokRows.filter(t => {
+    if (tokFilters.solidOnly && !(t.exit >= 100)) return false;
+    if (tokFilters.q && !`${t.symbol} ${t.contract}`.toLowerCase().includes(tokFilters.q)) return false;
+    return true;
+  });
+  rows.sort((a, b) => ((a[tokFilters.sort] ?? -Infinity) - (b[tokFilters.sort] ?? -Infinity)) * tokFilters.dir);
+
+  const tvl = rows.reduce((s, t) => s + t.tvl, 0);
+  const vol = rows.reduce((s, t) => s + t.vol24, 0);
+  $('#tokStats').innerHTML = `
+    <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
+    <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
+    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
+    <div class="stat"><span class="v">${rows.filter(t => t.solid).length}</span><span class="k">with real depth</span></div>`;
+  $('#tokCount').textContent = `${rows.length.toLocaleString()} shown`;
+
+  const cols = [
+    { k: 'rank', label: '' },
+    { k: 'symbol', label: 'Token' },
+    { k: 'price', label: 'Price', r: true, s: true },
+    { k: 'tvl', label: 'Pooled', r: true, s: true },
+    { k: 'vol24', label: 'Volume 24h', r: true, s: true },
+    { k: 'exit', label: 'Sellable', r: true, s: true },
+    { k: 'pools', label: 'Pools', r: true, s: true },
+  ];
+  const thead = $('#tokTable thead');
+  thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${tokFilters.sort === c.k ? ` <span class="dir">${tokFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
+  thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (tokFilters.sort === k) tokFilters.dir *= -1; else { tokFilters.sort = k; tokFilters.dir = -1; }
+    renderTokens();
+  });
+
+  $('#tokTable tbody').innerHTML = rows.slice(0, 300).map((t, i) => `
+    <tr class="clickable" data-tok="${esc(t.symbol)}">
+      <td class="rank">${i + 1}</td>
+      <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>
+        <span class="sub">${esc(t.contract)}</span>${trustChip(t.id)}</td>
+      <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
+      <td class="r num">${usd(t.tvl)}</td>
+      <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
+      <td class="r num">${usd(t.exit)}</td>
+      <td class="r num dim">${t.pools}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
+  fillMarks($('#tokTable tbody'));
+  // Clicking a token filters the pools list to it — the natural next question.
+  $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => {
+    poolFilters.q = tr.dataset.tok.toLowerCase();
+    $('#poolSearch').value = tr.dataset.tok;
+    renderPools(); show('pools');
+  });
 }
 
 // ---------------------------------------------------------------- FARMS -----

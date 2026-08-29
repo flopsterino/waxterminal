@@ -68,6 +68,24 @@ for (const f of state.farms) {
   f.aprStatus = f.apr != null ? 'ok' : f.aprStatus;
 }
 
+// Alcor publishes 24h/week/month volume per pool. Deriving that here from the
+// swap feed would mean paging tens of thousands of actions and extrapolating
+// from a noisy window — measured against these figures, a 15-minute sample
+// missed by up to 4x. Their number is the better one, so use it and say so.
+const volByPool = new Map();
+try {
+  const r = await fetch('https://wax.alcor.exchange/api/v2/swap/pools', { signal: AbortSignal.timeout(45000) });
+  if (r.ok) {
+    for (const p of await r.json()) {
+      volByPool.set(String(p.id), {
+        d1: p.volumeUSD24 ?? null, d7: p.volumeUSDWeek ?? null, d30: p.volumeUSDMonth ?? null,
+        ch24: p.change24 ?? null,
+      });
+    }
+    console.log(`volume: ${volByPool.size} Alcor pools`);
+  }
+} catch (e) { console.log('volume fetch failed, continuing without:', e.message); }
+
 // --- the fast-start snapshot ------------------------------------------------
 // Everything worth showing on first paint: pools with real TVL, plus every pool
 // that has a farm even if thin, because the farms page needs them.
@@ -82,6 +100,9 @@ const pools = state.pools
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
+    v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : null,
+    v7: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d7 ?? null) : null,
+    ch: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.ch24 ?? null) : null,
     vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6),
   }));
 
