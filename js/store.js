@@ -642,13 +642,21 @@ export function farmGroups({ liveOnly = true } = {}) {
   }
 
   for (const g of groups.values()) {
-    // Taco stakes a plain LP token, so the staked value is already known and the
-    // several farms on one pair share that same staked pool.
+    // Every incentive on one pool shares the same staked capital, so the group's
+    // stake is the largest any of them reports — not their sum.
+    //
+    // This used to run for Taco only. Alcor's stake needs two chain reads per
+    // pool, so the daily job computes it and writes it onto each farm row; but
+    // this function ignored those and left every Alcor group at null, which
+    // discarded all 362 of them and left the farms page showing no Alcor APR at
+    // all. The venue makes no difference here: if the number is on the rows,
+    // use it.
+    const known = g.farms.map(f => f.stakedUsd).filter(v => v != null && v > 0);
+    if (known.length) g.stakedUsd = Math.max(...known);
+    const knownReal = g.farms.map(f => f.stakedReal).filter(v => v != null && v > 0);
+    if (knownReal.length) g.stakedReal = Math.max(...knownReal);
+
     if (g.dex === 'taco') {
-      const known = g.farms.map(f => f.stakedUsd).filter(v => v != null && v > 0);
-      g.stakedUsd = known.length ? Math.max(...known) : null;
-      const knownReal = g.farms.map(f => f.stakedReal).filter(v => v != null && v > 0);
-      g.stakedReal = knownReal.length ? Math.max(...knownReal) : null;
       g.apr = (g.stakedUsd >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) ? (g.rewardUsdDay * 365 / g.stakedUsd) * 100 : null;
       g.aprStatus = g.apr != null ? 'ok'
         : !(g.stakedUsd > 0) ? 'no_stake'

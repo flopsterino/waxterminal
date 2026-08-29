@@ -16,6 +16,8 @@
 
 import { writeFile, appendFile, readFile, mkdir } from 'node:fs/promises';
 import { loadCore, state, farmGroups, groupStakedUsd } from '../js/store.js';
+import { hyperion } from '../js/chain.js';
+import { parseAsset } from '../js/math.js';
 
 const OUT = new URL('../data/', import.meta.url);
 const TOP_POOLS_IN_HISTORY = 150;
@@ -57,7 +59,11 @@ console.log(`valued ${valued} Alcor groups`);
 
 // Push the computed values back onto the underlying farm rows so the snapshot
 // carries them.
-const groupByPool = new Map(alcorGroups.map(g => [`${g.poolDex}:${g.poolId}`, g]));
+// The group carries `key` (already dex:poolId) and `dex` — it has no `poolDex`,
+// so building the index on that produced keys of "undefined:603" while the farm
+// rows looked up "alcor:603". Every one of the 362 valuations was computed and
+// then silently dropped on the floor.
+const groupByPool = new Map(alcorGroups.map(g => [g.key, g]));
 for (const f of state.farms) {
   const g = groupByPool.get(`${f.poolDex}:${f.poolId}`);
   if (!g || g.stakedUsd == null) continue;
@@ -86,6 +92,49 @@ try {
   }
 } catch (e) { console.log('volume fetch failed, continuing without:', e.message); }
 
+// Alcor is the only venue that publishes volume, so the others are counted from
+// their own swap logs: Taco's exchangelog, Defibox's and A-DEX's swaplog. Each
+// carries the amounts and the pool, so one pass over 24 hours gives volume per
+// pool priced with the same numbers as everything else on the page.
+async function volumeFromLogs(account, action, poolField, { pages = 30 } = {}) {
+  const after = new Date(Date.now() - 24 * 3600e3).toISOString();
+  const out = new Map();
+  let counted = 0;
+  for (let page = 0; page < pages; page++) {
+    let d;
+    try {
+      const q = new URLSearchParams({ 'act.account': account, 'act.name': action, after, limit: '1000', skip: String(page * 1000), sort: 'desc' });
+      d = await hyperion(`/v2/history/get_actions?${q}`);
+    } catch { break; }
+    const got = d.actions || [];
+    for (const a of got) {
+      const x = a.act.data;
+      const id = String(x[poolField]);
+      // A-DEX wraps its amounts in {quantity, contract}; the others are plain.
+      const qin = x.quantity_in?.quantity ?? x.quantity_in;
+      if (!qin) continue;
+      const asset = parseAsset(qin);
+      const pool = state.pools.find(p => p.dex === (account === 'swap.taco' ? 'taco' : account === 'swap.box' ? 'defibox' : 'adex') && p.id === id);
+      if (!pool) continue;
+      const px = pool.symA === asset.symbol ? pool.priceUsdA : pool.symB === asset.symbol ? pool.priceUsdB : null;
+      if (px == null) continue;
+      out.set(id, (out.get(id) || 0) + asset.amount * px);
+      counted++;
+    }
+    if (got.length < 1000) break;
+  }
+  console.log(`  ${account}: ${counted} swaps over ${out.size} pools`);
+  return out;
+}
+
+console.log('counting volume on the venues that do not publish it...');
+const [tacoVol, boxVol, adexVol] = await Promise.all([
+  volumeFromLogs('swap.taco', 'exchangelog', 'id').catch(() => new Map()),
+  volumeFromLogs('swap.box', 'swaplog', 'pair_id').catch(() => new Map()),
+  volumeFromLogs('swap.adex', 'swaplog', 'pool_id', { pages: 2 }).catch(() => new Map()),
+]);
+const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
+
 // --- the fast-start snapshot ------------------------------------------------
 // Everything worth showing on first paint: pools with real TVL, plus every pool
 // that has a farm even if thin, because the farms page needs them.
@@ -100,7 +149,7 @@ const pools = state.pools
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
-    v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : null,
+    v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null),
     v7: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d7 ?? null) : null,
     ch: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.ch24 ?? null) : null,
     vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6),
