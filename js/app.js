@@ -537,7 +537,7 @@ function renderTokens() {
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
-    <div class="stat"><span class="v">${usd(rows.reduce((s, t) => s + (t.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">before moving price 1%</span></div>`;
+    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">before moving price 1%</span></div>`;
   $('#tokCount').textContent = `${rows.length.toLocaleString()} shown`;
 
   const cols = [
@@ -565,7 +565,7 @@ function renderTokens() {
       <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
       <td class="r num">${usd(t.tvl)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
-      <td class="r num" title="How much you could trade in one go before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
+      <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${t.pools}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
