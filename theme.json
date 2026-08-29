@@ -1,0 +1,29 @@
+{
+  "identity": {
+    "name": "WAX Terminal",
+    "tagline": "Pools, farms and liquidity across WAX",
+    "wordmark": null,
+    "favicon": "◩"
+  },
+  "links": [
+    { "label": "Alcor", "href": "https://wax.alcor.exchange" },
+    { "label": "TacoSwap", "href": "https://swap.tacocrypto.io" }
+  ],
+  "content": {
+    "defaultView": "pools",
+    "featuredPools": ["alcor:314", "alcor:0", "taco:TACWAX"],
+    "minTvlUsd": 100
+  },
+  "commercial": {
+    "feeAccount": "",
+    "compoundFeeBps": 75,
+    "premiumEnabled": false
+  },
+  "features": {
+    "pools": true,
+    "farms": true,
+    "wallet": true,
+    "activity": true,
+    "compound": true
+  }
+}

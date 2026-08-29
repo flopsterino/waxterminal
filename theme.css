@@ -1,0 +1,67 @@
+/* ===========================================================================
+   THEME — the only file a partner project needs to edit to rebrand.
+   Every colour, radius and font in the terminal resolves through these tokens.
+   Nothing below this file hard-codes a colour.
+   Default look: amber-on-slate, after the phosphor trading terminals.
+   =========================================================================== */
+
+:root {
+  /* --- type ------------------------------------------------------------- */
+  --font-ui:   'Chivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-data: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* --- shape ------------------------------------------------------------ */
+  --r-sm: 4px;
+  --r:    7px;
+  --r-lg: 11px;
+
+  /* --- dark palette (default) ------------------------------------------- */
+  --ground:     #0F1418;
+  --surface:    #161C21;
+  --surface-2:  #1D252B;
+  --surface-3:  #263138;
+  --line:       #27333A;
+  --line-2:     #38474F;
+  --ink:        #E9EEF1;
+  --ink-2:      #A7B5BE;
+  --muted:      #6D7E89;
+  --accent:     #E8A33D;
+  --accent-ink: #F2BC6A;
+  --accent-soft:#3A2B14;
+  --on-accent:  #171104;
+  --good:       #46C48D;
+  --good-soft:  #143129;
+  --bad:        #E3644F;
+  --bad-soft:   #361915;
+  --info:       #5AA9E6;
+  --shadow:     0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.9);
+
+  /* --- chart series: distinguishable in both themes --------------------- */
+  --c1: #E8A33D; --c2: #5AA9E6; --c3: #46C48D; --c4: #C98BDB;
+  --c5: #E3644F; --c6: #79C7C0; --c7: #B0A16B; --c8: #8C9BA6;
+}
+
+:root[data-theme="light"] {
+  --ground:     #F6F7F8;
+  --surface:    #FFFFFF;
+  --surface-2:  #F0F2F4;
+  --surface-3:  #E4E8EB;
+  --line:       #DFE4E8;
+  --line-2:     #C3CCD3;
+  --ink:        #121A20;
+  --ink-2:      #3E4C56;
+  --muted:      #6B7B86;
+  --accent:     #B87514;
+  --accent-ink: #8F5A0D;
+  --accent-soft:#FBEFD9;
+  --on-accent:  #FFFFFF;
+  --good:       #157D56;
+  --good-soft:  #DCF1E8;
+  --bad:        #B53723;
+  --bad-soft:   #FBE4E0;
+  --info:       #1F6FB2;
+  --shadow:     0 1px 2px rgba(18,26,32,.06), 0 10px 26px -18px rgba(18,26,32,.35);
+
+  --c1: #B87514; --c2: #1F6FB2; --c3: #157D56; --c4: #8348A0;
+  --c5: #B53723; --c6: #2C7F79; --c7: #7A6C2E; --c8: #5C6B76;
+}

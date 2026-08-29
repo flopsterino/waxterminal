@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAX Terminal — self test</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top"><div class="brand"><span class="mark">✓</span><span>Self test</span></div>
+  <div class="spacer"></div><a href="index.html" class="chip">Back to terminal</a></header>
+<div class="wrap" style="max-width:900px">
+  <h2 class="vt">Maths, checked against the live chain</h2>
+  <p class="vs">Every TVL, position value and compound ratio in this terminal rests on the functions below. These assertions run against pool state read from WAX right now — not fixtures — so a contract change or a bad refactor shows up here rather than as a quietly wrong number on the farms page.</p>
+  <div id="out"><div class="loading"><span class="spinner"></span><span>Reading chain…</span></div></div>
+</div>
+<script type="module">
+import { getRows } from './js/chain.js';
+import { priceFromX64, humanPrice, sqrtPriceFromX64, rawPriceFromX64, tickAtPrice,
+         amountsForLiquidity, depositRatio, parseAsset } from './js/math.js';
+
+const results = [];
+const check = (name, pass, detail) => results.push({ name, pass, detail });
+
+(async () => {
+try {
+  const d = await getRows('swap.alcor', 'swap.alcor', 'pools', { limit: 1 });
+  const p = d.rows[0];
+  const a = parseAsset(p.tokenA.quantity), b = parseAsset(p.tokenB.quantity);
+  const fromX64  = priceFromX64(p.currSlot.sqrtPriceX64, a.decimals, b.decimals);
+  const fromTick = humanPrice(Math.pow(1.0001, p.currSlot.tick), a.decimals, b.decimals);
+  const reserveRatio = b.amount / a.amount;
+  const s = sqrtPriceFromX64(p.currSlot.sqrtPriceX64);
+
+  check('Price from sqrtPriceX64 matches price from the stored tick',
+    Math.abs(fromX64 / fromTick - 1) < 1e-4,
+    `${fromX64.toFixed(8)} vs ${fromTick.toFixed(8)} ${b.symbol} per ${a.symbol}`);
+
+  check('Spot price sits in the same range as the reserve ratio',
+    Math.abs(fromX64 / reserveRatio - 1) < 0.5,
+    `spot ${fromX64.toFixed(6)}, reserves imply ${reserveRatio.toFixed(6)} — concentrated liquidity makes these differ, but not by orders of magnitude`);
+
+  const full = depositRatio(s, -443580, 443580);
+  check('A full-range deposit ratio sums to exactly 1',
+    Math.abs(full.shareA + full.shareB - 1) < 1e-12,
+    `${(full.shareA * 100).toFixed(4)}% + ${(full.shareB * 100).toFixed(4)}%`);
+
+  check('A full-range position is in range', full.inRange === true, `side: ${full.side}`);
+
+  const tick = tickAtPrice(rawPriceFromX64(p.currSlot.sqrtPriceX64));
+  const above = depositRatio(s, tick + 1000, 443580);
+  check('A band entirely above the price wants only token A',
+    above.shareA === 1 && above.shareB === 0, `${a.symbol} 100%, in range: ${above.inRange}`);
+
+  const below = depositRatio(s, -443580, tick - 1000);
+  check('A band entirely below the price wants only token B',
+    below.shareB === 1 && below.shareA === 0, `${b.symbol} 100%, in range: ${below.inRange}`);
+
+  const am = amountsForLiquidity(p.liquidity, s, -443580, 443580);
+  check('Liquidity converts to two finite, positive token amounts',
+    am.amountA > 0 && am.amountB > 0 && isFinite(am.amountA) && isFinite(am.amountB),
+    `${(am.amountA / 10 ** a.decimals).toFixed(4)} ${a.symbol} / ${(am.amountB / 10 ** b.decimals).toFixed(4)} ${b.symbol}`);
+
+  // A narrow band must want a different split than a symmetric one — this is the
+  // whole reason a generic yield dashboard gets compounding wrong.
+  const narrow = depositRatio(s, tick - 5000, tick + 500);
+  check('A narrow band asks for a different ratio than a full range',
+    Math.abs(narrow.shareA - full.shareA) > 0.01,
+    `narrow wants ${(narrow.shareA * 100).toFixed(1)}% ${a.symbol}, full range wants ${(full.shareA * 100).toFixed(1)}%`);
+
+  // Fee tiers are millionths, not basis points.
+  check('Fee tier decodes to a sane percentage',
+    p.fee / 10000 <= 1 && p.fee / 10000 > 0,
+    `raw ${p.fee} → ${(p.fee / 10000).toFixed(2)}%`);
+
+  const anchor = await getRows('swap.alcor', 'swap.alcor', 'pools', { limit: 1, lower: 314 });
+  const ap = anchor.rows[0];
+  const aa = parseAsset(ap.tokenA.quantity), ab = parseAsset(ap.tokenB.quantity);
+  const waxUsd = priceFromX64(ap.currSlot.sqrtPriceX64, aa.decimals, ab.decimals);
+  check('WAX prices against a stablecoin within a plausible band',
+    waxUsd > 0.0001 && waxUsd < 1,
+    `pool #314 ${aa.symbol}/${ab.symbol} → $${waxUsd.toFixed(6)} per WAX`);
+} catch (e) {
+  check('Chain reachable', false, e.message);
+}
+
+const passed = results.filter(r => r.pass).length;
+document.getElementById('out').innerHTML = `
+  <div class="stats">
+    <div class="stat"><span class="v ${passed === results.length ? 'pos' : 'neg'}">${passed}/${results.length}</span><span class="k">assertions passing</span></div>
+    <div class="stat"><span class="v">${new Date().toISOString().slice(11, 19)}</span><span class="k">read at (UTC)</span></div>
+  </div>
+  <div class="tablewrap" style="max-height:none"><table><tbody>${results.map(r => `
+    <tr><td style="white-space:normal"><span class="badge ${r.pass ? 'good' : 'bad'}">${r.pass ? 'pass' : 'fail'}</span></td>
+      <td style="white-space:normal"><b>${r.name}</b><br><span class="sub mono">${r.detail}</span></td></tr>`).join('')}</tbody></table></div>`;
+})();
+</script>
+</body>
+</html>

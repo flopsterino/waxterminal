@@ -1,0 +1,35 @@
+name: Chain snapshot
+
+# Daily. APR moves slowly enough that a daily point is all the history anyone
+# reads it for, and it keeps the history file at roughly 6 MB a year instead of
+# 140 MB. Freshness is not this job's problem: the terminal reads live state
+# from chain on every visit. This exists for fast first paint and for memory.
+on:
+  schedule:
+    - cron: '7 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Read chain and write snapshot
+        run: node --max-old-space-size=2048 tools/snapshot.mjs
+      - name: Commit if anything changed
+        run: |
+          git config user.name  "wax-terminal-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
