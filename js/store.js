@@ -306,14 +306,20 @@ async function loadSnapshot() {
   });
   state.pools = pools;
   state.tokens = tokens;
-  state.prices = new Map(d.prices.map(([id, usd, via, depth]) => [id, { usd, via, depth }]));
+  state.prices = new Map(d.prices.map(([id, usd, via, depth]) => [id, { usd, via, depth: depth ?? Infinity }]));
   state.waxUsd = d.waxUsd;
   state.loadedAt = d.at;
   const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
-  // The snapshot cannot carry the whole depth map, but the two counts the UI
-  // reports are cheap and would otherwise read as a confident zero.
-  state.solidTokens = new Set(Array.from({ length: d.counts?.solidTokens ?? 0 }, (_, i) => `slot${i}`));
-  state.depth = new Map(Array.from({ length: d.counts?.pricedTokens ?? 0 }, (_, i) => [`slot${i}`, { ratio: 0 }]));
+  // Depth comes from the snapshot per token. It used to be faked as N entries of
+  // a placeholder so the counters read right, which meant every token looked
+  // unsellable and the Tokens view filtered itself down to nothing.
+  state.depth = new Map();
+  state.solidTokens = new Set();
+  for (const row of d.prices) {
+    const [id, , , , exit = 0, ratio = 0, solid = 0, nominal = 0] = row;
+    state.depth.set(id, { exit, ratio, solid: !!solid, nominal, realisable: nominal * ratio });
+    if (solid) state.solidTokens.add(id);
+  }
   state.farms = (d.farms || []).map(f => ({
     dex: f.d, id: f.i, poolDex: f.pd, poolId: f.pi, pool: byId.get(`${f.pd}:${f.pi}`),
     rewardToken: f.rt, rewardSymbol: f.rs, rewardPerDay: f.rp, rewardUsdDay: f.ru,

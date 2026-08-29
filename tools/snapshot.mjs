@@ -155,9 +155,22 @@ const pools = state.pools
     vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6),
   }));
 
+// Carry each token's depth verdict, not just its price. The browser cannot
+// recompute it from the snapshot — the calculation needs every pool, including
+// the thousands left out — and without it the Tokens view had nothing to filter
+// on and rendered empty.
 const prices = [...state.prices.entries()]
   .filter(([, v]) => v.usd > 0)
-  .map(([id, v]) => [id, round(v.usd, 12), v.via, round(v.depth, 2)]);
+  .map(([id, v]) => {
+    const d = state.depth.get(id);
+    return [
+      id, round(v.usd, 12), v.via, isFinite(v.depth) ? round(v.depth, 2) : null,
+      d ? round(d.exit, 2) : 0,
+      d ? round(d.ratio, 6) : 0,
+      d?.solid ? 1 : 0,
+      d ? round(d.nominal, 2) : 0,
+    ];
+  });
 
 // Farms ride along: it is the headline page, and a fast start that shows an
 // empty farms table is not a fast start.
