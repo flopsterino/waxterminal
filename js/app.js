@@ -195,6 +195,9 @@ function renderOverview() {
     // With no deposit there is nothing to dilute and no pool too small to take
     // it, so the constraint only applies once an amount is entered.
     g.tooSmall = farmFilters.size > 0 && g.share > 0.33;
+    // Emissions outrunning the pool: the rate is real and the token cannot
+    // survive it. Worth seeing, not worth ranking first.
+    g.runaway = g.pool?.tvlReal > 0 && g.rewardRealDay > g.pool.tvlReal * 0.5;
     g.aprAt = (g.rewardRealDay > 0 && g.stakedReal != null) ? (g.rewardRealDay * 365 / (g.stakedReal + SIZE)) * 100 : null;
   }
   const bestApr = groups.filter(g => g.aprAt != null && !g.tooSmall).sort((a, b) => b.aprAt - a.aprAt);
@@ -228,7 +231,7 @@ function renderOverview() {
     </div>
     <div class="section"><h3>Farms</h3>
       <div class="grid g2">
-        <div class="card"><h3>Biggest daily payouts <span class="dim">— USD per day</span></h3><div id="ovRew"></div></div>
+        <div class="card"><h3>Biggest daily payouts <span class="dim">— sustainable ones only</span></h3><div id="ovRew"></div></div>
         <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} enterable farms at $500</span></h3><div id="ovApr"></div></div>
       </div>
     </div>
@@ -273,7 +276,13 @@ function renderOverview() {
   for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + (p.tvlReal || 0));
   $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
 
-  const payers = groups.filter(g => g.rewardRealDay > 0).sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 8);
+  // A farm emitting more in a day than its pool is worth is not a payout, it is
+  // a token about to be printed into the ground. BUZZ/SHIL pays $25.28 a day
+  // into a pool holding $0.53 — 48 times its own value, every day — and topping
+  // this chart with it told readers the opposite of the truth.
+  const sane = g => g.pool?.tvlReal > 0 && g.rewardRealDay < g.pool.tvlReal * 0.5;
+  const payers = groups.filter(g => g.rewardRealDay > 0 && sane(g)).sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 8);
+  const runaway = groups.filter(g => g.rewardRealDay > 0 && !sane(g)).length;
   $('#ovRew').appendChild(payers.length
     ? bars(payers.map(g => ({
         label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
@@ -281,6 +290,12 @@ function renderOverview() {
         note: `${usd(g.rewardUsdDay)} at face value · ${g.tokenCount} token${g.tokenCount === 1 ? '' : 's'}`,
       })), { fmt: usd, color: 'var(--c2)' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm pays a reward with real liquidity behind it.' }));
+  if (runaway) {
+    const n = document.createElement('p');
+    n.className = 'sub'; n.style.marginTop = '10px';
+    n.textContent = `${runaway} farm${runaway === 1 ? '' : 's'} left out: each emits more in a day than its pool is worth, which is an emission schedule outrunning its market rather than a return.`;
+    $('#ovRew').appendChild(n);
+  }
 
   $('#ovApr').appendChild(withApr.length
     ? histogram(withApr.map(g => g.aprAt), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
@@ -680,6 +695,7 @@ function renderFarms() {
   // opposite of useful — they sink to the bottom whichever way you sort.
   rows.sort((a, b) => {
     if (a.tooSmall !== b.tooSmall) return a.tooSmall ? 1 : -1;
+    if (a.runaway !== b.runaway) return a.runaway ? 1 : -1;
     const x = a[farmFilters.sort], y = b[farmFilters.sort];
     const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
     if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0);
@@ -728,7 +744,8 @@ function renderFarms() {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
          <span class="pairbig">${pairName(g.pool)}</span>
-         <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>`
+         <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>
+         ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}. The rate is real; the token cannot survive it.">burning out</span>` : ''}`
       : `<span class="dim">${esc(g.poolId)}</span>`;
     // What it pays and how much of it: several incentives can pay the same token,
     // so sum per token rather than listing it twice.
