@@ -368,3 +368,7 @@ td.rank { color: var(--muted); font-family: var(--font-data); font-size: 11px; w
 .rew.more { padding: 2px 8px; color: var(--muted); }
 .rew b { font-weight: 600; color: var(--ink); }
 #farmTable td:nth-child(4) { white-space: normal; max-width: 320px; line-height: 1.9; }
+.sizesel { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.sizesel .chip { padding: 4px 9px; font-size: 11.5px; }
+tbody tr.faded td { opacity: .5; }
+tbody tr.faded:hover td { opacity: .85; }

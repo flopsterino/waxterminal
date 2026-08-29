@@ -196,6 +196,9 @@ function applyDepth(pools, prices) {
   state.depth = tokens; state.solidTokens = solid;
   for (const p of pools) {
     p.tvlReal = poolRealisable(p, tokens);
+    // Turnover says whether a pool is working or just parked: $1k of volume on
+    // $1k of liquidity is a different animal from $1k on $200k.
+    p.turnover = (p.vol24 > 0 && p.tvlReal > 0) ? p.vol24 / p.tvlReal : null;
     const da = tokens.get(p.tokenA), db = tokens.get(p.tokenB);
     p.exitRatio = Math.min(da ? da.ratio : 0, db ? db.ratio : 0);
     p.solidPair = !!(da?.solid && db?.solid);
@@ -297,6 +300,7 @@ async function loadSnapshot() {
       tvlPartial: (p.pa == null) !== (p.pb == null), active: true,
       routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
       vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null,
+      turnover: (p.v1 > 0 && p.vr > 0) ? p.v1 / p.vr : null,
       lpSupply: p.d === 'taco' ? p.l : undefined,
     };
   });

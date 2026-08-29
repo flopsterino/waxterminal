@@ -80,7 +80,7 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs">Every live farm on every venue, with what it pays each day. Sort by APR, or filter to the ones paying something you can actually sell.</p>
+    <p class="vs">Ranked by what a deposit of your size would actually earn, because your money joins the pot and dilutes the rate. A 300% APR on $35 of staked capital is 19% the moment you put $500 in.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
@@ -88,6 +88,12 @@
       <button class="chip" id="fFarmAlcor" aria-pressed="true">Alcor</button>
       <button class="chip" id="fFarmTaco"  aria-pressed="true">TacoSwap</button>
       <button class="chip" id="fReal"      aria-pressed="false">Earnable only</button>
+      <span class="sizesel">If I deposit
+        <button class="chip" data-size="100"   aria-pressed="false">$100</button>
+        <button class="chip" data-size="500"   aria-pressed="true">$500</button>
+        <button class="chip" data-size="2000"  aria-pressed="false">$2k</button>
+        <button class="chip" data-size="10000" aria-pressed="false">$10k</button>
+      </span>
       <button class="chip" id="fMoreFarm" aria-pressed="false">More filters</button>
       <button class="btn ghost" id="calcApr">Compute APR for visible</button>
       <span class="dim" id="farmCount" style="font-size:12px"></span>

@@ -422,13 +422,15 @@ function filteredPools() {
 }
 
 const POOL_COLS = [
-  { k: 'pair', label: 'Pair', sortable: false },
-  { k: 'dex', label: 'DEX', sortable: false },
-  { k: 'tvlReal', label: 'Real TVL', r: true, sortable: true },
-  { k: 'price', label: 'Price', r: true, sortable: false },
+  { k: 'rank', label: '', sortable: false },
+  { k: 'pair', label: 'Pool', sortable: false },
+  { k: 'tvlReal', label: 'TVL', r: true, sortable: true },
   { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
+  { k: 'vol7d', label: '7d', r: true, sortable: true },
+  { k: 'turnover', label: 'Turnover', r: true, sortable: true },
+  { k: 'price', label: 'Price', r: true, sortable: false },
+  { k: 'change24', label: '24h', r: true, sortable: true },
   { k: 'feeBps', label: 'Fee', r: true, sortable: true },
-  { k: 'reserveA', label: 'Reserves', r: true, sortable: false },
 ];
 
 function renderPools() {
@@ -468,17 +470,24 @@ function renderPools() {
     renderPools();
   });
 
-  const body = rows.slice(0, 400).map(p => `
+  const body = rows.slice(0, 400).map((p, i) => {
+    const ch = p.change24;
+    return `
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
-      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pair">${pairName(p)}</span> <span class="sub">#${esc(p.id)}</span></td>
-      <td><span class="badge ${p.dex}">${p.dex}</span></td>
-      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)}, but most of it cannot be sold — the tokens have no depth behind them"></i>` : ''}</td>
-      <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
+      <td class="rank">${i + 1}</td>
+      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
+        <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
+        <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
+      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)} at face value, but most of it has no buyer"></i>` : ''}</td>
       <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
-      <td class="r num">${(p.feeBps / 100).toFixed(2)}%</td>
-      <td class="r num dim">${qty(p.reserveA)} ${esc(p.symA)} <span style="opacity:.55">/</span> ${qty(p.reserveB)} ${esc(p.symB)}</td>
-    </tr>`).join('');
-  $('#poolTable tbody').innerHTML = body || '<tr><td colspan="6" class="empty">No pools match.</td></tr>';
+      <td class="r num dim">${p.vol7d > 0 ? usd(p.vol7d) : '—'}</td>
+      <td class="r num" title="24h volume against pooled value — how hard the liquidity is working">${p.turnover > 0 ? p.turnover.toFixed(2) + '×' : '<span class="dim">—</span>'}</td>
+      <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
+      <td class="r num ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : 'dim'}">${ch == null ? '—' : (ch > 0 ? '+' : '') + ch.toFixed(1) + '%'}</td>
+      <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
+    </tr>`;
+  }).join('');
+  $('#poolTable tbody').innerHTML = body || '<tr><td colspan="9" class="empty">No pools match.</td></tr>';
   fillMarks($('#poolTable tbody'));
   $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
@@ -562,14 +571,43 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprReal', dir: -1,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprAt', dir: -1, size: 500,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
+
+// What a farm pays YOU, not what it pays the person already in it. Your deposit
+// joins the pot, so your share is size/(staked+size) and your return is
+// rewards*365/(staked+size). A 296% APR on $35 of staked capital becomes 18.8%
+// the moment you put $500 in; a 239% on $850 stays at 151%. Ranking on the
+// headline number sorts by how empty a farm is, which is why the top of the
+// list was full of pools nobody would touch.
+function aprAtSize(g, size) {
+  if (!(g.rewardRealDay > 0)) return null;
+  const staked = g.stakedReal;
+  if (staked == null) return null;
+  return (g.rewardRealDay * 365 / (staked + size)) * 100;
+}
+
+// The other half of the same problem. Diluting against staked capital alone
+// still ranked a farm with $1 staked at the top, because arithmetically your
+// $500 would collect nearly all the rewards. But you cannot put $500 into a pool
+// that holds $1: you would be 99.8% of it, and every cent of price impact on the
+// way in and out would be your own. The pool is the constraint, not the farm.
+function poolShare(g, size) {
+  const tvl = g.pool?.tvlReal;
+  if (!(tvl > 0)) return 1;
+  return size / (tvl + size);
+}
 
 function wireFarms() {
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
+  document.querySelectorAll('[data-size]').forEach(b => b.onclick = () => {
+    farmFilters.size = Number(b.dataset.size);
+    document.querySelectorAll('[data-size]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    renderFarms();
+  });
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
@@ -613,10 +651,18 @@ function filteredGroups() {
 function renderFarms() {
   if (!groups.length || groups._at !== state.loadedAt) { groups = farmGroups(); groups._at = state.loadedAt; }
   const rows = filteredGroups();
+  for (const g of rows) {
+    g.share = poolShare(g, farmFilters.size);
+    g.aprAt = aprAtSize(g, farmFilters.size);
+    // Past a third of the pool you are not joining a market, you are becoming
+    // one. Those rank below everything you could actually enter.
+    g.tooSmall = g.share > 0.33;
+  }
   // A missing value is not a small one. Sorting nulls as -Infinity put every
   // farm we cannot value at the top of a descending APR sort, which is the
   // opposite of useful — they sink to the bottom whichever way you sort.
   rows.sort((a, b) => {
+    if (a.tooSmall !== b.tooSmall) return a.tooSmall ? 1 : -1;
     const x = a[farmFilters.sort], y = b[farmFilters.sort];
     const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
     if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0);
@@ -635,14 +681,17 @@ function renderFarms() {
     <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">real rewards / day</span><span class="sub">${usd(payNom)} at face value</span></div>
     <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>
     <div class="stat"><span class="v">${groups.filter(g => g.dex === 'alcor').length.toLocaleString()}</span><span class="k">on Alcor</span></div>`;
-  $('#farmCount').textContent = `${rows.length.toLocaleString()} shown`;
+  const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
+  $('#farmCount').innerHTML = `${enterable.toLocaleString()} you could enter with ${usd(farmFilters.size)}`
+    + `<span class="dim"> &middot; ${rows.length.toLocaleString()} total</span>`;
 
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'aprReal', label: 'APR', r: true, s: true },
+    { k: 'aprAt', label: `APR on $${farmFilters.size}`, r: true, s: true },
+    { k: 'share', label: 'You\u2019d own', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
-    { k: 'stakedReal', label: 'Staked', r: true, s: true },
+    { k: 'stakedReal', label: 'Pool', r: true, s: true },
     { k: 'rewardRealDay', label: 'Value / day', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
   ];
@@ -674,20 +723,26 @@ function renderFarms() {
            <span data-pm="${esc(tok)}|${esc(r.symbol)}"></span>
            <b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
       + (list.length > 3 ? `<span class="rew more" title="${list.slice(3).map(([, r]) => qty(r.perDay) + ' ' + r.symbol).join(', ')}">+${list.length - 3}</span>` : '');
-    const aprCell = g.aprReal != null
-      ? `<span class="apr ${g.stakedReal >= 250 ? '' : 'small'}">${pct(g.aprReal)}</span>`
-      : `<span class="dim">—</span>`;
+    // Show what you would get, with the headline underneath only when the two
+    // differ enough to matter — that gap IS the size of the farm.
+    const aprCell = g.tooSmall
+      ? `<span class="dim" title="This pool holds ${usd(g.pool?.tvlReal || 0)}. A ${usd(farmFilters.size)} deposit would be ${(g.share * 100).toFixed(0)}% of it — you would be trading against yourself.">too small</span>`
+      : g.aprAt != null
+        ? `<span class="apr">${pct(g.aprAt)}</span>`
+          + (g.aprReal != null && g.aprReal > g.aprAt * 1.3 ? `<span class="nominal">${pct(g.aprReal)} at today's size</span>` : '')
+        : `<span class="dim">—</span>`;
     const ends = g.endsAt ? Math.round((g.endsAt - Date.now()) / 86400000) : null;
-    return `<tr class="clickable" data-pool="${g.dex}:${esc(g.poolId)}">
+    return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
+      <td class="r num ${g.tooSmall ? 'neg' : g.share > 0.15 ? '' : 'dim'}">${(g.share * 100).toFixed(g.share > 0.1 ? 0 : 1)}%</td>
       <td>${chips}</td>
-      <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
+      <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
       <td class="r num dim">${ends == null ? 'open' : ends > 0 ? ends + 'd' : 'ending'}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" class="empty">No farms match.</td></tr>';
+  }).join('') || '<tr><td colspan="8" class="empty">No farms match.</td></tr>';
   fillMarks($('#farmTable tbody'));
   $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
