@@ -66,13 +66,14 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs">Alcor incentives and TacoSwap LP farms side by side. Reward rates are exact. APR needs the staked value: TacoSwap gives it directly, Alcor requires reading the staked positions, so those are computed on demand for the rows you can see.</p>
+    <p class="vs"><b>Real APR</b> is rewards you could actually sell over capital that is actually there. A farm paying a token nobody can buy, or staked with liquidity that cannot be exited, is marked <span class="unreal">unreal</span> &mdash; that percentage is arithmetic about nothing. Alcor staked values are read on demand for the rows you can see.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
       <button class="chip" id="fLive"      aria-pressed="true">Live only</button>
       <button class="chip" id="fFarmAlcor" aria-pressed="true">Alcor</button>
       <button class="chip" id="fFarmTaco"  aria-pressed="true">TacoSwap</button>
+      <button class="chip" id="fReal"      aria-pressed="false">Real APR only</button>
       <button class="chip" id="fMoreFarm" aria-pressed="false">More filters</button>
       <button class="btn ghost" id="calcApr">Compute APR for visible</button>
       <span class="dim" id="farmCount" style="font-size:12px"></span>

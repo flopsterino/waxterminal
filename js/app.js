@@ -9,6 +9,7 @@ import * as wallet from './wallet.js';
 import { buildHarvest, buildRedeposit, buildRestake } from './tx.js';
 import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
 import { candleChart } from './tvchart.js';
+import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -111,6 +112,9 @@ async function boot() {
   wirePools(); wireFarms(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
   renderOverview();
   renderPools(); renderFarms();
+  // Marks and Alcor's scores are cosmetic-plus-corroboration, so the terminal
+  // paints without them and fills them in when they arrive.
+  loadTokenMeta().then(() => { renderPools(); renderFarms(); }).catch(() => {});
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
 
@@ -154,20 +158,33 @@ function routeFromHash() {
 function renderOverview() {
   const pools = state.pools.filter(p => p.tvl > 0);
   const groups = farmGroups();
-  const tvl = pools.reduce((s, p) => s + p.tvl, 0);
-  const thinTvl = pools.filter(p => p.thin).reduce((s, p) => s + p.tvl, 0);
-  const rewards = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
-  const withApr = groups.filter(g => g.apr != null && g.apr < 1000);
+  const nominal = pools.reduce((s, p) => s + p.tvl, 0);
+  const real = pools.reduce((s, p) => s + (p.tvlReal || 0), 0);
+  const rewardsReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
+  const rewardsNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
+  const bestApr = groups.filter(g => g.aprReal != null).sort((a, b) => b.aprReal - a.aprReal);
+  const withApr = groups.filter(g => g.aprReal != null && g.aprReal < 1000);
 
   $('#ovStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">total value locked</span><span class="sub">${usd(tvl - thinTvl)} on solid routes</span></div>
-    <div class="stat"><span class="v">${pools.length.toLocaleString()}</span><span class="k">pools with value</span><span class="sub">of ${state.pools.length.toLocaleString()} in existence</span></div>
+    <div class="stat"><span class="v">${usd(real)}</span><span class="k">real value locked</span><span class="sub">of ${usd(nominal)} nominal &middot; ${(real / nominal * 100).toFixed(0)}%</span></div>
+    <div class="stat"><span class="v">${state.solidTokens.size}</span><span class="k">tokens with real liquidity</span><span class="sub">of ${state.depth.size.toLocaleString()} priced</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
-    <div class="stat"><span class="v">${usd(rewards)}</span><span class="k">rewards paid daily</span><span class="sub">${usd(rewards * 365)} a year at this rate</span></div>
+    <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">routed to a bridged dollar</span></div>`;
 
   const box = $('#ovCharts');
   box.innerHTML = `
+    <div class="note" style="margin-bottom:20px">
+      <b>Every figure here is the realisable one.</b> A token's price can be correct while its value is not:
+      <code class="mono">parareserves</code> minted a million PARAUSD and put 99.9997% of them into pools it owns itself,
+      which reads as $998k of liquidity against a $1,186 exit. The terminal counts what could actually be sold,
+      and shows the face value beside it.
+    </div>
+    <div class="section"><h3>Best farm returns</h3>
+      <div class="card"><h3>Highest APR you could actually earn <span class="dim">— real rewards over real staked capital</span>
+        <span class="hero">${bestApr.length} of ${groups.length} qualify</span></h3>
+        <div id="ovBest"></div></div>
+    </div>
     <div class="section"><h3>Where the liquidity is</h3>
       <div class="grid g2">
         <div class="card"><h3>Top pools by TVL <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
@@ -190,27 +207,44 @@ function renderOverview() {
       <div class="card"><h3>Total value locked <span class="dim">— one point per daily snapshot</span></h3><div id="ovHist"></div></div>
     </div>`;
 
-  const top = [...pools].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
-  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + p.tvl, 0)) + ' in the top 8';
-  $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvl, note: p.thin ? 'thinly routed' : `${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
+  // Best APRs first: it is the question people open a farm page to answer.
+  const bestBox = $('#ovBest');
+  if (!bestApr.length) bestBox.innerHTML = '<div class="chart-empty">No farm currently has both real rewards and real staked capital.</div>';
+  else {
+    bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
+      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+      value: g.aprReal,
+      note: `${usd(g.stakedReal)} staked · ${usd(g.rewardRealDay)}/day · ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}`,
+    })), { fmt: v => v.toFixed(0) + '%', color: 'var(--c3)' }));
+    const n = document.createElement('p');
+    n.className = 'sub'; n.style.marginTop = '10px';
+    n.textContent = 'Hover a bar for the staked size — a 300% APR on $34 of capital is true and not an opportunity.';
+    bestBox.appendChild(n);
+  }
+
+  const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
+  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
+  $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0, note: `${usd(p.tvl)} at face value · ${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
 
   const byDex = new Map();
-  for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + p.tvl);
+  for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + (p.tvlReal || 0));
   $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
 
-  const payers = groups.filter(g => g.rewardUsdDay > 0).sort((a, b) => b.rewardUsdDay - a.rewardUsdDay).slice(0, 8);
-  $('#ovRew').appendChild(bars(payers.map(g => ({
-    label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
-    value: g.rewardUsdDay,
-    note: `${g.tokenCount} reward token${g.tokenCount === 1 ? '' : 's'}`,
-  })), { fmt: usd, color: 'var(--c3)' }));
+  const payers = groups.filter(g => g.rewardRealDay > 0).sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 8);
+  $('#ovRew').appendChild(payers.length
+    ? bars(payers.map(g => ({
+        label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+        value: g.rewardRealDay,
+        note: `${usd(g.rewardUsdDay)} at face value · ${g.tokenCount} token${g.tokenCount === 1 ? '' : 's'}`,
+      })), { fmt: usd, color: 'var(--c2)' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm pays a reward with real liquidity behind it.' }));
 
   $('#ovApr').appendChild(withApr.length
-    ? histogram(withApr.map(g => g.apr), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No priced APRs yet — hit "Compute APR" on the farms page.' }));
+    ? histogram(withApr.map(g => g.aprReal), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No real APRs yet — hit "Compute APR" on the farms page to value the Alcor ones.' }));
 
   const byFee = new Map();
-  for (const p of pools) { const k = `${(p.feeBps / 100).toFixed(2)}%`; byFee.set(k, (byFee.get(k) || 0) + p.tvl); }
+  for (const p of pools) { const k = `${(p.feeBps / 100).toFixed(2)}%`; byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0)); }
   $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
 
   if (SNAPSHOT_ONLY) {
@@ -230,10 +264,35 @@ function renderOverview() {
         A daily job appends one point per day, so this series fills in from here — it is the only record of what TVL and APR were last month.</div>`;
       return;
     }
-    el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvl })), {
+    el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvlReal ?? r.tvl })), {
       fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'TVL over time',
     }));
   }).catch(() => {});
+}
+
+// Marks are DOM, not markup: rows render as strings, then the marks are grafted
+// on. Doing it this way keeps the table build a single innerHTML write.
+function fillMarks(root) {
+  root.querySelectorAll('[data-pm]').forEach(el => {
+    if (el.dataset.done) return;
+    const [ta, sa, tb, sb] = el.dataset.pm.split('|');
+    el.appendChild(tb ? pairMark(ta, sa, tb, sb) : tokenMark(ta, sa));
+    el.dataset.done = '1';
+  });
+}
+
+// Alcor publishes its own score per token and zeroes `safe_usd_price` for ones
+// it will not stand behind. Shown next to our depth verdict: two independent
+// methods agreeing is worth more than either alone, and where they disagree the
+// reader should see that rather than be handed a silent winner.
+function trustChip(tokenId) {
+  const m = tokenMeta(tokenId);
+  if (!m) return '';
+  if (m.scam) return `<span class="trust bad" title="Alcor flags this token as a scam">scam</span>`;
+  if (m.safeUsd === 0) return `<span class="trust bad" title="Alcor refuses to publish a safe price for this token">no safe price</span>`;
+  if (m.trusted && m.score >= 80) return `<span class="trust ok" title="Alcor trust score ${m.score}/100">${m.score}</span>`;
+  if (m.score != null) return `<span class="trust" title="Alcor trust score ${m.score}/100">${m.score}</span>`;
+  return '';
 }
 
 // --------------------------------------------------------------- FILTERS ----
@@ -269,7 +328,7 @@ function wireFilterPanel(panel, store, onChange) {
 }
 
 // ---------------------------------------------------------------- POOLS -----
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvl', dir: -1,
+const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvlReal', dir: -1,
   tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
 function wirePools() {
@@ -298,9 +357,9 @@ function filteredPools() {
   const min = CFG?.content?.minTvlUsd ?? 100;
   return state.pools.filter(p => {
     if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
-    if (poolFilters.hideDust && !(p.tvl >= min)) return false;
+    if (poolFilters.hideDust && !((p.tvlReal ?? 0) >= min)) return false;
     if (poolFilters.hideThin && p.thin) return false;
-    if (!inRange(p.tvl ?? -1, poolFilters.tvl)) return false;
+    if (!inRange(p.tvlReal ?? -1, poolFilters.tvl)) return false;
     if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
     if (!inRange(isFinite(p.routeDepth) ? p.routeDepth : Infinity, poolFilters.depth)) return false;
     if (poolFilters.farmed !== 'any') {
@@ -319,7 +378,7 @@ function filteredPools() {
 const POOL_COLS = [
   { k: 'pair', label: 'Pair', sortable: false },
   { k: 'dex', label: 'DEX', sortable: false },
-  { k: 'tvl', label: 'TVL', r: true, sortable: true },
+  { k: 'tvlReal', label: 'Real TVL', r: true, sortable: true },
   { k: 'price', label: 'Price', r: true, sortable: false },
   { k: 'feeBps', label: 'Fee', r: true, sortable: true },
   { k: 'reserveA', label: 'Reserves', r: true, sortable: false },
@@ -332,13 +391,13 @@ function renderPools() {
     return ((a[k] ?? -Infinity) - (b[k] ?? -Infinity)) * poolFilters.dir;
   });
 
-  const total = rows.reduce((s, p) => s + (p.tvl || 0), 0);
-  const thinTvl = rows.filter(p => p.thin).reduce((s, p) => s + (p.tvl || 0), 0);
+  const total = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
+  const nominalTotal = rows.reduce((s, p) => s + (p.tvl || 0), 0);
   const alcor = state.pools.filter(p => p.dex === 'alcor').length;
   const taco = state.pools.filter(p => p.dex === 'taco').length;
   const priced = [...state.prices.values()].length;
   $('#poolStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(total)}</span><span class="k">TVL shown</span>${thinTvl > 0 ? `<span class="sub">${usd(thinTvl)} of it thinly routed</span>` : ''}</div>
+    <div class="stat"><span class="v">${usd(total)}</span><span class="k">real TVL shown</span><span class="sub">${usd(nominalTotal)} at face value</span></div>
     <div class="stat"><span class="v">${alcor.toLocaleString()}</span><span class="k">Alcor pools</span></div>
     <div class="stat"><span class="v">${taco.toLocaleString()}</span><span class="k">TacoSwap pairs</span></div>
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
@@ -359,14 +418,15 @@ function renderPools() {
 
   const body = rows.slice(0, 400).map(p => `
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
-      <td><span class="pair">${pairName(p)}</span> <span class="sub">#${esc(p.id)}</span></td>
+      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pair">${pairName(p)}</span> <span class="sub">#${esc(p.id)}</span></td>
       <td><span class="badge ${p.dex}">${p.dex}</span></td>
-      <td class="r num">${usd(p.tvl)}${p.tvlPartial ? '<span class="dim" title="Only one side of this pool could be priced, so this counts just that leg — the rest is not guessed at">*</span>' : ''}${p.thin ? `<span class="badge warn" style="margin-left:6px" title="The price behind this TVL routes to a real dollar through only ${usd(p.routeDepth)} of liquidity. The price is right; the value is not realisable at this size.">thin</span>` : ''}</td>
+      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.15 ? `<span class="nominal" title="What the pool holds at face value. The difference is value with no exit behind it.">${usd(p.tvl)} nominal</span>` : ''}</td>
       <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
       <td class="r num">${(p.feeBps / 100).toFixed(2)}%</td>
       <td class="r num dim">${qty(p.reserveA)} ${esc(p.symA)} <span style="opacity:.55">/</span> ${qty(p.reserveB)} ${esc(p.symB)}</td>
     </tr>`).join('');
   $('#poolTable tbody').innerHTML = body || '<tr><td colspan="6" class="empty">No pools match.</td></tr>';
+  fillMarks($('#poolTable tbody'));
   $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
 
@@ -374,14 +434,14 @@ function renderPools() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, sort: 'rewardUsdDay', dir: -1,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprReal', dir: -1,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
 function wireFarms() {
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
-  tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco');
+  tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
   $('#calcApr').onclick = computeVisibleApr;
   const panel = $('#farmFilterPanel');
@@ -398,17 +458,18 @@ function filteredGroups() {
   return groups.filter(g => {
     if (!farmFilters.alcor && g.dex === 'alcor') return false;
     if (!farmFilters.taco && g.dex === 'taco') return false;
+    if (farmFilters.realOnly && g.aprReal == null) return false;
     if (farmFilters.q) {
       const s = `${g.pool ? g.pool.symA + '/' + g.pool.symB : g.poolId} ${g.rewards.map(r => r.symbol).join(' ')} ${g.poolId}`.toLowerCase();
       if (!s.includes(farmFilters.q)) return false;
     }
     // An unknown APR is not a low one: a farm whose APR has not been computed is
     // excluded by an APR filter rather than silently treated as zero.
-    if ((farmFilters.apr.min != null || farmFilters.apr.max != null) && g.apr == null) return false;
-    if (!inRange(g.apr, farmFilters.apr)) return false;
-    if (!inRange(g.rewardUsdDay, farmFilters.rewards)) return false;
-    if ((farmFilters.staked.min != null || farmFilters.staked.max != null) && g.stakedUsd == null) return false;
-    if (!inRange(g.stakedUsd, farmFilters.staked)) return false;
+    if ((farmFilters.apr.min != null || farmFilters.apr.max != null) && g.aprReal == null) return false;
+    if (!inRange(g.aprReal, farmFilters.apr)) return false;
+    if (!inRange(g.rewardRealDay, farmFilters.rewards)) return false;
+    if ((farmFilters.staked.min != null || farmFilters.staked.max != null) && g.stakedReal == null) return false;
+    if (!inRange(g.stakedReal, farmFilters.staked)) return false;
     if (!inRange(g.tokenCount, farmFilters.tokens)) return false;
     if (farmFilters.reward) {
       const want = farmFilters.reward.trim().toUpperCase();
@@ -423,24 +484,25 @@ function renderFarms() {
   const rows = filteredGroups();
   rows.sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir);
 
-  const payUsd = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
+  const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
+  const payNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
   const multi = groups.filter(g => g.tokenCount > 1).length;
-  const unpriceable = groups.filter(g => g.aprStatus === 'unpriceable').length;
+  const trustworthy = groups.filter(g => g.aprReal != null).length;
   $('#farmStats').innerHTML = `
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
-    <div class="stat"><span class="v">${usd(payUsd)}</span><span class="k">rewards / day</span><span class="sub">priced portion only</span></div>
+    <div class="stat"><span class="v">${trustworthy.toLocaleString()}</span><span class="k">with a real APR</span><span class="sub">the rest pay or hold nothing sellable</span></div>
+    <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">real rewards / day</span><span class="sub">${usd(payNom)} at face value</span></div>
     <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>
-    <div class="stat"><span class="v">${groups.filter(g => g.dex === 'alcor').length.toLocaleString()}</span><span class="k">on Alcor</span></div>
-    <div class="stat"><span class="v">${unpriceable.toLocaleString()}</span><span class="k">unpriceable</span><span class="sub">reward token too thin</span></div>`;
+    <div class="stat"><span class="v">${groups.filter(g => g.dex === 'alcor').length.toLocaleString()}</span><span class="k">on Alcor</span></div>`;
   $('#farmCount').textContent = `${rows.length.toLocaleString()} shown`;
 
   const cols = [
     { k: 'pool', label: 'Pool', s: false },
     { k: 'dex', label: 'DEX', s: false },
     { k: 'rewards', label: 'Pays', s: false },
-    { k: 'rewardUsdDay', label: 'Rewards / day', r: true, s: true },
-    { k: 'stakedUsd', label: 'Staked', r: true, s: true },
-    { k: 'apr', label: 'APR', r: true, s: true },
+    { k: 'rewardRealDay', label: 'Rewards / day', r: true, s: true },
+    { k: 'stakedReal', label: 'Staked', r: true, s: true },
+    { k: 'aprReal', label: 'Real APR', r: true, s: true },
     { k: 'endsAt', label: 'First ends', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
@@ -452,17 +514,27 @@ function renderFarms() {
   });
 
   $('#farmTable tbody').innerHTML = rows.slice(0, 250).map(g => {
-    const pool = g.pool ? `${pairName(g.pool)} <span class="sub">#${esc(g.poolId)}</span>` : `<span class="dim">${esc(g.poolId)}</span>`;
+    const pool = g.pool
+      ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span><span class="pair">${pairName(g.pool)}</span> <span class="sub">#${esc(g.poolId)}</span>`
+      : `<span class="dim">${esc(g.poolId)}</span>`;
     const seen = new Map();
     for (const r of g.rewards) seen.set(r.symbol, (seen.get(r.symbol) || 0) + (r.usdDay || 0));
-    const chips = [...seen.keys()].slice(0, 5).map(sym => `<span class="badge">${esc(sym)}</span>`).join(' ')
-      + (seen.size > 5 ? ` <span class="dim">+${seen.size - 5}</span>` : '');
+    const byTok = new Map();
+    for (const r of g.rewards) if (!byTok.has(r.token)) byTok.set(r.token, r.symbol);
+    const chips = [...byTok].slice(0, 4).map(([tok, sym]) =>
+        `<span class="rew"><span data-pm="${esc(tok)}|${esc(sym)}"></span>${esc(sym)}${trustChip(tok)}</span>`).join(' ')
+      + (byTok.size > 4 ? ` <span class="dim">+${byTok.size - 4}</span>` : '');
     let aprCell;
-    if (g.apr != null) {
+    if (g.aprReal != null) {
+      // Real APR is the headline; the face-value one sits underneath only when
+      // it materially disagrees, because that gap is itself information.
+      const solid = g.stakedReal >= 250;
+      aprCell = `<span class="${solid ? 'pos' : 'dim'} num" ${solid ? '' : 'title="Computed on a very small real stake — any size collapses it"'}>${pct(g.aprReal)}</span>`
+        + (g.apr != null && g.apr > g.aprReal * 1.2 ? `<span class="nominal">${pct(g.apr)} at face value</span>` : '');
+    } else if (g.apr != null) {
       // True, but a 1,600% APR on $65 staked says more about the denominator than
       // the farm: any real deposit collapses it. Show it, but do not dress it up.
-      const solid = g.stakedUsd >= 250;
-      aprCell = `<span class="${solid ? 'pos' : 'dim'} num" ${solid ? '' : 'title="Computed on a very small staked base — depositing any real size collapses this number"'}>${pct(g.apr)}${solid ? '' : ' <span style="font-size:10px">on a tiny base</span>'}</span>`;
+      aprCell = `<span class="unreal num" title="The reward token or the staked capital has no liquidity behind it, so this percentage is arithmetic about nothing">${pct(g.apr)} unreal</span>`;
     }
     else if (g.aprStatus === 'unpriceable') aprCell = `<span class="badge warn" title="No pool deep enough to price the reward tokens">unpriceable</span>`;
     else if (g.aprStatus === 'no_stake') aprCell = `<span class="dim">nobody staked</span>`;
@@ -471,9 +543,9 @@ function renderFarms() {
     return `<tr class="clickable" data-pool="${g.dex}:${esc(g.poolId)}">
       <td>${pool}</td>
       <td><span class="badge ${g.dex}">${g.dex}</span></td>
-      <td>${chips}${g.tokenCount > 1 ? ` <span class="sub">${g.tokenCount} tokens</span>` : ''}</td>
-      <td class="r num">${usd(g.rewardUsdDay)}${g.anyUnpriceable ? ' <span class="dim" title="Some reward tokens could not be priced">+?</span>' : ''}</td>
-      <td class="r num">${g.stakedUsd != null ? usd(g.stakedUsd) : '<span class="dim">—</span>'}</td>
+      <td>${chips}</td>
+      <td class="r num">${usd(g.rewardRealDay)}${g.rewardUsdDay > (g.rewardRealDay || 0) * 1.15 ? `<span class="nominal">${usd(g.rewardUsdDay)} nominal</span>` : ''}</td>
+      <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}${g.stakedUsd > (g.stakedReal || 0) * 1.15 ? `<span class="nominal">${usd(g.stakedUsd)} nominal</span>` : ''}</td>
       <td class="r">${aprCell}</td>
       <td class="r num dim">${g.endsAt ? new Date(g.endsAt).toISOString().slice(0, 10) : '—'}</td>
     </tr>`;

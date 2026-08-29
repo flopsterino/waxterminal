@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Refresh token logos
+        run: node tools/logos.mjs
       - name: Read chain and write snapshot
         run: node --max-old-space-size=2048 tools/snapshot.mjs
       - name: Commit if anything changed

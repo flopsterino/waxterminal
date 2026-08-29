@@ -43,6 +43,7 @@ const pools = state.pools
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
+    vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6),
   }));
 
 const prices = [...state.prices.entries()]
@@ -57,12 +58,19 @@ const farmRows = state.farms.filter(f => !f.ended).map(f => ({
   rp: round(f.rewardPerDay, 8), ru: round(f.rewardUsdDay, 6),
   pf: f.periodFinish, tw: f.totalWeight, ns: f.numStakes,
   su: round(f.stakedUsd, 2), ap: round(f.apr, 3), st: f.aprStatus, cr: f.creator,
+  sr: round(f.stakedReal, 2), rr: round(f.rewardRealDay, 6), ar: round(f.aprReal, 3), so: f.rewardSolid ? 1 : 0,
 }));
 
 await writeFile(new URL('pools.json', OUT), JSON.stringify({
   at: Date.now(),
   waxUsd: round(state.waxUsd, 10),
-  counts: { alcor: state.pools.filter(p => p.dex === 'alcor').length, taco: state.pools.filter(p => p.dex === 'taco').length, farms: state.farms.length },
+  counts: {
+    alcor: state.pools.filter(p => p.dex === 'alcor').length,
+    taco: state.pools.filter(p => p.dex === 'taco').length,
+    farms: state.farms.length,
+    solidTokens: state.solidTokens.size,
+    pricedTokens: state.depth.size,
+  },
   pools, prices, farms: farmRows,
 }));
 console.log(`wrote pools.json — ${pools.length} pools, ${farmRows.length} live farms, ${prices.length} priced tokens`);
@@ -71,14 +79,14 @@ console.log(`wrote pools.json — ${pools.length} pools, ${farmRows.length} live
 // Kept small on purpose: one line per run, top pools by TVL plus every farm we
 // can honestly price. Anything bigger turns the repo into a data warehouse.
 const topPools = [...state.pools].filter(p => p.tvl > 0)
-  .sort((x, y) => y.tvl - x.tvl).slice(0, TOP_POOLS_IN_HISTORY)
-  .map(p => [`${p.dex}:${p.id}`, round(p.tvl, 0), round(p.priceAB, 8)]);
+  .sort((x, y) => (y.tvlReal || 0) - (x.tvlReal || 0)).slice(0, TOP_POOLS_IN_HISTORY)
+  .map(p => [`${p.dex}:${p.id}`, round(p.tvl, 0), round(p.priceAB, 8), round(p.tvlReal, 0)]);
 
 // Only farms paying something a person would notice. Recording 900 farms that
 // pay a fraction of a cent a day turns the history file into 300 MB a year for
 // nothing.
 const farms = groups.filter(g => g.rewardUsdDay > 0.01)
-  .map(g => [`${g.dex}:${g.poolId}`, round(g.rewardUsdDay, 3), round(g.stakedUsd, 0), round(g.apr, 1)]);
+  .map(g => [`${g.dex}:${g.poolId}`, round(g.rewardUsdDay, 3), round(g.stakedUsd, 0), round(g.apr, 1), round(g.rewardRealDay, 3), round(g.stakedReal, 0), round(g.aprReal, 1)]);
 
 // One file per month keeps any single file small and lets old months be pruned
 // or archived without rewriting history.
@@ -88,6 +96,8 @@ await appendFile(new URL(`history/${month}.ndjson`, OUT), JSON.stringify({
   at: Date.now(),
   wax: round(state.waxUsd, 10),
   tvl: round(state.pools.reduce((s, p) => s + (p.tvl || 0), 0), 2),
+  tvlReal: round(state.pools.reduce((s, p) => s + (p.tvlReal || 0), 0), 2),
+  solidTokens: state.solidTokens.size,
   nPools: state.pools.length,
   nFarms: groups.length,
   pools: topPools,

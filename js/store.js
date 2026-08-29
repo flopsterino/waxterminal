@@ -8,7 +8,8 @@
 
 import { getRows, getAllRows, getAllRowsSharded, hyperion, warmHosts } from './chain.js';
 import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX64, depositRatio } from './math.js';
-import { computePrices, THIN_ROUTE_USD } from './price.js';
+import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
+import { computeDepth, poolRealisable } from './depth.js';
 
 const ALCOR = 'swap.alcor', TACO = 'swap.taco';
 const CACHE_KEY = 'core-v2';
@@ -50,7 +51,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false };
+export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set() };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -124,6 +125,19 @@ function applyPrices(pools, prices) {
   }
 }
 
+// What a pool holds versus what it could pay out. Everything the terminal calls
+// "real" downstream comes from here.
+function applyDepth(pools, prices) {
+  const { tokens, solid } = computeDepth(pools, prices, STABLES);
+  state.depth = tokens; state.solidTokens = solid;
+  for (const p of pools) {
+    p.tvlReal = poolRealisable(p, tokens);
+    const da = tokens.get(p.tokenA), db = tokens.get(p.tokenB);
+    p.exitRatio = Math.min(da ? da.ratio : 0, db ? db.ratio : 0);
+    p.solidPair = !!(da?.solid && db?.solid);
+  }
+}
+
 function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens }) {
   const farms = [];
   const now = Date.now();
@@ -146,6 +160,9 @@ function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens
       dex: 'alcor', id: String(inc.id), poolDex: 'alcor', poolId: String(inc.poolId), pool,
       rewardToken: rt, rewardSymbol: r.symbol, rewardPerDay: perDay,
       rewardUsdDay: rp ? perDay * rp.usd : null,
+      rewardRealDay: rp ? perDay * rp.usd * (state.depth.get(rt)?.ratio ?? 0) : null,
+      rewardSolid: !!state.depth.get(rt)?.solid,
+      stakedReal: null, aprReal: null,
       periodFinish: finish, ended,
       totalWeight: Number(inc.totalStakingWeight),
       numStakes: stakedCount.get(String(inc.id)) ?? Number(inc.numberOfStakes) ?? 0,
@@ -169,6 +186,9 @@ function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens
     const rewardUsdDay = rp ? perDay * rp.usd : null;
     let stakedUsd = null;
     if (pool?.tvl != null && pool.lpSupply > 0) stakedUsd = pool.tvl * (st.amount / pool.lpSupply);
+    const stakedReal = (pool?.tvlReal != null && pool.lpSupply > 0) ? pool.tvlReal * (st.amount / pool.lpSupply) : null;
+    const rewardRatio = state.depth.get(rt)?.ratio ?? 0;
+    const rewardRealDay = rewardUsdDay != null ? rewardUsdDay * rewardRatio : null;
     const live = Number(fr.remaining) > 0 && perDay > 0;
     farms.push({
       dex: 'taco', id: String(fr.id), poolDex: 'taco', poolId: pool ? pool.id : st.symbol, pool,
@@ -176,6 +196,12 @@ function buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens
       periodFinish: null, ended: !live,
       totalWeight: st.amount, numStakes: null, creator: fr.owner,
       stakedUsd,
+      stakedReal, rewardRealDay,
+      // The number a person should act on: rewards they could actually sell,
+      // over capital that is actually there. Both halves have to be real or the
+      // percentage is arithmetic about nothing.
+      aprReal: (live && rewardRealDay > 0 && stakedReal >= MIN_STAKE_FOR_APR_USD) ? (rewardRealDay * 365 / stakedReal) * 100 : null,
+      rewardSolid: !!state.depth.get(rt)?.solid,
       apr: (live && rewardUsdDay != null && stakedUsd >= MIN_STAKE_FOR_APR_USD) ? (rewardUsdDay * 365 / stakedUsd) * 100 : null,
       aprStatus: !live ? 'ended'
         : rewardUsdDay == null ? 'unpriceable'
@@ -205,7 +231,7 @@ async function loadSnapshot() {
       liquidity: p.l, tick: p.t, sqrtX64: p.s, priceAB: p.p, tvl: p.v,
       priceUsdA: p.pa, priceUsdB: p.pb, usdA: p.pa, usdB: p.pb,
       tvlPartial: (p.pa == null) !== (p.pb == null), active: true,
-      routeDepth: p.rd ?? Infinity, thin: !!p.tn,
+      routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
       lpSupply: p.d === 'taco' ? p.l : undefined,
     };
   });
@@ -215,11 +241,16 @@ async function loadSnapshot() {
   state.waxUsd = d.waxUsd;
   state.loadedAt = d.at;
   const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
+  // The snapshot cannot carry the whole depth map, but the two counts the UI
+  // reports are cheap and would otherwise read as a confident zero.
+  state.solidTokens = new Set(Array.from({ length: d.counts?.solidTokens ?? 0 }, (_, i) => `slot${i}`));
+  state.depth = new Map(Array.from({ length: d.counts?.pricedTokens ?? 0 }, (_, i) => [`slot${i}`, { ratio: 0 }]));
   state.farms = (d.farms || []).map(f => ({
     dex: f.d, id: f.i, poolDex: f.pd, poolId: f.pi, pool: byId.get(`${f.pd}:${f.pi}`),
     rewardToken: f.rt, rewardSymbol: f.rs, rewardPerDay: f.rp, rewardUsdDay: f.ru,
     periodFinish: f.pf, ended: false, totalWeight: f.tw, numStakes: f.ns,
     creator: f.cr, stakedUsd: f.su, apr: f.ap, aprStatus: f.st,
+    stakedReal: f.sr ?? null, rewardRealDay: f.rr ?? 0, aprReal: f.ar ?? null, rewardSolid: !!f.so,
   }));
   state.fromSnapshot = true;
   return d;
@@ -283,6 +314,7 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
   const pools = [...normaliseAlcor(alcorPools, tokens), ...normaliseTaco(tacoPairs, tokens)];
   const prices = computePrices(pools);
   applyPrices(pools, prices);
+  applyDepth(pools, prices);
   const farms = buildFarms({ incentives, stakingpos, tacoRewards, pools, prices, tokens });
 
   state.pools = pools; state.farms = farms; state.prices = prices; state.tokens = tokens;
@@ -548,6 +580,8 @@ export function farmGroups({ liveOnly = true } = {}) {
     if (g.dex === 'taco') {
       const known = g.farms.map(f => f.stakedUsd).filter(v => v != null && v > 0);
       g.stakedUsd = known.length ? Math.max(...known) : null;
+      const knownReal = g.farms.map(f => f.stakedReal).filter(v => v != null && v > 0);
+      g.stakedReal = knownReal.length ? Math.max(...knownReal) : null;
       g.apr = (g.stakedUsd >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) ? (g.rewardUsdDay * 365 / g.stakedUsd) * 100 : null;
       g.aprStatus = g.apr != null ? 'ok'
         : !(g.stakedUsd > 0) ? 'no_stake'
@@ -559,6 +593,11 @@ export function farmGroups({ liveOnly = true } = {}) {
       g.aprStatus = 'no_stake';
     }
     g.tokenCount = new Set(g.rewards.map(r => r.token)).size;
+    g.rewardRealDay = g.farms.reduce((s, f) => s + (f.rewardRealDay || 0), 0);
+    g.rewardsSolid = g.farms.some(f => f.rewardSolid);
+    if (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0) {
+      g.aprReal = (g.rewardRealDay * 365 / g.stakedReal) * 100;
+    } else g.aprReal = null;
   }
   return [...groups.values()];
 }
@@ -582,7 +621,11 @@ export async function groupStakedUsd(group) {
   const s = sqrtPriceFromX64(pool.sqrtX64);
   let usd = 0;
   for (const p of positions) if (posIds.has(String(p.id))) usd += positionUsd(p, pool, s);
+  // Scale to what the staked capital could actually be sold for, using the same
+  // exit ratio that governs the pool's own real value.
+  const ratio = pool.tvl > 0 ? (pool.tvlReal || 0) / pool.tvl : 0;
   groupCache.set(group.key, usd);
+  group.stakedReal = usd * ratio;
   return usd;
 }
 

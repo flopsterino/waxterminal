@@ -172,3 +172,29 @@ The one case that does share an IP is developing locally on a machine that also
 runs bots against the same public nodes. Append `?snapshot=1` to the URL while
 working on the UI: the page renders entirely from `data/pools.json` and makes
 zero chain calls. Use it instead of reloading a full sweep to check a layout.
+
+### Real value versus face value
+
+A token's price can be correct while its value is not realisable, and reporting
+the first as the second is lying with arithmetic.
+
+`parareserves` is a plain `eosio.token` contract — accounts, stat, issue,
+transfer, and nothing else. No collateral, no redemption, no peg, despite the
+name. It minted exactly 1,000,000 PARAUSD and placed 999,997.68 of them inside
+`swap.alcor`, in positions it owns itself, at a price it chose. Read naively that
+is $998,088 of liquidity. The entire exit to anything else is $1,186.
+`TVL@hype.gm` is worse: $561,055 nominal against an $8 exit.
+
+So `js/depth.js` computes, per token, how much *independently liquid* value
+stands opposite it, and caps what that token can contribute. Bridged dollars seed
+the solid set; WAX earns in through them; tokens paired with WAX earn in through
+WAX. Tokens issued and pooled by the same hand never do.
+
+The result: **$353,808 real against $2,899,667 nominal — 12%**. Alcor's own API
+agrees independently, setting `safe_usd_price` to zero for the same tokens, and
+that verdict is shown next to ours in the tables.
+
+The same rule applies to farms. Of 127 pools with a computable APR only 69 have
+both rewards that could be sold and capital that is really there. The nominal
+leaderboard was topped by DNA/WAX at 1,983%, WAX/WHATIF at 665% and PUZZL/WAX at
+463% — none of which have any real value at all.
