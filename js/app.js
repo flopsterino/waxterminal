@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildRedeposit, buildRestake } from './tx.js';
@@ -200,7 +200,7 @@ function renderOverview() {
 
   $('#ovStats').innerHTML = `
     <div class="stat"><span class="v">${usd(real)}</span><span class="k">real value locked</span><span class="sub">of ${usd(nominal)} nominal &middot; ${(real / nominal * 100).toFixed(0)}%</span></div>
-    <div class="stat"><span class="v">${state.solidTokens.size}</span><span class="k">tokens with real liquidity</span><span class="sub">of ${state.depth.size.toLocaleString()} priced</span></div>
+    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">across every pool, before moving price 1%</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">routed to a bridged dollar</span></div>`;
@@ -259,13 +259,13 @@ function renderOverview() {
   $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
   $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0, note: `${usd(p.tvl)} at face value · ${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
 
-  const toks = tokenTable().filter(t => t.exit >= 100);
+  const toks = tokenTable().filter(t => t.depth1 >= 5);
   const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
   const byTvl = [...toks].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
   $('#ovTokVol').appendChild(byVol.length
-    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools` })), { fmt: usd, color: 'var(--c2)' })
+    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools · ${usd(t.depth1)} tradeable` })), { fmt: usd, color: 'var(--c2)' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Volume arrives with the next daily snapshot.' }));
-  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.exit)} sellable` })), { fmt: usd, color: 'var(--c1)' }));
+  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%` })), { fmt: usd, color: 'var(--c1)' }));
 
   const byDex = new Map();
   for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + (p.tvlReal || 0));
@@ -518,7 +518,7 @@ function wireTokens() {
 function renderTokens() {
   if (!tokRows || tokRows._at !== state.loadedAt) { tokRows = tokenTable(); tokRows._at = state.loadedAt; }
   let rows = tokRows.filter(t => {
-    if (tokFilters.solidOnly && !(t.exit >= 100)) return false;
+    if (tokFilters.solidOnly && !(t.depth1 >= 5)) return false;
     if (tokFilters.q && !`${t.symbol} ${t.contract}`.toLowerCase().includes(tokFilters.q)) return false;
     return true;
   });
@@ -537,7 +537,7 @@ function renderTokens() {
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">Alcor pools, reported by Alcor</span></div>
-    <div class="stat"><span class="v">${rows.filter(t => t.solid).length}</span><span class="k">with real depth</span></div>`;
+    <div class="stat"><span class="v">${usd(rows.reduce((s, t) => s + (t.depth1 || 0), 0))}</span><span class="k">tradeable in one go</span><span class="sub">before moving price 1%</span></div>`;
   $('#tokCount').textContent = `${rows.length.toLocaleString()} shown`;
 
   const cols = [
@@ -546,7 +546,7 @@ function renderTokens() {
     { k: 'price', label: 'Price', r: true, s: true },
     { k: 'tvl', label: 'Pooled', r: true, s: true },
     { k: 'vol24', label: 'Volume 24h', r: true, s: true },
-    { k: 'exit', label: 'Sellable', r: true, s: true },
+    { k: 'depth1', label: 'Trade depth', r: true, s: true },
     { k: 'pools', label: 'Pools', r: true, s: true },
   ];
   const thead = $('#tokTable thead');
@@ -565,7 +565,7 @@ function renderTokens() {
       <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
       <td class="r num">${usd(t.tvl)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
-      <td class="r num">${usd(t.exit)}</td>
+      <td class="r num" title="How much you could trade in one go before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${t.pools}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
@@ -800,8 +800,16 @@ async function lookupWallet(account) {
   const out = $('#walletOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span id="wmsg">Looking up…</span></div>';
   let res;
-  try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
-  catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
+  try {
+    // Alcor's own index first — seconds instead of twenty, and it knows what you
+    // deposited. Reading the chain ourselves is the fallback, not the default.
+    const alcor = await walletPositionsFast(account);
+    const slow = await walletPositions(account, { onProgress: () => {}, skipAlcor: true }).catch(() => ({ alcor: [], taco: [], poolsChecked: 0 }));
+    res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, poolsChecked: slow.poolsChecked };
+  } catch {
+    try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
+    catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
+  }
 
   const all = [...res.alcor, ...res.taco];
   if (!all.length) {
@@ -816,6 +824,8 @@ async function lookupWallet(account) {
   const oorUsd = outOfRange.reduce((s, p) => s + (p.valueUsd || 0), 0);
   // What the position is earning, from the pool's own 24h volume and fee tier
   // times your share of it. Only in-range positions earn anything.
+  const deposited = res.alcor.reduce((s, p) => s + (p.depositedUsd || 0), 0);
+  const pnl = res.alcor.reduce((s, p) => s + (p.pnlUsd || 0), 0);
   const dailyFees = all.reduce((s, p) => {
     const pool = p.pool;
     if (!p.inRange || !(pool.vol24 > 0) || !(pool.tvlReal > 0)) return s;
@@ -827,6 +837,7 @@ async function lookupWallet(account) {
       <div class="stat"><span class="v">${usd(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usd(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
+      ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">against ${usd(deposited)} deposited</span></div>` : ''}
     </div>`;
 
   if (outOfRange.length) {
@@ -855,6 +866,7 @@ async function lookupWallet(account) {
         <dt>${esc(p.pool.symA)}</dt><dd>${qty(p.amountA)}</dd>
         <dt>${esc(p.pool.symB)}</dt><dd>${qty(p.amountB)}</dd>
         <dt>Fees waiting</dt><dd>${usd(p.feesUsd)}</dd>
+        ${p.depositedUsd > 0 ? `<dt>Profit</dt><dd class="${p.pnlUsd >= 0 ? 'pos' : 'neg'}">${p.pnlUsd >= 0 ? '+' : ''}${usd(p.pnlUsd)}</dd>` : ''}
         <dt>Needs topping up at</dt><dd>${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}</dd>
       </dl>
       <button class="btn ghost" style="margin-top:10px;width:100%" data-compound="${esc(p.pool.id)}:${p.posId}">Plan compound</button>

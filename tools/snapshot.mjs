@@ -152,7 +152,7 @@ const pools = state.pools
     v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null),
     v7: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d7 ?? null) : null,
     ch: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.ch24 ?? null) : null,
-    vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6),
+    vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6), d1: round(p.depth1, 2),
   }));
 
 // Carry each token's depth verdict, not just its price. The browser cannot
