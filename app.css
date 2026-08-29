@@ -366,3 +366,5 @@ td.rank { color: var(--muted); font-family: var(--font-data); font-size: 11px; w
 .venue.taco  { color: var(--c4);  border-color: color-mix(in oklch, var(--c4) 45%, transparent); }
 #farmTable .apr { font-size: 15px; }
 .rew.more { padding: 2px 8px; color: var(--muted); }
+.rew b { font-weight: 600; color: var(--ink); }
+#farmTable td:nth-child(4) { white-space: normal; max-width: 320px; line-height: 1.9; }

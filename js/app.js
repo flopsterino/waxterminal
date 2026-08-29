@@ -544,7 +544,7 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: true, sort: 'aprReal', dir: -1,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'rewardUsdDay', dir: -1,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
@@ -613,9 +613,9 @@ function renderFarms() {
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
     { k: 'aprReal', label: 'APR', r: true, s: true },
-    { k: 'rewards', label: 'Pays', s: false },
+    { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
-    { k: 'rewardRealDay', label: 'Per day', r: true, s: true },
+    { k: 'rewardRealDay', label: 'Value / day', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
@@ -632,11 +632,20 @@ function renderFarms() {
          <span class="pairbig">${pairName(g.pool)}</span>
          <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>`
       : `<span class="dim">${esc(g.poolId)}</span>`;
+    // What it pays and how much of it: several incentives can pay the same token,
+    // so sum per token rather than listing it twice.
     const byTok = new Map();
-    for (const r of g.rewards) if (!byTok.has(r.token)) byTok.set(r.token, r.symbol);
-    const chips = [...byTok].slice(0, 3).map(([tok, sym]) =>
-        `<span class="rew"><span data-pm="${esc(tok)}|${esc(sym)}"></span>${esc(sym)}</span>`).join('')
-      + (byTok.size > 3 ? `<span class="rew more" title="${[...byTok.values()].slice(3).map(esc).join(', ')}">+${byTok.size - 3}</span>` : '');
+    for (const r of g.rewards) {
+      const cur = byTok.get(r.token) || { symbol: r.symbol, perDay: 0, usdDay: 0 };
+      cur.perDay += r.perDay || 0; cur.usdDay += r.usdDay || 0;
+      byTok.set(r.token, cur);
+    }
+    const list = [...byTok].sort((a, b) => b[1].usdDay - a[1].usdDay);
+    const chips = list.slice(0, 3).map(([tok, r]) =>
+        `<span class="rew" title="${qty(r.perDay)} ${esc(r.symbol)} per day${r.usdDay ? ' · ' + usd(r.usdDay) : ''}">
+           <span data-pm="${esc(tok)}|${esc(r.symbol)}"></span>
+           <b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
+      + (list.length > 3 ? `<span class="rew more" title="${list.slice(3).map(([, r]) => qty(r.perDay) + ' ' + r.symbol).join(', ')}">+${list.length - 3}</span>` : '');
     const aprCell = g.aprReal != null
       ? `<span class="apr ${g.stakedReal >= 250 ? '' : 'small'}">${pct(g.aprReal)}</span>`
       : `<span class="dim">—</span>`;
