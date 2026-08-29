@@ -801,44 +801,58 @@ async function lookupWallet(account) {
   const feesUsd = res.alcor.reduce((s, p) => s + (p.feesUsd || 0), 0);
   const outOfRange = res.alcor.filter(p => !p.inRange);
   const oorUsd = outOfRange.reduce((s, p) => s + (p.valueUsd || 0), 0);
+  // What the position is earning, from the pool's own 24h volume and fee tier
+  // times your share of it. Only in-range positions earn anything.
+  const dailyFees = all.reduce((s, p) => {
+    const pool = p.pool;
+    if (!p.inRange || !(pool.vol24 > 0) || !(pool.tvlReal > 0)) return s;
+    return s + pool.vol24 * (pool.feeBps / 10000) * ((p.valueUsd || 0) / pool.tvlReal);
+  }, 0);
 
   let html = `<div class="stats">
-    <div class="stat"><span class="v">${usd(totalUsd)}</span><span class="k">liquidity value</span></div>
-    <div class="stat"><span class="v">${all.length}</span><span class="k">positions</span><span class="sub">${res.alcor.length} Alcor &middot; ${res.taco.length} Taco</span></div>
-    <div class="stat"><span class="v">${usd(feesUsd)}</span><span class="k">uncollected fees</span></div>
-    <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${outOfRange.length}</span><span class="k">out of range</span><span class="sub">${usd(oorUsd)} idle</span></div>
-  </div>`;
+      <div class="stat"><span class="v">${usd(totalUsd)}</span><span class="k">liquidity value</span><span class="sub">${all.length} position${all.length === 1 ? '' : 's'} across ${new Set(all.map(p => p.pool.dex)).size} venue${new Set(all.map(p => p.pool.dex)).size === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${usd(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
+      <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usd(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
+    </div>`;
 
   if (outOfRange.length) {
-    html += `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      <b>${outOfRange.length} position${outOfRange.length === 1 ? ' is' : 's are'} out of range</b> — ${usd(oorUsd)} is sitting in pools earning no fees and no farm rewards.
-      This is the number a dashboard exists to surface; nobody checks it daily.</div>`;
+    html += `<div class="note" style="margin-bottom:16px"><b>${usd(oorUsd)} is sitting outside its range.</b>
+      Concentrated liquidity only earns while the price is inside the band you chose. Nobody checks this daily, and
+      quiet weeks out of range are where the yield actually goes.</div>`;
   }
+
+  html += `<div class="grid g2" style="margin-bottom:16px">
+      <div class="card"><h3>Where your money is</h3><div id="walDonut"></div></div>
+      <div class="card"><h3>Fees waiting to be collected</h3><div id="walFees"></div></div>
+    </div>`;
 
   html += '<div class="grid g2">';
   for (const p of res.alcor) {
-    const s = sqrtPriceFromX64(p.pool.sqrtX64);
+    const share = p.pool.tvlReal > 0 ? p.valueUsd / p.pool.tvlReal : null;
     html += `<div class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(p.pool.id)}:${p.tickLower}:${p.tickUpper}:${p.pool.tick}">
-      <div class="ph"><span class="pair">${pairName(p.pool)}</span>
-        <span class="badge alcor">alcor</span>
-        <span class="badge ${p.inRange ? 'good' : 'bad'}">${p.inRange ? 'in range' : 'out of range'}</span>
-        <span class="spacer" style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
-      <div class="sub">position #${p.posId} &middot; pool #${esc(p.pool.id)} &middot; ${(p.pool.feeBps / 100).toFixed(2)}% fee</div>
+      <div class="ph"><span data-pm="${esc(p.pool.tokenA)}|${esc(p.pool.symA)}|${esc(p.pool.tokenB)}|${esc(p.pool.symB)}"></span>
+        <span class="pairbig">${pairName(p.pool)}</span>
+        <span class="venue alcor">Alcor</span>
+        <span class="badge ${p.inRange ? 'good' : 'bad'}">${p.inRange ? 'earning' : 'out of range'}</span>
+        <span style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
+      <div class="sub">#${p.posId} &middot; ${(p.pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(1)}% of the pool` : ''}</div>
       <div class="rb-slot" style="margin-top:10px"></div>
       <dl class="kv">
         <dt>${esc(p.pool.symA)}</dt><dd>${qty(p.amountA)}</dd>
         <dt>${esc(p.pool.symB)}</dt><dd>${qty(p.amountB)}</dd>
-        <dt>Uncollected fees</dt><dd>${usd(p.feesUsd)}</dd>
-        <dt>Deposit ratio now</dt><dd>${(p.ratio.shareA * 100).toFixed(0)}% / ${(p.ratio.shareB * 100).toFixed(0)}%</dd>
+        <dt>Fees waiting</dt><dd>${usd(p.feesUsd)}</dd>
+        <dt>Needs topping up at</dt><dd>${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}</dd>
       </dl>
       <button class="btn ghost" style="margin-top:10px;width:100%" data-compound="${esc(p.pool.id)}:${p.posId}">Plan compound</button>
       <div class="cplan" hidden></div></div>`;
   }
   for (const p of res.taco) {
     html += `<div class="poscard">
-      <div class="ph"><span class="pair">${pairName(p.pool)}</span>
-        <span class="badge taco">taco</span>
-        <span class="spacer" style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
+      <div class="ph"><span data-pm="${esc(p.pool.tokenA)}|${esc(p.pool.symA)}|${esc(p.pool.tokenB)}|${esc(p.pool.symB)}"></span>
+        <span class="pairbig">${pairName(p.pool)}</span>
+        <span class="venue taco">Taco</span>
+        <span style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
       <div class="sub">${qty(p.balance)} ${esc(p.pool.id)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
       <dl class="kv">
         <dt>${esc(p.pool.symA)}</dt><dd>${qty(p.amountA)}</dd>
@@ -847,6 +861,13 @@ async function lookupWallet(account) {
   }
   html += '</div>';
   out.innerHTML = html;
+
+  // Charts after the markup exists.
+  $('#walDonut')?.appendChild(donut(all.map(p => ({ label: `${p.pool.symA}/${p.pool.symB}`, value: p.valueUsd || 0 })), { fmt: usd, top: 6 }));
+  const feeRows = res.alcor.filter(p => p.feesUsd > 0).sort((a, b) => b.feesUsd - a.feesUsd).slice(0, 8);
+  $('#walFees')?.appendChild(feeRows.length
+    ? bars(feeRows.map(p => ({ label: `${p.pool.symA}/${p.pool.symB}`, value: p.feesUsd, note: `position #${p.posId}` })), { fmt: usd, color: 'var(--c3)' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Nothing uncollected right now.' }));
 
   // Range bars are DOM, not markup: build them after the cards exist.
   out.querySelectorAll('.poscard[data-rb]').forEach(card => {
