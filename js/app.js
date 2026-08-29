@@ -118,7 +118,24 @@ async function boot() {
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
 
-  if (state.stale) loadCore({ force: true }).then(() => { renderPools(); renderFarms(); });
+  // The full chain sweep is ~15 seconds and re-reads 19,820 pools to change
+  // numbers by a fraction of a percent. Doing that on every visit made the
+  // terminal feel broken. The committed snapshot is the default source; a live
+  // read is a deliberate act, and anything you actually open (a pool, a wallet,
+  // a compound) reads live state for that one thing anyway.
+  if (state.fromSnapshot) {
+    banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
+      Pools and wallets you open are read live. <button class="btn ghost" id="goLive">Refresh everything from chain</button></div>`);
+    const b = $('#goLive');
+    if (b) b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Reading chain…';
+      try {
+        await loadCore({ force: true, onProgress: p => { if (p.msg) b.textContent = p.msg; } });
+        groups = []; renderPools(); renderFarms(); renderOverview();
+        banner('');
+      } catch (e) { b.disabled = false; b.textContent = 'Refresh failed — try again'; }
+    };
+  }
 }
 
 const banner = html => { $('#banner').innerHTML = html; };
@@ -200,7 +217,7 @@ function renderOverview() {
     <div class="section"><h3>Market</h3>
       <div class="grid g2">
         <div class="card"><h3>WAX price <span class="dim">— from Alcor pool #314 state changes</span></h3><div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div></div>
-        <div class="card"><h3>Fee tiers <span class="dim">— by pooled value</span></h3><div id="ovFee"></div></div>
+        <div class="card"><h3>Alcor fee tiers <span class="dim">— by real pooled value</span></h3><div id="ovFee"></div></div>
       </div>
     </div>
     <div class="section"><h3>Tracked over time</h3>
@@ -243,8 +260,16 @@ function renderOverview() {
     ? histogram(withApr.map(g => g.aprReal), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No real APRs yet — hit "Compute APR" on the farms page to value the Alcor ones.' }));
 
+  // Alcor only. Its fee is a real field on the pool row (0.05 / 0.30 / 1.00%);
+  // the other venues charge one flat rate that this terminal takes from their
+  // documentation, and charting an assumption next to a fact invents a "0.10%
+  // tier" that does not exist.
   const byFee = new Map();
-  for (const p of pools) { const k = `${(p.feeBps / 100).toFixed(2)}%`; byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0)); }
+  for (const p of pools) {
+    if (p.dex !== 'alcor') continue;
+    const k = `${(p.feeBps / 100).toFixed(2)}%`;
+    byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0));
+  }
   $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
 
   if (SNAPSHOT_ONLY) {
@@ -259,11 +284,18 @@ function renderOverview() {
 
   loadHistory().then(rows => {
     const el = $('#ovHist');
-    if (rows.length < 2) {
-      el.innerHTML = `<div class="chart-empty">${rows.length} snapshot${rows.length === 1 ? '' : 's'} so far.
-        A daily job appends one point per day, so this series fills in from here — it is the only record of what TVL and APR were last month.</div>`;
+    // A handful of points inside one day is not a time series; drawing it makes
+    // a flat line look like a chart and implies history that is not there yet.
+    const days = new Set(rows.map(r => new Date(r.at).toISOString().slice(0, 10))).size;
+    if (days < 3) {
+      el.innerHTML = `<div class="chart-empty">Tracking started ${rows.length ? ago(new Date(rows[0].at).toISOString()) : 'today'} &mdash; ${days} day${days === 1 ? '' : 's'} recorded.<br>
+        A daily job appends one point per day. This chart appears once there are three, because two points drawn across a year of axis is a picture of nothing.</div>`;
       return;
     }
+    // One point per day: collapse multiple runs in a day to that day's last.
+    const perDay = new Map();
+    for (const r of rows) perDay.set(new Date(r.at).toISOString().slice(0, 10), r);
+    rows = [...perDay.values()];
     el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvlReal ?? r.tvl })), {
       fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'TVL over time',
     }));
@@ -443,7 +475,10 @@ function wireFarms() {
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
-  $('#calcApr').onclick = computeVisibleApr;
+  // No compute button: the daily job values every Alcor farm, so an APR is
+  // either there or honestly absent. Asking a reader to press a button to find
+  // out what a farm pays is asking them to do the terminal's work.
+  const calc = $('#calcApr'); if (calc) calc.remove();
   const panel = $('#farmFilterPanel');
   panel.innerHTML = rangeField('apr', 'APR', farmFilters, { unit: '%' })
     + rangeField('rewards', 'Rewards per day', farmFilters, { unit: 'USD' })
@@ -550,6 +585,7 @@ function renderFarms() {
       <td class="r num dim">${g.endsAt ? new Date(g.endsAt).toISOString().slice(0, 10) : '—'}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="7" class="empty">No farms match.</td></tr>';
+  fillMarks($('#farmTable tbody'));
   $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
 
@@ -838,7 +874,10 @@ async function runCompound(account) {
   }
 
   plans.sort((a, b) => (b.plan?.grossUsd || 0) - (a.plan?.grossUsd || 0));
-  const worth = plans.filter(x => x.plan?.viable);
+  // Whether a compound is worth doing is the holder's call, not ours: gas is
+  // theirs, their horizon is theirs, and a position we would skip may be one
+  // they want topped up. Everything with something to claim gets a button.
+  const worth = plans.filter(x => x.plan && x.plan.grossUsd > 0);
   const gross = worth.reduce((s, x) => s + x.plan.grossUsd, 0);
   const fee = worth.reduce((s, x) => s + x.plan.feeUsd, 0);
   const swaps = worth.reduce((s, x) => s + x.plan.swaps.length, 0);
@@ -849,7 +888,7 @@ async function runCompound(account) {
   let html = `<div class="stats">
       <div class="stat"><span class="v">${usd(gross)}</span><span class="k">claimable now</span><span class="sub">${tokensSeen.size} distinct token${tokensSeen.size === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(gross - fee)}</span><span class="k">back to work</span><span class="sub">after ${usd(fee)} fee at ${(feeBps / 100).toFixed(2)}%</span></div>
-      <div class="stat"><span class="v">${worth.length}/${plans.length}</span><span class="k">worth compounding</span></div>
+      <div class="stat"><span class="v">${worth.length}/${plans.length}</span><span class="k">positions with something to claim</span></div>
       <div class="stat"><span class="v">${swaps}</span><span class="k">swaps needed</span><span class="sub">across all positions</span></div>
       <div class="stat"><span class="v">${worth.length}</span><span class="k">transaction${worth.length === 1 ? '' : 's'} to sign</span><span class="sub">${actions} actions, one tx per position</span></div>
     </div>`;
@@ -872,7 +911,7 @@ async function runCompound(account) {
         <span style="flex:1"></span>
         <span class="mono" style="font-size:16px;font-weight:600">${usd(plan.grossUsd)}</span>
       </div>
-      ${plan.viable ? `
+      ${plan.grossUsd > 0 ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
@@ -880,8 +919,9 @@ async function runCompound(account) {
           <div><span class="dim">Swaps</span><br><span class="mono">${plan.swaps.map(s => `${esc(s.from)}&rarr;${esc(s.to)}`).join(', ') || 'none'}</span></div>
           <div><span class="dim">Transaction</span><br><span class="mono">${plan.actions.length} actions, 1 signature</span></div>
         </div>
-        <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button></div>
-        <div class="runbox" data-runbox="${pos.posId}"></div>` : `<div class="dim" style="font-size:12.5px">${esc(plan.reason || 'Nothing to do.')}</div>`}
+        <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button>
+          ${!plan.ratio.inRange ? '<span class="sub" style="margin-left:10px">Out of range — this adds to a band the price has left.</span>' : ''}</div>
+        <div class="runbox" data-runbox="${pos.posId}"></div>` : `<div class="dim" style="font-size:12.5px">Nothing claimable yet.</div>`}
     </div>`;
   }
   html += '</div>';
@@ -993,14 +1033,16 @@ async function openPool(key) {
       <div class="card"><h3>Price <span class="dim">— candles built from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" data-iv="300" aria-pressed="false">5m</button>
-          <button class="chip" data-iv="900" aria-pressed="true">15m</button>
-          <button class="chip" data-iv="3600" aria-pressed="false">1h</button>
+          <button class="chip" data-iv="900" aria-pressed="false">15m</button>
+          <button class="chip" data-iv="3600" aria-pressed="true">1h</button>
+          <button class="chip" data-iv="14400" aria-pressed="false">4h</button>
+          <button class="chip" data-iv="86400" aria-pressed="false">1d</button>
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>`;
 
   if (dex === 'alcor') {
-    poolDeltas(p.id, { pages: 3 }).then(rows => {
+    poolDeltas(p.id, { pages: 8 }).then(rows => {
       const box = $('#poolChart');
       if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; return; }
       // Price precision follows the pair: six decimals on a token worth $4,000
@@ -1008,7 +1050,7 @@ async function openPool(key) {
       const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rows.at(-1).price || 1)) + 4));
       const draw = iv => candleChart(box, toCandles(rows, { bucketSec: iv }), { height: 300, precision: prec })
         .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
-      draw(900);
+      draw(3600);
       document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
         document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
         draw(Number(b.dataset.iv));

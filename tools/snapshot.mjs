@@ -15,7 +15,7 @@
 // =============================================================================
 
 import { writeFile, appendFile, readFile, mkdir } from 'node:fs/promises';
-import { loadCore, state, farmGroups } from '../js/store.js';
+import { loadCore, state, farmGroups, groupStakedUsd } from '../js/store.js';
 
 const OUT = new URL('../data/', import.meta.url);
 const TOP_POOLS_IN_HISTORY = 150;
@@ -28,6 +28,45 @@ console.log('reading chain…');
 const t0 = Date.now();
 await loadCore({ force: true, onProgress: p => p.msg && console.log('  ' + p.msg) });
 console.log(`read in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${state.pools.length} pools, ${state.farms.length} farms`);
+
+// Alcor's staked value needs two chain reads per farmed pool. Doing that in the
+// visitor's browser meant a button labelled "compute APR", which is asking the
+// reader to do the terminal's job — and most never would, so most farms showed
+// no APR at all. It belongs here: a few hundred calls once a day, on a runner,
+// against nobody's home connection.
+const alcorGroups = farmGroups().filter(g => g.dex === 'alcor' && g.farms.some(f => f.numStakes > 0));
+console.log(`valuing ${alcorGroups.length} Alcor farm groups...`);
+let valued = 0;
+const BATCH = 6;
+for (let i = 0; i < alcorGroups.length; i += BATCH) {
+  await Promise.all(alcorGroups.slice(i, i + BATCH).map(async g => {
+    try {
+      const usd = await groupStakedUsd(g);
+      if (usd == null) return;
+      g.stakedUsd = usd;
+      const ratio = g.pool?.tvl > 0 ? (g.pool.tvlReal || 0) / g.pool.tvl : 0;
+      g.stakedReal = usd * ratio;
+      if (g.stakedReal >= 25 && g.rewardRealDay > 0) g.aprReal = (g.rewardRealDay * 365 / g.stakedReal) * 100;
+      if (g.stakedUsd >= 25 && g.rewardUsdDay > 0) g.apr = (g.rewardUsdDay * 365 / g.stakedUsd) * 100;
+      valued++;
+    } catch {}
+  }));
+  if (i % 60 === 0) console.log(`  ${Math.min(i + BATCH, alcorGroups.length)}/${alcorGroups.length}`);
+}
+console.log(`valued ${valued} Alcor groups`);
+
+// Push the computed values back onto the underlying farm rows so the snapshot
+// carries them.
+const groupByPool = new Map(alcorGroups.map(g => [`${g.poolDex}:${g.poolId}`, g]));
+for (const f of state.farms) {
+  const g = groupByPool.get(`${f.poolDex}:${f.poolId}`);
+  if (!g || g.stakedUsd == null) continue;
+  f.stakedUsd = g.stakedUsd; f.stakedReal = g.stakedReal;
+  const share = g.rewardUsdDay > 0 ? (f.rewardUsdDay || 0) / g.rewardUsdDay : 0;
+  f.apr = (g.stakedUsd >= 25 && f.rewardUsdDay > 0) ? (f.rewardUsdDay * 365 / g.stakedUsd) * 100 : f.apr;
+  f.aprReal = (g.stakedReal >= 25 && f.rewardRealDay > 0) ? (f.rewardRealDay * 365 / g.stakedReal) * 100 : f.aprReal;
+  f.aprStatus = f.apr != null ? 'ok' : f.aprStatus;
+}
 
 // --- the fast-start snapshot ------------------------------------------------
 // Everything worth showing on first paint: pools with real TVL, plus every pool

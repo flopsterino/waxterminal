@@ -135,6 +135,20 @@ export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount =
   const depA = Math.max(0, balA - feeA);
   const depB = Math.max(0, balB - feeB);
 
+  // addliquid does NOT spend from your wallet. It spends from a balance held
+  // inside swap.alcor, which you fund by transferring in with memo "deposit"
+  // first — every real addliquid on chain is preceded by two of these. Calling
+  // addliquid alone fails with "assertion failure with message: Insufficient
+  // balance", because the internal balance is zero however much you hold.
+  for (const [amt, t] of [[depA, ta], [depB, tb]]) {
+    if (amt > 0 && Number(dec(amt, t.decimals)) > 0) {
+      actions.push({
+        account: t.contract, name: 'transfer', authorization: auth,
+        data: { from: me, to: ALCOR, quantity: asset(amt, t.symbol, t.decimals), memo: 'deposit' },
+      });
+    }
+  }
+
   actions.push({
     account: ALCOR, name: 'addliquid', authorization: auth,
     data: {
@@ -161,7 +175,10 @@ export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount =
     }
   }
 
-  return { actions, balA, balB, depA, depB, feeA, feeB };
+  // Whatever the pool does not take stays in the internal balance and can be
+  // pulled back with swap.alcor::withdraw. We cannot name the amount before the
+  // deposit executes, so it is surfaced to the user rather than silently left.
+  return { actions, balA, balB, depA, depB, feeA, feeB, leftoverNote: true };
 }
 
 // Restaking is separate: a position staked in several incentives needs one

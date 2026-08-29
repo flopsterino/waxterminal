@@ -11,7 +11,7 @@ import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX6
 import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
 import { computeDepth, poolRealisable } from './depth.js';
 
-const ALCOR = 'swap.alcor', TACO = 'swap.taco';
+const ALCOR = 'swap.alcor', TACO = 'swap.taco', BOX = 'swap.box', ADEX = 'swap.adex';
 const CACHE_KEY = 'core-v2';
 // Below this staked value an APR is arithmetic noise, not information: $1.32 staked
 // against $230/day of rewards computes to 6,372,786% and means nothing.
@@ -99,6 +99,57 @@ function normaliseTaco(rows, tokens) {
   return out;
 }
 
+// Defibox on WAX: constant product, token0/token1 with a "decimals,SYMBOL"
+// string and asset-string reserves. 1,443 pairs, so worth having; the shape is
+// close enough to Taco that it normalises into the same row.
+function normaliseBox(rows, tokens) {
+  const out = [];
+  for (const p of rows) {
+    const a = parseAsset(p.reserve0), b = parseAsset(p.reserve1);
+    const [decA] = String(p.token0.symbol).split(',');
+    const [decB] = String(p.token1.symbol).split(',');
+    const ta = tokenId(a.symbol, p.token0.contract), tb = tokenId(b.symbol, p.token1.contract);
+    if (!tokens.has(ta)) tokens.set(ta, { id: ta, symbol: a.symbol, contract: p.token0.contract, decimals: Number(decA) });
+    if (!tokens.has(tb)) tokens.set(tb, { id: tb, symbol: b.symbol, contract: p.token1.contract, decimals: Number(decB) });
+    out.push({
+      dex: 'defibox', id: String(p.id),
+      tokenA: ta, tokenB: tb, symA: a.symbol, symB: b.symbol,
+      decA: Number(decA), decB: Number(decB),
+      feeBps: 30,                                  // Defibox charges 0.30%
+      reserveA: a.amount, reserveB: b.amount,
+      liquidity: Number(p.liquidity_token) || 0, lpSupply: Number(p.liquidity_token) || 0,
+      sqrtX64: null, tick: null,
+      priceAB: a.amount > 0 ? b.amount / a.amount : null,
+      active: a.amount > 0 && b.amount > 0, tvl: null,
+    });
+  }
+  return out;
+}
+
+// A-DEX: nine pools, tiny, but the same constant-product shape and free to
+// include once the normaliser exists.
+function normaliseAdex(rows, tokens) {
+  const out = [];
+  for (const p of rows) {
+    const a = parseAsset(p.base_token.quantity), b = parseAsset(p.quote_token.quantity);
+    const ta = tokenId(a.symbol, p.base_token.contract), tb = tokenId(b.symbol, p.quote_token.contract);
+    if (!tokens.has(ta)) tokens.set(ta, { id: ta, symbol: a.symbol, contract: p.base_token.contract, decimals: a.decimals });
+    if (!tokens.has(tb)) tokens.set(tb, { id: tb, symbol: b.symbol, contract: p.quote_token.contract, decimals: b.decimals });
+    const fee = parseFloat(String(p.pool_fee)) || 0.2;
+    out.push({
+      dex: 'adex', id: String(p.id),
+      tokenA: ta, tokenB: tb, symA: a.symbol, symB: b.symbol,
+      decA: a.decimals, decB: b.decimals,
+      feeBps: Math.round(fee * 100),
+      reserveA: a.amount, reserveB: b.amount,
+      liquidity: 0, sqrtX64: null, tick: null,
+      priceAB: a.amount > 0 ? b.amount / a.amount : null,
+      active: a.amount > 0 && b.amount > 0, tvl: null,
+    });
+  }
+  return out;
+}
+
 function applyPrices(pools, prices) {
   for (const p of pools) {
     const pa = prices.get(p.tokenA)?.usd ?? null;
@@ -118,8 +169,8 @@ function applyPrices(pools, prices) {
     if (pa != null && pb != null) { p.tvl = p.reserveA * pa + p.reserveB * pb; p.tvlPartial = false; }
     else if (pa != null || pb != null) {
       const known = pa != null ? p.reserveA * pa : p.reserveB * pb;
-      p.tvl = p.dex === 'taco' ? known * 2 : known;
-      p.tvlPartial = p.dex !== 'taco';
+      p.tvl = p.dex === 'alcor' ? known : known * 2;   // constant product is balanced in value; concentrated liquidity is not
+      p.tvlPartial = p.dex === 'alcor';
     } else { p.tvl = null; p.tvlPartial = false; }
     p.priceUsdA = pa; p.priceUsdB = pb;
   }
@@ -301,17 +352,24 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
   const tokens = new Map();
 
   // Alcor ids are sequential, so shard the sweep and fetch ~12 pages at once.
-  const [alcorPools, incentives, stakingpos, tacoPairs, tacoRewards] = await Promise.all([
+  const [alcorPools, incentives, stakingpos, tacoPairs, tacoRewards, boxPairs, adexPools] = await Promise.all([
     getAllRowsSharded(ALCOR, ALCOR, 'pools', 13000, { onPage: (d, t) => onProgress({ phase: 'chain', msg: `Alcor pools ${d}/${t}` }) }),
     getAllRowsSharded(ALCOR, ALCOR, 'incentives', 5000),
     getAllRows(ALCOR, ALCOR, 'stakingpos'),
     getAllRows(TACO, TACO, 'pairs', { onPage: n => onProgress({ phase: 'chain', msg: `TacoSwap pairs ${n}` }) }),
     getAllRows(TACO, TACO, 'pairreward'),
+    getAllRows(BOX, BOX, 'pairs', { onPage: n => onProgress({ phase: 'chain', msg: `Defibox pairs ${n}` }) }).catch(() => []),
+    getAllRows(ADEX, ADEX, 'pools').catch(() => []),
   ]);
 
   onProgress({ phase: 'derive', msg: 'Pricing tokens' });
   state.shardsFailed = (alcorPools.shardsFailed || 0) + (incentives.shardsFailed || 0);
-  const pools = [...normaliseAlcor(alcorPools, tokens), ...normaliseTaco(tacoPairs, tokens)];
+  const pools = [
+    ...normaliseAlcor(alcorPools, tokens),
+    ...normaliseTaco(tacoPairs, tokens),
+    ...normaliseBox(boxPairs, tokens),
+    ...normaliseAdex(adexPools, tokens),
+  ];
   const prices = computePrices(pools);
   applyPrices(pools, prices);
   applyDepth(pools, prices);
