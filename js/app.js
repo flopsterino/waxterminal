@@ -435,7 +435,12 @@ function renderPools() {
   const rows = filteredPools();
   rows.sort((a, b) => {
     const k = poolFilters.sort;
-    return ((a[k] ?? -Infinity) - (b[k] ?? -Infinity)) * poolFilters.dir;
+    const x = a[k], y = b[k];
+    const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
+    if (xn && yn) return 0;
+    if (xn) return 1;
+    if (yn) return -1;
+    return (x - y) * poolFilters.dir;
   });
 
   const total = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
@@ -498,7 +503,14 @@ function renderTokens() {
     if (tokFilters.q && !`${t.symbol} ${t.contract}`.toLowerCase().includes(tokFilters.q)) return false;
     return true;
   });
-  rows.sort((a, b) => ((a[tokFilters.sort] ?? -Infinity) - (b[tokFilters.sort] ?? -Infinity)) * tokFilters.dir);
+  rows.sort((a, b) => {
+    const x = a[tokFilters.sort], y = b[tokFilters.sort];
+    const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
+    if (xn && yn) return 0;
+    if (xn) return 1;
+    if (yn) return -1;
+    return (x - y) * tokFilters.dir;
+  });
 
   const tvl = rows.reduce((s, t) => s + t.tvl, 0);
   const vol = rows.reduce((s, t) => s + t.vol24, 0);
@@ -550,7 +562,7 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'rewardUsdDay', dir: -1,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprReal', dir: -1,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
@@ -601,7 +613,17 @@ function filteredGroups() {
 function renderFarms() {
   if (!groups.length || groups._at !== state.loadedAt) { groups = farmGroups(); groups._at = state.loadedAt; }
   const rows = filteredGroups();
-  rows.sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir);
+  // A missing value is not a small one. Sorting nulls as -Infinity put every
+  // farm we cannot value at the top of a descending APR sort, which is the
+  // opposite of useful — they sink to the bottom whichever way you sort.
+  rows.sort((a, b) => {
+    const x = a[farmFilters.sort], y = b[farmFilters.sort];
+    const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
+    if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0);
+    if (xn) return 1;
+    if (yn) return -1;
+    return (x - y) * farmFilters.dir;
+  });
 
   const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
   const payNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
