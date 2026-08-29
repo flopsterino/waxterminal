@@ -38,8 +38,8 @@
 
   <!-- --------------------------------------------------------- OVERVIEW -->
   <section class="view active" id="view-overview">
-    <h2 class="vt">WAX DeFi, at a glance</h2>
-    <p class="vs">Everything below is read from <code class="mono">swap.alcor</code> and <code class="mono">swap.taco</code> in your browser. Hover any chart to interrogate it.</p>
+    <h2 class="vt">WAX DeFi</h2>
+    <p class="vs">Live from the WAX chain.</p>
     <div class="stats" id="ovStats"></div>
     <div id="ovCharts"></div>
   </section>
@@ -47,7 +47,7 @@
   <!-- ------------------------------------------------------------ POOLS -->
   <section class="view" id="view-pools">
     <h2 class="vt">Pools</h2>
-    <p class="vs">Every Alcor and TacoSwap pool, read live from chain. Only bridged dollars count as a dollar; everything else is priced through the graph, and each price carries the depth of the <em>thinnest</em> hop on its way to a real one. A pool marked <span class="badge warn">thin</span> has a correct price standing on liquidity too shallow to sell into — 997,731 PARAUSD sits in WAX pools with a $590 exit.</p>
+    <p class="vs">Every pool on Alcor, TacoSwap, Defibox and A-DEX. Value shown is what a pool could actually pay out.</p>
     <div class="stats" id="poolStats"></div>
     <div class="toolbar">
       <input class="search" id="poolSearch" placeholder="Search token or pool id…" autocomplete="off">
@@ -66,14 +66,14 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs"><b>Real APR</b> is rewards you could actually sell over capital that is actually there. A farm paying a token nobody can buy, or staked with liquidity that cannot be exited, is marked <span class="unreal">unreal</span> &mdash; that percentage is arithmetic about nothing. Alcor staked values are read on demand for the rows you can see.</p>
+    <p class="vs">Ranked by what you could actually earn. Farms paying a token nobody can buy are hidden by default.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
       <button class="chip" id="fLive"      aria-pressed="true">Live only</button>
       <button class="chip" id="fFarmAlcor" aria-pressed="true">Alcor</button>
       <button class="chip" id="fFarmTaco"  aria-pressed="true">TacoSwap</button>
-      <button class="chip" id="fReal"      aria-pressed="false">Real APR only</button>
+      <button class="chip" id="fReal"      aria-pressed="true">Earnable only</button>
       <button class="chip" id="fMoreFarm" aria-pressed="false">More filters</button>
       <button class="btn ghost" id="calcApr">Compute APR for visible</button>
       <span class="dim" id="farmCount" style="font-size:12px"></span>
@@ -85,7 +85,7 @@
   <!-- ----------------------------------------------------------- WALLET -->
   <section class="view" id="view-wallet">
     <h2 class="vt">My liquidity</h2>
-    <p class="vs">The chain scopes Alcor positions by pool with the owner inside the row, so there is no way to ask it what a wallet holds. This finds the pools your account has acted on, then reads only those — which is why it takes seconds instead of sweeping 11,551 pools.</p>
+    <p class="vs">Everything you hold across all four venues.</p>
     <div class="walletbar">
       <input id="walletInput" placeholder="WAX account, e.g. maestrobeatz" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
@@ -97,7 +97,7 @@
   <!-- --------------------------------------------------------- ACTIVITY -->
   <section class="view" id="view-activity">
     <h2 class="vt">Activity</h2>
-    <p class="vs">Alcor's <code class="mono">logswap</code> publishes the trader, the signed token deltas and the pool state after every swap. One feed answers volume, price and who traded what — no indexing needed.</p>
+    <p class="vs">Every trade on Alcor, as it happens.</p>
     <div class="toolbar">
       <button class="btn ghost" id="actRefresh">Reload feed</button>
       <button class="chip" data-win="15" aria-pressed="true">15 min</button>
@@ -110,7 +110,7 @@
   <!-- --------------------------------------------------------- COMPOUND -->
   <section class="view" id="view-compound">
     <h2 class="vt">Compound</h2>
-    <p class="vs">Everything claimable across your positions, and the exact transaction that puts it back to work. A harvest is a basket: trading fees on both sides plus every farm reward, and farms often pay several different tokens at once. Whatever is already a pool token is never swapped; the rest is routed into the ratio each band needs.</p>
+    <p class="vs">Claim your fees and farm rewards and put them straight back to work, in one signature per position.</p>
     <div class="walletbar">
       <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="compGo">Scan my positions</button>

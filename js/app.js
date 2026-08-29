@@ -191,12 +191,6 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
-    <div class="note" style="margin-bottom:20px">
-      <b>Every figure here is the realisable one.</b> A token's price can be correct while its value is not:
-      <code class="mono">parareserves</code> minted a million PARAUSD and put 99.9997% of them into pools it owns itself,
-      which reads as $998k of liquidity against a $1,186 exit. The terminal counts what could actually be sold,
-      and shows the face value beside it.
-    </div>
     <div class="section"><h3>Best farm returns</h3>
       <div class="card"><h3>Highest APR you could actually earn <span class="dim">— real rewards over real staked capital</span>
         <span class="hero">${bestApr.length} of ${groups.length} qualify</span></h3>
@@ -452,7 +446,7 @@ function renderPools() {
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
       <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pair">${pairName(p)}</span> <span class="sub">#${esc(p.id)}</span></td>
       <td><span class="badge ${p.dex}">${p.dex}</span></td>
-      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.15 ? `<span class="nominal" title="What the pool holds at face value. The difference is value with no exit behind it.">${usd(p.tvl)} nominal</span>` : ''}</td>
+      <td class="r num">${usd(p.tvlReal)}${p.tvl > (p.tvlReal || 0) * 1.5 ? `<i class="soft" title="Holds ${usd(p.tvl)}, but most of it cannot be sold — the tokens have no depth behind them"></i>` : ''}</td>
       <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
       <td class="r num">${(p.feeBps / 100).toFixed(2)}%</td>
       <td class="r num dim">${qty(p.reserveA)} ${esc(p.symA)} <span style="opacity:.55">/</span> ${qty(p.reserveB)} ${esc(p.symB)}</td>
@@ -466,7 +460,7 @@ function renderPools() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, sort: 'aprReal', dir: -1,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: true, sort: 'aprReal', dir: -1,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
@@ -532,13 +526,13 @@ function renderFarms() {
   $('#farmCount').textContent = `${rows.length.toLocaleString()} shown`;
 
   const cols = [
+    { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'dex', label: 'DEX', s: false },
+    { k: 'aprReal', label: 'APR', r: true, s: true },
     { k: 'rewards', label: 'Pays', s: false },
-    { k: 'rewardRealDay', label: 'Rewards / day', r: true, s: true },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
-    { k: 'aprReal', label: 'Real APR', r: true, s: true },
-    { k: 'endsAt', label: 'First ends', r: true, s: true },
+    { k: 'rewardRealDay', label: 'Per day', r: true, s: true },
+    { k: 'endsAt', label: 'Ends', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -548,41 +542,29 @@ function renderFarms() {
     renderFarms();
   });
 
-  $('#farmTable tbody').innerHTML = rows.slice(0, 250).map(g => {
+  $('#farmTable tbody').innerHTML = rows.slice(0, 250).map((g, i) => {
     const pool = g.pool
-      ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span><span class="pair">${pairName(g.pool)}</span> <span class="sub">#${esc(g.poolId)}</span>`
+      ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
+         <span class="pairbig">${pairName(g.pool)}</span>
+         <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>`
       : `<span class="dim">${esc(g.poolId)}</span>`;
-    const seen = new Map();
-    for (const r of g.rewards) seen.set(r.symbol, (seen.get(r.symbol) || 0) + (r.usdDay || 0));
     const byTok = new Map();
     for (const r of g.rewards) if (!byTok.has(r.token)) byTok.set(r.token, r.symbol);
-    const chips = [...byTok].slice(0, 4).map(([tok, sym]) =>
-        `<span class="rew"><span data-pm="${esc(tok)}|${esc(sym)}"></span>${esc(sym)}${trustChip(tok)}</span>`).join(' ')
-      + (byTok.size > 4 ? ` <span class="dim">+${byTok.size - 4}</span>` : '');
-    let aprCell;
-    if (g.aprReal != null) {
-      // Real APR is the headline; the face-value one sits underneath only when
-      // it materially disagrees, because that gap is itself information.
-      const solid = g.stakedReal >= 250;
-      aprCell = `<span class="${solid ? 'pos' : 'dim'} num" ${solid ? '' : 'title="Computed on a very small real stake — any size collapses it"'}>${pct(g.aprReal)}</span>`
-        + (g.apr != null && g.apr > g.aprReal * 1.2 ? `<span class="nominal">${pct(g.apr)} at face value</span>` : '');
-    } else if (g.apr != null) {
-      // True, but a 1,600% APR on $65 staked says more about the denominator than
-      // the farm: any real deposit collapses it. Show it, but do not dress it up.
-      aprCell = `<span class="unreal num" title="The reward token or the staked capital has no liquidity behind it, so this percentage is arithmetic about nothing">${pct(g.apr)} unreal</span>`;
-    }
-    else if (g.aprStatus === 'unpriceable') aprCell = `<span class="badge warn" title="No pool deep enough to price the reward tokens">unpriceable</span>`;
-    else if (g.aprStatus === 'no_stake') aprCell = `<span class="dim">nobody staked</span>`;
-    else if (g.aprStatus === 'thin') aprCell = `<span class="dim" title="Staked value below $25 — an APR here is arithmetic noise">too thin</span>`;
-    else aprCell = `<span class="dim">compute →</span>`;
+    const chips = [...byTok].slice(0, 3).map(([tok, sym]) =>
+        `<span class="rew"><span data-pm="${esc(tok)}|${esc(sym)}"></span>${esc(sym)}</span>`).join('')
+      + (byTok.size > 3 ? `<span class="rew more" title="${[...byTok.values()].slice(3).map(esc).join(', ')}">+${byTok.size - 3}</span>` : '');
+    const aprCell = g.aprReal != null
+      ? `<span class="apr ${g.stakedReal >= 250 ? '' : 'small'}">${pct(g.aprReal)}</span>`
+      : `<span class="dim">—</span>`;
+    const ends = g.endsAt ? Math.round((g.endsAt - Date.now()) / 86400000) : null;
     return `<tr class="clickable" data-pool="${g.dex}:${esc(g.poolId)}">
+      <td class="rank">${i + 1}</td>
       <td>${pool}</td>
-      <td><span class="badge ${g.dex}">${g.dex}</span></td>
-      <td>${chips}</td>
-      <td class="r num">${usd(g.rewardRealDay)}${g.rewardUsdDay > (g.rewardRealDay || 0) * 1.15 ? `<span class="nominal">${usd(g.rewardUsdDay)} nominal</span>` : ''}</td>
-      <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}${g.stakedUsd > (g.stakedReal || 0) * 1.15 ? `<span class="nominal">${usd(g.stakedUsd)} nominal</span>` : ''}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num dim">${g.endsAt ? new Date(g.endsAt).toISOString().slice(0, 10) : '—'}</td>
+      <td>${chips}</td>
+      <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
+      <td class="r num">${usd(g.rewardRealDay)}</td>
+      <td class="r num dim">${ends == null ? 'open' : ends > 0 ? ends + 'd' : 'ending'}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="7" class="empty">No farms match.</td></tr>';
   fillMarks($('#farmTable tbody'));
