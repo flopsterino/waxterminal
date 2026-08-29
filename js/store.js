@@ -20,34 +20,47 @@ const FRESH_MS = 5 * 60 * 1000;
 
 // ------------------------------------------------------------- IndexedDB ----
 // 20k pools is far past the 5 MB localStorage ceiling, so the cache lives here.
+// Everything here is wrapped in a timeout because IndexedDB can simply never
+// answer: an open blocked by another tab fires neither onsuccess nor onerror,
+// and private windows, cleared site data and storage-blocking settings each fail
+// differently. A cache that hangs is worse than no cache — it took the whole
+// page down with it, silently, behind a spinner, on every path except the one
+// that skipped the cache entirely.
+const IDB_TIMEOUT = 1500;
+const withTimeout = (p, ms = IDB_TIMEOUT) => Promise.race([
+  p, new Promise((_, rej) => setTimeout(() => rej(new Error('storage timeout')), ms)),
+]);
+
 function idb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('waxterm', 1);
+    let r;
+    try { r = indexedDB.open('waxterm', 1); } catch (e) { return rej(e); }
     r.onupgradeneeded = () => r.result.createObjectStore('kv');
     r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
+    r.onerror = () => rej(r.error || new Error('indexeddb error'));
+    r.onblocked = () => rej(new Error('indexeddb blocked'));
   });
 }
 async function cacheGet(key) {
   try {
-    const db = await idb();
-    return await new Promise((res, rej) => {
+    const db = await withTimeout(idb());
+    return await withTimeout(new Promise((res, rej) => {
       const t = db.transaction('kv').objectStore('kv').get(key);
       t.onsuccess = () => res(t.result || null); t.onerror = () => rej(t.error);
-    });
+    }));
   } catch { return null; }
 }
 async function cacheSet(key, val) {
   try {
-    const db = await idb();
-    await new Promise((res, rej) => {
+    const db = await withTimeout(idb());
+    await withTimeout(new Promise((res, rej) => {
       const t = db.transaction('kv', 'readwrite').objectStore('kv').put(val, key);
       t.onsuccess = () => res(); t.onerror = () => rej(t.error);
-    });
-  } catch { /* private mode or quota: run uncached rather than fail */ }
+    }), 4000);
+  } catch { /* private mode, quota, blocked: run uncached rather than fail */ }
 }
 export async function clearCache() {
-  try { const db = await idb(); db.transaction('kv', 'readwrite').objectStore('kv').clear(); } catch {}
+  try { const db = await withTimeout(idb()); db.transaction('kv', 'readwrite').objectStore('kv').clear(); } catch {}
 }
 
 // ------------------------------------------------------------------ load ----

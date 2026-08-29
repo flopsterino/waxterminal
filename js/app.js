@@ -72,49 +72,55 @@ async function boot() {
   $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
   $('#poolBack').onclick = () => show(lastView || 'pools');
 
-  banner('<div class="loading"><span class="spinner"></span><span id="loadmsg">Reading Alcor and TacoSwap from chain…</span></div>');
+  // Wire everything BEFORE loading. Handlers do not need data, and hanging the
+  // first render off a progress callback meant one early return anywhere in
+  // that path left the page on a spinner with no error — which is exactly what
+  // happened, and only on the path that reads the chain.
+  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
+
+  const paint = () => {
+    try { renderPools(); renderFarms(); renderTokens(); renderOverview(); }
+    catch (e) { banner(`<div class="err"><b>Could not draw the page.</b> <code class="mono">${esc(e.message)}</code></div>`); }
+  };
+
+  banner('<div class="loading"><span class="spinner"></span><span id="loadmsg">Loading…</span></div>');
+
+  let loadError = null;
   try {
     await loadCore({ onProgress: p => {
       const m = $('#loadmsg');
-      if (!m) return;
-      if (p.phase === 'snapshot') {
-        // Paint the snapshot straight away so the terminal is usable while the
-        // live read finishes behind it.
-        m.textContent = `Showing a snapshot from ${ago(new Date(p.at).toISOString())} while reading live state…`;
-        renderPools(); renderFarms();
-      } else if (p.msg) m.textContent = p.msg;
+      if (m && p.msg) m.textContent = p.msg;
     } });
-  } catch (e) {
-    // A failed live read is not the same as having nothing to show. If the
-    // published snapshot loaded, the terminal is still usable and should say
-    // what it is showing rather than just complain.
-    if (state.pools.length) {
-      banner(`<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-        <b>Showing the published snapshot from ${ago(new Date(state.loadedAt).toISOString())}.</b>
-        Live chain read failed (${esc(e.message)}) — public nodes rate-limit. Prices and TVL are as of the snapshot;
-        wallet lookups and the activity feed need the chain and will not work until it is reachable.</div>`);
-    } else {
-      banner(`<div class="err"><b>Could not reach the chain.</b> ${esc(e.message)} — public nodes rate-limit; try reloading in a moment.</div>`);
-      return;
-    }
-  }
-  if (!state.fromSnapshot) banner('');
+  } catch (e) { loadError = e; }
 
-  if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
-  const alive = state.hosts.filter(h => h.ok);
-  const dead = state.hosts.length - alive.length;
-  $('#freshness').innerHTML = `${state.pools.length.toLocaleString()} pools &middot; ${state.farms.length.toLocaleString()} farms`
-    + ` &middot; <span title="${state.hosts.map(h => `${h.host.replace('https://', '')} ${h.ok ? h.ms + 'ms' : 'not responding'}`).join('\n')}">${alive.length}/${state.hosts.length} nodes${dead ? `, ${dead} down` : ''}</span>`;
-  if (state.shardsFailed) {
-    banner(`<div class="err">Part of the chain read did not come back (${state.shardsFailed} shard${state.shardsFailed === 1 ? '' : 's'}), so some pools are missing. Everything shown is real; the list is just incomplete. Reload to try again.</div>`);
+  // Whatever came back — snapshot, cache, or a full read — draw it.
+  if (state.pools.length) {
+    paint();
+    if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
+    const alive = state.hosts.filter(h => h.ok).length;
+    $('#freshness').innerHTML = `${state.pools.length.toLocaleString()} pools &middot; ${state.farms.length.toLocaleString()} farms`
+      + (state.hosts.length ? ` &middot; ${alive}/${state.hosts.length} nodes` : '');
+    if (loadError) {
+      banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
+        Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
+    } else if (state.fromSnapshot) {
+      banner(`<div class="freshbar">Daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}. Pools and wallets you open are read live.
+        <button class="btn ghost" id="goLive">Refresh from chain</button></div>`);
+    } else banner('');
+    const b = $('#goLive');
+    if (b) b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Reading chain…';
+      try {
+        await loadCore({ force: true, onProgress: p => { if (p.msg) b.textContent = p.msg; } });
+        groups = []; tokRows = null; paint(); banner('');
+      } catch { b.disabled = false; b.textContent = 'Still unreachable — try again'; }
+    };
+  } else {
+    banner(`<div class="err"><b>Could not load any data.</b> ${esc(loadError?.message || 'unknown')}<br>
+      The public WAX nodes may be rate-limiting. Reloading usually fixes it.</div>`);
+    return;
   }
 
-  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
-  renderOverview();
-  renderPools(); renderFarms(); renderTokens();
-  // Marks and Alcor's scores are cosmetic-plus-corroboration, so the terminal
-  // paints without them and fills them in when they arrive.
-  loadTokenMeta().then(() => { renderPools(); renderFarms(); renderTokens(); }).catch(() => {});
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
 
