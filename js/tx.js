@@ -116,15 +116,41 @@ export function buildHarvest({ pool, position, basket, plan }) {
 
 // --------------------------------------------------------- transaction 2 ----
 // Read what actually landed, deposit it into the same band, pay the fee.
-export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '' }) {
+// Read both sides before the harvest runs, so the redeposit can tell what the
+// harvest actually produced.
+export async function readBalances(pool) {
+  const me = account();
+  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
+  const [a, b] = await Promise.all([
+    balanceOf(me, ta.contract, ta.symbol),
+    balanceOf(me, tb.contract, tb.symbol),
+  ]);
+  return { a, b };
+}
+
+// Compound what the harvest produced — nothing else.
+//
+// This used to deposit the wallet balance. Someone holding 10,000 CHEESE who
+// harvested 200 had all 10,200 swept into the pool, which is not compounding,
+// it is a forced deposit of everything they own in that token. The only safe
+// definition of "the rewards" is the difference the harvest made, so the
+// balances are read before and after and only the delta is redeposited.
+export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount = '', before }) {
   const me = account();
   const auth = authorization();
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 
-  const [balA, balB] = await Promise.all([
+  const [afterA, afterB] = await Promise.all([
     balanceOf(me, ta.contract, ta.symbol),
     balanceOf(me, tb.contract, tb.symbol),
   ]);
+
+  if (!before) throw new Error('Cannot tell rewards from holdings: balances before the harvest are missing');
+  // A negative delta means something else spent that token between the two
+  // reads; compound nothing rather than guess.
+  const balA = Math.max(0, afterA - before.a);
+  const balB = Math.max(0, afterB - before.b);
+  if (!(balA > 0) && !(balB > 0)) throw new Error('The harvest produced nothing to redeposit');
 
   const actions = [];
   let feeA = 0, feeB = 0;
@@ -178,7 +204,7 @@ export async function buildRedeposit({ pool, position, feeBps = 75, feeAccount =
   // Whatever the pool does not take stays in the internal balance and can be
   // pulled back with swap.alcor::withdraw. We cannot name the amount before the
   // deposit executes, so it is surfaced to the user rather than silently left.
-  return { actions, balA, balB, depA, depB, feeA, feeB, leftoverNote: true };
+  return { actions, balA, balB, depA, depB, feeA, feeB, afterA, afterB, leftoverNote: true };
 }
 
 // Restaking is separate: a position staked in several incentives needs one

@@ -435,3 +435,15 @@ tbody tr.faded:hover td { opacity: .85; }
   .filters { grid-template-columns: 1fr; }
   #farmTable td:nth-child(4) { max-width: 130px; }
 }
+.sizesel .amt {
+  display: inline-flex; align-items: center; background: var(--surface);
+  border: 1px solid var(--line-2); border-radius: var(--r); padding: 0 8px;
+}
+.sizesel .amt:focus-within { border-color: var(--accent); }
+.sizesel .cur { color: var(--muted); font-family: var(--font-data); font-size: 12px; }
+.sizesel input {
+  width: 74px; background: none; border: 0; color: var(--ink); padding: 6px 2px;
+  font-family: var(--font-data); font-size: 13px; -moz-appearance: textfield;
+}
+.sizesel input::-webkit-outer-spin-button, .sizesel input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.sizesel input:focus { outline: none; }

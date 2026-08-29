@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildRedeposit, buildRestake } from './tx.js';
+import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.js';
 import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -192,7 +192,9 @@ function renderOverview() {
   for (const g of groups) {
     const tvl = g.pool?.tvlReal;
     g.share = tvl > 0 ? SIZE / (tvl + SIZE) : 1;
-    g.tooSmall = g.share > 0.33;
+    // With no deposit there is nothing to dilute and no pool too small to take
+    // it, so the constraint only applies once an amount is entered.
+    g.tooSmall = farmFilters.size > 0 && g.share > 0.33;
     g.aprAt = (g.rewardRealDay > 0 && g.stakedReal != null) ? (g.rewardRealDay * 365 / (g.stakedReal + SIZE)) * 100 : null;
   }
   const bestApr = groups.filter(g => g.aprAt != null && !g.tooSmall).sort((a, b) => b.aprAt - a.aprAt);
@@ -613,11 +615,16 @@ function wireFarms() {
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
-  document.querySelectorAll('[data-size]').forEach(b => b.onclick = () => {
-    farmFilters.size = Number(b.dataset.size);
-    document.querySelectorAll('[data-size]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  const sizeInput = $('#depositSize');
+  const applySize = v => {
+    const n = Math.max(0, Number(v) || 0);
+    farmFilters.size = n;
+    document.querySelectorAll('[data-size]').forEach(x => x.setAttribute('aria-pressed', String(Number(x.dataset.size) === n)));
     renderFarms();
-  });
+  };
+  let sizeTimer;
+  sizeInput.oninput = () => { clearTimeout(sizeTimer); sizeTimer = setTimeout(() => applySize(sizeInput.value), 250); };
+  document.querySelectorAll('[data-size]').forEach(b => b.onclick = () => { sizeInput.value = b.dataset.size; applySize(b.dataset.size); });
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
@@ -689,19 +696,20 @@ function renderFarms() {
     : null;
   const multi = groups.filter(g => g.tokenCount > 1).length;
   $('#farmStats').innerHTML = `
-    <div class="stat"><span class="v">${enterableAll.length.toLocaleString()}</span><span class="k">you could enter</span><span class="sub">with ${usd(farmFilters.size)}, of ${groups.length.toLocaleString()} farmed pools</span></div>
-    <div class="stat"><span class="v">${best != null ? pct(best) : '—'}</span><span class="k">best rate at that size</span><span class="sub">after your deposit dilutes it</span></div>
+    <div class="stat"><span class="v">${enterableAll.length.toLocaleString()}</span><span class="k">${farmFilters.size > 0 ? 'big enough for you' : 'farms paying'}</span><span class="sub">of ${groups.length.toLocaleString()} farmed pools</span></div>
+    <div class="stat"><span class="v">${best != null ? pct(best) : '—'}</span><span class="k">best rate${farmFilters.size > 0 ? ' at your size' : ''}</span><span class="sub">${farmFilters.size > 0 ? 'after your deposit dilutes it' : 'as advertised today'}</span></div>
     <div class="stat"><span class="v">${median != null ? pct(median) : '—'}</span><span class="k">middle of the pack</span><span class="sub">half pay more, half pay less</span></div>
     <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">paid out daily</span><span class="sub">across every farm, in sellable tokens</span></div>
     <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
-  $('#farmCount').innerHTML = `${enterable.toLocaleString()} you could enter with ${usd(farmFilters.size)}`
-    + `<span class="dim"> &middot; ${rows.length.toLocaleString()} total</span>`;
+  $('#farmCount').innerHTML = farmFilters.size > 0
+    ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} farms</span>`
+    : `${rows.length.toLocaleString()} farms`;
 
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'aprAt', label: `APR on $${farmFilters.size}`, r: true, s: true },
+    { k: 'aprAt', label: farmFilters.size > 0 ? `APR after adding ${usd(farmFilters.size)}` : 'APR now', r: true, s: true },
     { k: 'share', label: 'You\u2019d own', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Pool', r: true, s: true },
@@ -739,17 +747,18 @@ function renderFarms() {
     // Show what you would get, with the headline underneath only when the two
     // differ enough to matter — that gap IS the size of the farm.
     const aprCell = g.tooSmall
-      ? `<span class="dim" title="This pool holds ${usd(g.pool?.tvlReal || 0)}. A ${usd(farmFilters.size)} deposit would be ${(g.share * 100).toFixed(0)}% of it — you would be trading against yourself.">too small</span>`
+      ? `<span class="dim" title="This pool holds ${usd(g.pool?.tvlReal || 0)}. Adding ${usd(farmFilters.size)} would make you ${(g.share * 100).toFixed(0)}% of it — you would mostly be trading against yourself.">too small for that</span>`
       : g.aprAt != null
         ? `<span class="apr">${pct(g.aprAt)}</span>`
-          + (g.aprReal != null && g.aprReal > g.aprAt * 1.3 ? `<span class="nominal">${pct(g.aprReal)} at today's size</span>` : '')
+          + (farmFilters.size > 0 && g.aprReal != null && g.aprReal > g.aprAt * 1.3
+              ? `<span class="nominal">${pct(g.aprReal)} before your deposit</span>` : '')
         : `<span class="dim">—</span>`;
     const ends = g.endsAt ? Math.round((g.endsAt - Date.now()) / 86400000) : null;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num ${g.tooSmall ? 'neg' : g.share > 0.15 ? '' : 'dim'}">${(g.share * 100).toFixed(g.share > 0.1 ? 0 : 1)}%</td>
+      <td class="r num ${g.tooSmall ? 'neg' : g.share > 0.15 ? '' : 'dim'}">${farmFilters.size > 0 ? (g.share * 100).toFixed(g.share > 0.1 ? 0 : 1) + '%' : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
@@ -1015,20 +1024,25 @@ async function runOne(box, entry, feeBps, feeAccount) {
   };
 
   try {
+    render(0, 'Reading your balances…');
+    // Snapshot first: the redeposit must be able to tell the harvest apart from
+    // what was already in the wallet.
+    const before = await readBalances(pos.pool);
+
     render(0, 'Waiting for your wallet…');
     const { actions, swaps } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
     const skipped = swaps.filter(s => s.skipped);
     if (!actions.length) throw new Error('Nothing claimable to harvest.');
     const r1 = await wallet.transact(actions);
 
-    render(1, 'Reading balances, then waiting for your wallet…');
-    // Give the chain a moment to reflect the swap before reading balances back.
+    render(1, 'Measuring what the harvest produced…');
     await new Promise(r => setTimeout(r, 2500));
-    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount });
+    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before });
     const r2 = await wallet.transact(dep.actions);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
-      <b>Compounded.</b> Added ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} back into ticks ${pos.tickLower}…${pos.tickUpper}.
+      <b>Compounded.</b> Put back ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} — the harvest only.
+      Your existing ${esc(pos.pool.symA)} and ${esc(pos.pool.symB)} were left alone.
       ${skipped.length ? `<br><span class="dim">${skipped.length} reward left unswapped (${skipped.map(s => esc(s.skipped)).join(', ')}) — it is in your wallet.</span>` : ''}
       <br><span class="mono" style="font-size:11px">${r1.id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
   } catch (e) {
