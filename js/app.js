@@ -10,7 +10,7 @@ import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.j
 import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
-import { topHolders, clusterHolders, transferClusters, tokenSupply } from './holders.js';
+import { topHolders, clusterHolders, transferClusters, tokenSupply, lpHoldings } from './holders.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -1367,8 +1367,8 @@ async function openToken(id) {
 
     <div class="section"><h3>Who holds it</h3>
       <div class="grid g2">
-        <div class="card"><h3>Largest holders</h3><div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
-        <div class="card"><h3>Wallets that move size to each other <span class="dim">— transfers of ${esc(t.symbol)} between top holders</span></h3><div id="tokClusters"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
+        <div class="card"><h3>Largest holders <span class="dim">— wallet plus what they hold inside pools</span></h3><div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
+        <div class="card"><h3>Wallets that have moved size between each other <span class="dim">— ordinary for a project running several accounts</span></h3><div id="tokClusters"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
       </div>
     </div>
 
@@ -1403,14 +1403,27 @@ async function openToken(id) {
   }
 
   if (holders.length) {
+    // A wallet balance alone understates ownership: someone can look small and
+    // hold most of a pool. fragglerockk sits 7th on CHEESE by wallet and 5th
+    // once its 177k inside pools is counted.
+    const top = holders.slice(0, 14);
+    await Promise.all(top.map(async h => {
+      try { h.lp = (await lpHoldings(h.account, id, pools)).total; } catch { h.lp = 0; }
+      h.total = h.balance + (h.lp || 0);
+    }));
+    top.sort((a, b) => b.total - a.total);
     const share = b => supply > 0 ? (b / supply * 100) : null;
-    $('#tokHolders').innerHTML = `<table style="font-size:12.5px"><tbody>${holders.slice(0, 14).map((h, i) => `
+
+    $('#tokHolders').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+      <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
+      <tbody>${top.map((h, i) => `
       <tr><td class="rank">${i + 1}</td>
-        <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for others rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
+        <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
         <td class="r num">${qty(h.balance)}</td>
-        <td class="r num ${share(h.balance) > 10 ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
-      </tr>`).join('')}</tbody></table>
-      <p class="sub" style="margin:9px 0 0">Contracts are marked: pools, lockers and bridges hold tokens for other people, so counting them as holders makes every token look owned by one whale.</p>`;
+        <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
+        <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
+      </tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as holders makes every token look owned by one address.</p>`;
   }
 
   try {
@@ -1426,7 +1439,7 @@ async function openToken(id) {
           <div class="mono" style="font-size:11.5px;color:var(--ink-2);margin-bottom:6px">${g.members.map(m => esc(m.account)).join(' · ')}</div>
           ${g.links.slice(0, 4).map(l => `<div class="sub" style="font-size:11.5px">${esc(l.pair[0])} &harr; ${esc(l.pair[1])} &nbsp;<span class="mono">${qty(l.amount)} ${esc(symbol)}</span></div>`).join('')}
         </div>`).join('')
-        + '<p class="sub" style="margin:4px 0 0">Wallets that have moved this token between each other. That is a fact, not an accusation — projects legitimately run several accounts. It is the same thing a bubble map draws.</p>';
+        + '<p class="sub" style="margin:4px 0 0">Projects run treasuries, farm funders and airdrop accounts, and moving tokens between them is routine. Read this next to the share column: several wallets passing size around <em>and</em> holding a large share together is the combination worth a look.</p>';
     }
   } catch (e) {
     $('#tokClusters').innerHTML = `<div class="chart-empty">Could not trace transfers (${esc(e.message)}).</div>`;

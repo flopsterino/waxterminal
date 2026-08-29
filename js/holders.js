@@ -160,6 +160,56 @@ export async function clusterHolders(holders) {
   return clusters;
 }
 
+// What a wallet really controls: what it holds, plus its share of the token
+// sitting in liquidity positions.
+//
+// Moving tokens between wallets is ordinary — a project runs a treasury, a
+// farm funder, an airdrop account — so a transfer graph on its own accuses
+// people of doing their job. Ownership is the question worth asking, and a
+// wallet that looks small can hold most of a pool.
+export async function lpHoldings(account, tokenId, pools) {
+  const [symbol, contract] = [tokenId.split('@')[0], tokenId.split('@')[1]];
+  let total = 0;
+  const detail = [];
+
+  // Alcor publishes an account's positions already valued and sized.
+  try {
+    const r = await fetch(`https://wax.alcor.exchange/api/v2/account/${encodeURIComponent(account)}/positions`,
+      { signal: AbortSignal.timeout(15000) });
+    if (r.ok) {
+      const byPool = new Map(pools.filter(p => p.dex === 'alcor').map(p => [String(p.id), p]));
+      for (const pos of await r.json()) {
+        if (pos.closed) continue;
+        const pool = byPool.get(String(pos.pool));
+        if (!pool) continue;
+        const side = pool.tokenA === tokenId ? pos.amountA : pool.tokenB === tokenId ? pos.amountB : null;
+        if (side == null) continue;
+        const amt = parseFloat(String(side)) || 0;
+        if (amt > 0) { total += amt; detail.push({ pool: `${pool.symA}/${pool.symB}`, amount: amt, venue: 'Alcor' }); }
+      }
+    }
+  } catch { /* fall through: wallet-only is still a useful answer */ }
+
+  // TacoSwap LP is a plain token balance, so a share of the pair's reserves.
+  try {
+    const { getAllRows } = await import('./chain.js');
+    const rows = await getAllRows('swap.taco', account, 'accounts');
+    const byLp = new Map(pools.filter(p => p.dex === 'taco').map(p => [p.id, p]));
+    for (const row of rows) {
+      const [amtStr, sym] = String(row.balance).trim().split(/\s+/);
+      const pool = byLp.get(sym);
+      if (!pool || !(pool.lpSupply > 0)) continue;
+      const share = Number(amtStr) / pool.lpSupply;
+      const reserve = pool.tokenA === tokenId ? pool.reserveA : pool.tokenB === tokenId ? pool.reserveB : null;
+      if (reserve == null) continue;
+      const amt = reserve * share;
+      if (amt > 0) { total += amt; detail.push({ pool: `${pool.symA}/${pool.symB}`, amount: amt, venue: 'Taco' }); }
+    }
+  } catch {}
+
+  return { total, detail };
+}
+
 // Total supply, so a balance can be read as a share of the whole.
 export async function tokenSupply(contract, symbol) {
   const { getRows } = await import('./chain.js');
