@@ -5,6 +5,13 @@ name: Deploy to Pages
 on:
   push:
     branches: [main]
+  # A push made by the Actions bot does not trigger other workflows — GitHub
+  # blocks that to prevent recursion. Without this the daily snapshot commits
+  # fresh data that never reaches the site, and the terminal quietly serves
+  # yesterday's numbers.
+  workflow_run:
+    workflows: ["Chain snapshot"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
