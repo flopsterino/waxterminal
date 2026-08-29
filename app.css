@@ -372,3 +372,66 @@ td.rank { color: var(--muted); font-family: var(--font-data); font-size: 11px; w
 .sizesel .chip { padding: 4px 9px; font-size: 11.5px; }
 tbody tr.faded td { opacity: .5; }
 tbody tr.faded:hover td { opacity: .85; }
+
+/* ===========================================================================
+   NARROW SCREENS
+   A data table does not become usable by shrinking it. Below the breakpoint the
+   secondary columns step aside so the ones people came for — what it pays, what
+   it is worth — stay on screen, and the rest scrolls.
+   =========================================================================== */
+@media (max-width: 860px) {
+  .top { height: auto; min-height: 52px; padding: 8px 12px; flex-wrap: wrap; gap: 8px; }
+  .brand { font-size: 14px; }
+  .brand span:last-child { white-space: nowrap; }
+  nav.tabs {
+    order: 3; width: 100%; margin: 0; overflow-x: auto; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch; padding-bottom: 2px;
+  }
+  nav.tabs::-webkit-scrollbar { display: none; }
+  nav.tabs button { flex: none; }
+  .top .spacer { flex: 1; }
+
+  .wrap { padding: 14px 10px 70px; }
+  h2.vt { font-size: 20px; }
+  p.vs { font-size: 12.5px; }
+  .stat { padding: 11px 12px; }
+  .stat .v { font-size: 19px; }
+
+  .toolbar { gap: 6px; }
+  .search { flex: 1 1 100%; max-width: none; }
+  .sizesel { flex: 1 1 100%; }
+
+  /* Farms: pool, APR and what it pays. The rest scrolls into view. */
+  #farmTable th:nth-child(1), #farmTable td:nth-child(1),
+  #farmTable th:nth-child(5), #farmTable td:nth-child(5),
+  #farmTable th:nth-child(7), #farmTable td:nth-child(7),
+  #farmTable th:nth-child(8), #farmTable td:nth-child(8) { display: none; }
+  #farmTable td:nth-child(4) { max-width: 190px; }
+
+  /* Pools: pool, TVL, volume. */
+  #poolTable th:nth-child(1), #poolTable td:nth-child(1),
+  #poolTable th:nth-child(5), #poolTable td:nth-child(5),
+  #poolTable th:nth-child(6), #poolTable td:nth-child(6),
+  #poolTable th:nth-child(7), #poolTable td:nth-child(7),
+  #poolTable th:nth-child(9), #poolTable td:nth-child(9) { display: none; }
+
+  /* Tokens: token, price, pooled, volume. */
+  #tokTable th:nth-child(1), #tokTable td:nth-child(1),
+  #tokTable th:nth-child(6), #tokTable td:nth-child(6),
+  #tokTable th:nth-child(7), #tokTable td:nth-child(7) { display: none; }
+
+  table { min-width: 0; font-size: 12.5px; }
+  thead th, tbody td { padding: 9px 10px; }
+  .pairbig { font-size: 12.5px; }
+  .venue { display: none; }
+  .grid.g2, .grid.g3, .grid.g3c { grid-template-columns: 1fr; }
+  .donut { justify-content: center; }
+  .freshbar { font-size: 12px; }
+  .freshbar .btn { margin-left: 0; width: 100%; }
+  .filters { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 480px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  .filters { grid-template-columns: 1fr; }
+  #farmTable td:nth-child(4) { max-width: 130px; }
+}

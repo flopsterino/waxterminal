@@ -185,8 +185,18 @@ function renderOverview() {
   const real = pools.reduce((s, p) => s + (p.tvlReal || 0), 0);
   const rewardsReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
   const rewardsNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
-  const bestApr = groups.filter(g => g.aprReal != null).sort((a, b) => b.aprReal - a.aprReal);
-  const withApr = groups.filter(g => g.aprReal != null && g.aprReal < 1000);
+  // Same measure as the farms page: what a real deposit would earn, in pools you
+  // could actually enter. Ranking on the headline rate here would contradict the
+  // page it links to.
+  const SIZE = 500;
+  for (const g of groups) {
+    const tvl = g.pool?.tvlReal;
+    g.share = tvl > 0 ? SIZE / (tvl + SIZE) : 1;
+    g.tooSmall = g.share > 0.33;
+    g.aprAt = (g.rewardRealDay > 0 && g.stakedReal != null) ? (g.rewardRealDay * 365 / (g.stakedReal + SIZE)) * 100 : null;
+  }
+  const bestApr = groups.filter(g => g.aprAt != null && !g.tooSmall).sort((a, b) => b.aprAt - a.aprAt);
+  const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
     <div class="stat"><span class="v">${usd(real)}</span><span class="k">real value locked</span><span class="sub">of ${usd(nominal)} nominal &middot; ${(real / nominal * 100).toFixed(0)}%</span></div>
@@ -198,8 +208,8 @@ function renderOverview() {
   const box = $('#ovCharts');
   box.innerHTML = `
     <div class="section"><h3>Best farm returns</h3>
-      <div class="card"><h3>Highest APR you could actually earn <span class="dim">— real rewards over real staked capital</span>
-        <span class="hero">${bestApr.length} of ${groups.length} qualify</span></h3>
+      <div class="card"><h3>What a $500 deposit would earn <span class="dim">— after it dilutes the rate</span>
+        <span class="hero">${bestApr.length} of ${groups.length} are enterable</span></h3>
         <div id="ovBest"></div></div>
     </div>
     <div class="section"><h3>Where the liquidity is</h3>
@@ -217,7 +227,7 @@ function renderOverview() {
     <div class="section"><h3>Farms</h3>
       <div class="grid g2">
         <div class="card"><h3>Biggest daily payouts <span class="dim">— USD per day</span></h3><div id="ovRew"></div></div>
-        <div class="card"><h3>Where APRs actually sit <span class="dim">— ${withApr.length} priced farms</span></h3><div id="ovApr"></div></div>
+        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} enterable farms at $500</span></h3><div id="ovApr"></div></div>
       </div>
     </div>
     <div class="section"><h3>Market</h3>
@@ -236,12 +246,12 @@ function renderOverview() {
   else {
     bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
       label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
-      value: g.aprReal,
-      note: `${usd(g.stakedReal)} staked · ${usd(g.rewardRealDay)}/day · ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}`,
+      value: g.aprAt,
+      note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}`,
     })), { fmt: v => v.toFixed(0) + '%', color: 'var(--c3)' }));
     const n = document.createElement('p');
     n.className = 'sub'; n.style.marginTop = '10px';
-    n.textContent = 'Hover a bar for the staked size — a 300% APR on $34 of capital is true and not an opportunity.';
+    n.textContent = 'Hover for how much of each pool you would own. Pools too small to take $500 are left out.';
     bestBox.appendChild(n);
   }
 
@@ -271,7 +281,7 @@ function renderOverview() {
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm pays a reward with real liquidity behind it.' }));
 
   $('#ovApr').appendChild(withApr.length
-    ? histogram(withApr.map(g => g.aprReal), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
+    ? histogram(withApr.map(g => g.aprAt), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No real APRs yet — hit "Compute APR" on the farms page to value the Alcor ones.' }));
 
   // Alcor only. Its fee is a real field on the pool row (0.05 / 0.30 / 1.00%);
@@ -672,15 +682,18 @@ function renderFarms() {
   });
 
   const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
-  const payNom = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
+  const enterableAll = rows.filter(g => !g.tooSmall && g.aprAt != null);
+  const best = enterableAll.length ? Math.max(...enterableAll.map(g => g.aprAt)) : null;
+  const median = enterableAll.length
+    ? [...enterableAll].map(g => g.aprAt).sort((a, b) => a - b)[Math.floor(enterableAll.length / 2)]
+    : null;
   const multi = groups.filter(g => g.tokenCount > 1).length;
-  const trustworthy = groups.filter(g => g.aprReal != null).length;
   $('#farmStats').innerHTML = `
-    <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
-    <div class="stat"><span class="v">${trustworthy.toLocaleString()}</span><span class="k">with a real APR</span><span class="sub">the rest pay or hold nothing sellable</span></div>
-    <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">real rewards / day</span><span class="sub">${usd(payNom)} at face value</span></div>
-    <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>
-    <div class="stat"><span class="v">${groups.filter(g => g.dex === 'alcor').length.toLocaleString()}</span><span class="k">on Alcor</span></div>`;
+    <div class="stat"><span class="v">${enterableAll.length.toLocaleString()}</span><span class="k">you could enter</span><span class="sub">with ${usd(farmFilters.size)}, of ${groups.length.toLocaleString()} farmed pools</span></div>
+    <div class="stat"><span class="v">${best != null ? pct(best) : '—'}</span><span class="k">best rate at that size</span><span class="sub">after your deposit dilutes it</span></div>
+    <div class="stat"><span class="v">${median != null ? pct(median) : '—'}</span><span class="k">middle of the pack</span><span class="sub">half pay more, half pay less</span></div>
+    <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">paid out daily</span><span class="sub">across every farm, in sellable tokens</span></div>
+    <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
   $('#farmCount').innerHTML = `${enterable.toLocaleString()} you could enter with ${usd(farmFilters.size)}`
     + `<span class="dim"> &middot; ${rows.length.toLocaleString()} total</span>`;
