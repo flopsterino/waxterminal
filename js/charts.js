@@ -233,3 +233,64 @@ export function rangeBar(tickLower, tickUpper, tick, { pad = 0.35 } = {}) {
   d.title = inRange ? 'Price is inside the band — earning' : 'Price has left the band — earning nothing';
   return d;
 }
+
+// A bubble map. Circle area is what a wallet holds; a line means those two
+// wallets have moved this token between each other. Laid out on a ring rather
+// than with a force simulation — with a dozen nodes the physics adds nothing but
+// a dependency and a wait, and a ring keeps every label readable.
+export function bubbleMap(nodes, links, { size = 380, fmt = v => v } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  const live = nodes.filter(n => n.value > 0).slice(0, 12);
+  if (live.length < 2) { wrap.innerHTML = '<div class="chart-empty">Not enough holders to map.</div>'; return wrap; }
+
+  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': 'Holder map' });
+  svg.style.cssText = `width:100%;max-width:${size}px;height:auto;display:block;margin:0 auto;overflow:visible`;
+
+  const max = Math.max(...live.map(n => n.value));
+  const R = size * 0.34, cx = size / 2, cy = size / 2;
+  const pos = new Map();
+  live.forEach((n, i) => {
+    const a = (i / live.length) * Math.PI * 2 - Math.PI / 2;
+    pos.set(n.id, { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, n });
+  });
+
+  // Edges first so bubbles sit on top of them.
+  const maxLink = Math.max(...links.map(l => l.value), 1);
+  for (const l of links) {
+    const a = pos.get(l.source), b = pos.get(l.target);
+    if (!a || !b) continue;
+    const line = el('line', {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      stroke: 'var(--accent)', 'stroke-opacity': 0.45,
+      'stroke-width': 1 + 3 * Math.sqrt(l.value / maxLink),
+    });
+    line.appendChild(el('title')).textContent = `${l.source} ↔ ${l.target}: ${fmt(l.value)}`;
+    svg.appendChild(line);
+  }
+
+  live.forEach((n, i) => {
+    const p = pos.get(n.id);
+    const r = 10 + 26 * Math.sqrt(n.value / max);
+    const g = el('g');
+    const c = el('circle', {
+      cx: p.x, cy: p.y, r,
+      fill: n.contract ? 'var(--line-2)' : SERIES(i),
+      'fill-opacity': n.contract ? 0.5 : 0.75,
+      stroke: 'var(--surface)', 'stroke-width': 2,
+    });
+    c.appendChild(el('title')).textContent = `${n.id}: ${fmt(n.value)}${n.share != null ? ` (${(n.share * 100).toFixed(2)}% of supply)` : ''}${n.contract ? ' — a contract, holding for others' : ''}`;
+    g.appendChild(c);
+    const label = el('text', {
+      x: p.x, y: p.y + r + 12, 'text-anchor': 'middle',
+      fill: 'var(--ink-2)', 'font-size': 9.5,
+    });
+    label.style.fontFamily = 'var(--font-data)';
+    label.textContent = n.id.length > 13 ? n.id.slice(0, 12) + '…' : n.id;
+    g.appendChild(label);
+    svg.appendChild(g);
+  });
+
+  wrap.appendChild(svg);
+  return wrap;
+}

@@ -7,10 +7,10 @@ import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache,
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.js';
-import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
+import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
-import { topHolders, clusterHolders, transferClusters, tokenSupply, lpHoldings } from './holders.js';
+import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs } from './holders.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -1344,6 +1344,9 @@ async function renderActivity() {
 }
 
 // --------------------------------------------------------- TOKEN DETAIL -----
+// Everything about one token in one place: what it is worth, how much exists,
+// how much is gone, where it trades, who owns it and which of those owners are
+// connected. The pieces were scattered across three views and a tooltip.
 async function openToken(id) {
   const rows = tokRows || tokenTable();
   const t = rows.find(x => x.id === id);
@@ -1353,59 +1356,134 @@ async function openToken(id) {
   const meta = tokenMeta(id);
   const pools = state.pools.filter(p => (p.tokenA === id || p.tokenB === id) && p.tvl > 0)
     .sort((a, b) => (b.tvl || 0) - (a.tvl || 0));
+  const deepest = pools.find(p => p.dex === 'alcor' && p.sqrtX64) || null;
+  const farms = farmGroups().filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
 
   $('#tokenDetail').innerHTML = `
-    <h2 class="vt"><span id="tokMark"></span>${esc(t.symbol)} <span class="dim" style="font-weight:400;font-size:15px">${esc(t.contract)}</span></h2>
-    <p class="vs">${t.pools} pool${t.pools === 1 ? '' : 's'} across ${[...t.venues].length} venue${[...t.venues].length === 1 ? '' : 's'}${t.bornAt ? ` &middot; first seen ${age(t.bornAt)} ago` : ''}${meta?.score != null ? ` &middot; Alcor rates it ${meta.score}/100` : ''}</p>
-    <div class="stats">
+    <div class="tokhead">
+      <span id="tokMark"></span>
+      <div>
+        <h2 class="vt" style="margin:0">${esc(t.symbol)}</h2>
+        <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${meta?.score != null ? ` &middot; Alcor rates it ${meta.score}/100` : ''}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
+      </div>
+      <span style="flex:1"></span>
+      ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
+    </div>
+
+    <div class="stats" id="tokStats">
       <div class="stat"><span class="v">${t.price == null ? '—' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</span><span class="k">price</span></div>
-      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span></div>
+      <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating × price</span></div>
+      <div class="stat"><span class="v" id="tokCirc">—</span><span class="k">circulating</span><span class="sub" id="tokBurn">&nbsp;</span></div>
+      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pools on ${[...t.venues].length} venue${[...t.venues].length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${t.vol24 > 0 ? usd(t.vol24) : '—'}</span><span class="k">traded 24h</span></div>
       <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
-      <div class="stat"><span class="v" id="tokSupply">—</span><span class="k">supply</span></div>
     </div>
 
-    <div class="section"><h3>Who holds it</h3>
+    ${deepest ? `<div class="section"><h3>Price</h3>
+      <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">— candles from pool state changes</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" data-tiv="900" aria-pressed="false">15m</button>
+          <button class="chip" data-tiv="3600" aria-pressed="true">1h</button>
+          <button class="chip" data-tiv="14400" aria-pressed="false">4h</button>
+          <button class="chip" data-tiv="86400" aria-pressed="false">24h</button>
+        </span></h3>
+        <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
+    </div>` : ''}
+
+    <div class="section"><h3>Ownership</h3>
       <div class="grid g2">
-        <div class="card"><h3>Largest holders <span class="dim">— wallet plus what they hold inside pools</span></h3><div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
-        <div class="card"><h3>Wallets that have moved size between each other <span class="dim">— ordinary for a project running several accounts</span></h3><div id="tokClusters"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
+        <div class="card"><h3>Largest holders <span class="dim">— wallet plus what they hold inside pools</span></h3>
+          <div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
+        <div class="card"><h3>Holder map <span class="dim">— lines mean they have moved ${esc(t.symbol)} to each other</span></h3>
+          <div id="tokBubbles"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
       </div>
     </div>
 
-    <div class="section"><h3>Where its liquidity is</h3>
-      <div class="card">
-        <p class="sub" style="margin:0 0 10px">${d?.topPartner
-          ? `${(d.topPartner.share * 100).toFixed(0)}% of the value standing opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
-            + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% comes from tokens issued by the same account, which is the part worth a second look.` : '')
-          : 'No priced counterparty found.'}</p>
-        <div id="tokPools"></div>
+    <div class="section"><h3>Liquidity</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Biggest liquidity providers <span class="dim">— ${esc(t.symbol)} supplied to pools</span></h3>
+          <div id="tokLps"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>
+        <div class="card"><h3>Where it trades</h3><div id="tokPools"></div>
+          <p class="sub" style="margin:10px 0 0">${d?.topPartner
+            ? `${(d.topPartner.share * 100).toFixed(0)}% of the value standing opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
+              + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% of it comes from tokens issued by the same account.` : '')
+            : ''}</p></div>
       </div>
-    </div>`;
+    </div>
 
-  $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 26 }));
-  $('#tokPools').appendChild(bars(pools.slice(0, 10).map(p => ({
-    label: `${p.symA}/${p.symB}`,
-    value: p.tvl || 0,
+    ${farms.length ? `<div class="section"><h3>Farms paying or holding ${esc(t.symbol)}</h3>
+      <div class="card"><div id="tokFarms"></div></div></div>` : ''}`;
+
+  $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
+  $('#tokPools').appendChild(bars(pools.slice(0, 8).map(p => ({
+    label: `${p.symA}/${p.symB}`, value: p.tvl || 0,
     note: `${p.dex} · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}`,
   })), { fmt: usd }));
 
-  // Holders and clusters are per-token work, so they load after the page shows.
-  const [contract, symbol] = [t.contract, t.symbol];
-  let supply = null;
-  try { supply = await tokenSupply(contract, symbol); if (supply) $('#tokSupply').textContent = qty(supply); } catch {}
+  if (farms.length) {
+    $('#tokFarms').appendChild(bars(farms.slice(0, 8).map(g => ({
+      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+      value: g.rewardRealDay || 0,
+      note: `pays ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}${g.aprReal != null ? ` · ${pct(g.aprReal)} APR` : ''}`,
+    })), { fmt: v => usd(v) + '/day', color: 'var(--c3)' }));
+  }
 
+  // ---- supply, burn, market cap -------------------------------------------
+  let stats = null;
+  try {
+    stats = await tokenStats(t.contract, t.symbol);
+    if (stats) {
+      $('#tokCirc').textContent = qty(stats.circulating);
+      $('#tokBurn').innerHTML = stats.burned > 0
+        ? `${qty(stats.burned)} burned <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}%)</span>`
+        : `of ${qty(stats.maxSupply)} ever`;
+      if (t.price != null) {
+        $('#tokCap').textContent = usd(stats.circulating * t.price);
+        $('#tokCapSub').textContent = `${(t.tvl / (stats.circulating * t.price) * 100).toFixed(1)}% of it is pooled`;
+      }
+    }
+  } catch {}
+
+  // ---- price chart ---------------------------------------------------------
+  if (deepest) {
+    poolDeltas(deepest.id, { pages: 8 }).then(rws => {
+      const box = $('#tokChart');
+      if (!rws.length) { box.innerHTML = '<div class="chart-empty">No state changes in the window the history node keeps.</div>'; return; }
+      const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rws.at(-1).price || 1)) + 4));
+      const draw = iv => candleChart(box, toCandles(rws, { bucketSec: iv }), { height: 280, precision: prec })
+        .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
+      draw(3600);
+      document.querySelectorAll('[data-tiv]').forEach(b => b.onclick = () => {
+        document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        draw(Number(b.dataset.tiv));
+      });
+    }).catch(() => { $('#tokChart').innerHTML = '<div class="chart-empty">History unavailable.</div>'; });
+  }
+
+  // ---- liquidity providers -------------------------------------------------
+  topLPs(id, pools).then(lps => {
+    const box = $('#tokLps');
+    if (!lps.length) { box.innerHTML = '<div class="chart-empty">No positions found.</div>'; return; }
+    const tot = lps.reduce((s, l) => s + l.amount, 0);
+    box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px"><tbody>${
+      lps.slice(0, 10).map((l, i) => `<tr><td class="rank">${i + 1}</td>
+        <td class="mono">${esc(l.account)}</td>
+        <td class="r num">${qty(l.amount)}</td>
+        <td class="r num dim">${(l.amount / tot * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it — the largest supplier often does not appear there at all.</p>`;
+  }).catch(e => { $('#tokLps').innerHTML = `<div class="chart-empty">Positions unavailable.</div>`; });
+
+  // ---- holders and the map -------------------------------------------------
   let holders = [];
   try {
-    holders = await topHolders(contract, symbol, 25);
+    holders = await topHolders(t.contract, t.symbol, 25);
     await clusterHolders(holders);
   } catch (e) {
     $('#tokHolders').innerHTML = `<div class="chart-empty">Holder list unavailable (${esc(e.message)}).</div>`;
   }
 
+  const supply = stats?.supply ?? 0;
   if (holders.length) {
-    // A wallet balance alone understates ownership: someone can look small and
-    // hold most of a pool. fragglerockk sits 7th on CHEESE by wallet and 5th
-    // once its 177k inside pools is counted.
     const top = holders.slice(0, 14);
     await Promise.all(top.map(async h => {
       try { h.lp = (await lpHoldings(h.account, id, pools)).total; } catch { h.lp = 0; }
@@ -1413,7 +1491,6 @@ async function openToken(id) {
     }));
     top.sort((a, b) => b.total - a.total);
     const share = b => supply > 0 ? (b / supply * 100) : null;
-
     $('#tokHolders').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
       <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
       <tbody>${top.map((h, i) => `
@@ -1423,26 +1500,22 @@ async function openToken(id) {
         <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
         <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
       </tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as holders makes every token look owned by one address.</p>`;
-  }
+      <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
 
-  try {
-    const clusters = await transferClusters(contract, symbol, holders, { supply });
-    const box = $('#tokClusters');
-    if (!clusters.length) {
-      box.innerHTML = '<div class="chart-empty">No transfers between the top holders. Nothing suggesting one hand behind several wallets.</div>';
-    } else {
-      box.innerHTML = clusters.slice(0, 3).map(g => `
-        <div style="margin-bottom:14px">
-          <div style="font-size:13px;margin-bottom:5px"><b>${g.members.length} wallets</b>
-            ${g.share != null ? `holding <b>${(g.share * 100).toFixed(1)}%</b> of supply between them` : ''}</div>
-          <div class="mono" style="font-size:11.5px;color:var(--ink-2);margin-bottom:6px">${g.members.map(m => esc(m.account)).join(' · ')}</div>
-          ${g.links.slice(0, 4).map(l => `<div class="sub" style="font-size:11.5px">${esc(l.pair[0])} &harr; ${esc(l.pair[1])} &nbsp;<span class="mono">${qty(l.amount)} ${esc(symbol)}</span></div>`).join('')}
-        </div>`).join('')
-        + '<p class="sub" style="margin:4px 0 0">Projects run treasuries, farm funders and airdrop accounts, and moving tokens between them is routine. Read this next to the share column: several wallets passing size around <em>and</em> holding a large share together is the combination worth a look.</p>';
-    }
-  } catch (e) {
-    $('#tokClusters').innerHTML = `<div class="chart-empty">Could not trace transfers (${esc(e.message)}).</div>`;
+    try {
+      const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });
+      const nodes = top.map(h => ({ id: h.account, value: h.total, contract: !!h.contractRole, share: supply > 0 ? h.total / supply : null }));
+      const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
+      const box = $('#tokBubbles');
+      box.innerHTML = '';
+      box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol }));
+      const note = document.createElement('p');
+      note.className = 'sub'; note.style.marginTop = '8px';
+      note.innerHTML = links.length
+        ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts — read it next to the share column.`
+        : 'No transfers between the largest holders.';
+      box.appendChild(note);
+    } catch { $('#tokBubbles').innerHTML = '<div class="chart-empty">Could not trace transfers.</div>'; }
   }
 }
 

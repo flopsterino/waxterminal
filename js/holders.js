@@ -210,11 +210,45 @@ export async function lpHoldings(account, tokenId, pools) {
   return { total, detail };
 }
 
-// Total supply, so a balance can be read as a share of the whole.
-export async function tokenSupply(contract, symbol) {
+// Supply, ceiling, issuer, and how much has been sent to eosio.null — the WAX
+// convention for burning, since the chain has no burn primitive. Circulating is
+// supply minus that.
+export async function tokenStats(contract, symbol) {
   const { getRows } = await import('./chain.js');
   const d = await getRows(contract, symbol, 'stat', { limit: 1 });
   const row = d.rows?.[0];
   if (!row) return null;
-  return Number(String(row.supply).split(' ')[0]);
+  const supply = Number(String(row.supply).split(' ')[0]);
+  const maxSupply = Number(String(row.max_supply).split(' ')[0]);
+  let burned = 0;
+  try {
+    const b = await getRows(contract, 'eosio.null', 'accounts', { limit: 20 });
+    const hit = (b.rows || []).find(r => String(r.balance).endsWith(' ' + symbol));
+    burned = hit ? parseFloat(hit.balance) : 0;
+  } catch {}
+  return { supply, maxSupply, burned, circulating: supply - burned, issuer: row.issuer };
+}
+
+// Everyone providing liquidity in this token, summed across its pools. The
+// wallet list misses them: illustration is the largest CHEESE LP at 192k and
+// does not appear among the top token holders at all.
+export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
+  const { getAllRows } = await import('./chain.js');
+  const { sqrtPriceFromX64, amountsForLiquidity, parseAsset } = await import('./math.js');
+  const owners = new Map();
+  const add = (o, amt) => { if (amt > 0) owners.set(o, (owners.get(o) || 0) + amt); };
+
+  const alcor = pools.filter(p => p.dex === 'alcor' && p.tvl > 20).sort((a, b) => b.tvl - a.tvl).slice(0, maxPools);
+  await Promise.all(alcor.map(async p => {
+    try {
+      const rows = await getAllRows('swap.alcor', p.id, 'positions');
+      const s = sqrtPriceFromX64(p.sqrtX64);
+      const isA = p.tokenA === tokenId;
+      for (const r of rows) {
+        const { amountA, amountB } = amountsForLiquidity(r.liquidity, s, r.tickLower, r.tickUpper);
+        add(r.owner, isA ? amountA / 10 ** p.decA : amountB / 10 ** p.decB);
+      }
+    } catch {}
+  }));
+  return [...owners].map(([account, amount]) => ({ account, amount })).sort((a, b) => b.amount - a.amount);
 }
