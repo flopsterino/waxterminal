@@ -225,7 +225,22 @@ async function loadSnapshot() {
   return d;
 }
 
+// Development brake. This machine also runs trading bots that depend on the same
+// public WAX nodes from the same IP, and a repeated 19,820-pool sweep during UI
+// work is load those bots do not need to compete with. `?snapshot=1` renders
+// entirely from the committed file and touches the chain zero times.
+//
+// In production this cannot happen: the terminal runs in each visitor's browser,
+// so their calls come from their own IP, and the daily snapshot runs on GitHub.
+export const SNAPSHOT_ONLY = typeof location !== 'undefined' && new URLSearchParams(location.search).has('snapshot');
+
 export async function loadCore({ onProgress = () => {}, force = false } = {}) {
+  if (SNAPSHOT_ONLY) {
+    const d = await loadSnapshot();
+    state.stale = false; state.hosts = [];   // no live read follows in this mode
+    onProgress({ phase: 'snapshot', done: true, at: d.at, pools: state.pools.length });
+    return state;
+  }
   if (!force) {
     const cached = await cacheGet(CACHE_KEY);
     if (cached) {
@@ -452,18 +467,56 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
 }
 
 // Hyperion get_deltas replays a table row over time — this is the entire history
-// layer, for free, with no indexer. Retention is the node's, not ours.
-export async function poolHistory(poolId, { limit = 300 } = {}) {
-  const q = new URLSearchParams({ code: ALCOR, scope: ALCOR, table: 'pools', limit: String(limit), sort: 'desc' });
-  const d = await hyperion(`/v2/history/get_deltas?${q}`);
-  const rows = (d.deltas || []).filter(x => String(x.primary_key) === String(poolId));
-  return rows.map(x => {
+// layer, for free, with no indexer. `primary_key` filters server-side, so one
+// pool costs one query instead of pulling the whole table and discarding 99% of
+// it. Retention is the history node's, not ours.
+export async function poolDeltas(poolId, { limit = 1000, pages = 3 } = {}) {
+  const out = [];
+  for (let page = 0; page < pages; page++) {
+    const q = new URLSearchParams({
+      code: ALCOR, scope: ALCOR, table: 'pools',
+      primary_key: String(poolId), limit: String(limit), skip: String(page * limit), sort: 'desc',
+    });
+    let d;
+    try { d = await hyperion(`/v2/history/get_deltas?${q}`); }
+    catch (e) { if (!out.length) throw e; break; }
+    const got = (d.deltas || []).filter(x => String(x.primary_key) === String(poolId));
+    out.push(...got);
+    if (got.length < limit) break;
+  }
+  return out.map(x => {
     const a = parseAsset(x.data.tokenA.quantity), b = parseAsset(x.data.tokenB.quantity);
     let price = null;
     try { price = priceFromX64(x.data.currSlot.sqrtPriceX64, a.decimals, b.decimals); } catch {}
-    return { ts: x.timestamp, block: x.block_num, reserveA: a.amount, reserveB: b.amount, price, liquidity: Number(x.data.liquidity) };
-  }).reverse();
+    return {
+      ts: new Date(x.timestamp + (x.timestamp.endsWith('Z') ? '' : 'Z')).getTime(),
+      block: x.block_num, reserveA: a.amount, reserveB: b.amount,
+      price, liquidity: Number(x.data.liquidity),
+    };
+  }).filter(r => r.price > 0).reverse();
 }
+
+export const poolHistory = (poolId, opts) => poolDeltas(poolId, opts);
+
+// Candles from state changes. Every swap rewrites the pool row, so consecutive
+// rows give both the price path and — from the change in reserves — the volume
+// that moved it. No trade index required.
+export function toCandles(rows, { bucketSec = 300 } = {}) {
+  const buckets = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const key = Math.floor(r.ts / 1000 / bucketSec) * bucketSec;
+    let c = buckets.get(key);
+    if (!c) { c = { time: key, open: r.price, high: r.price, low: r.price, close: r.price, volume: 0 }; buckets.set(key, c); }
+    c.high = Math.max(c.high, r.price);
+    c.low = Math.min(c.low, r.price);
+    c.close = r.price;
+    const prev = rows[i - 1];
+    if (prev) c.volume += Math.abs(r.reserveA - prev.reserveA);
+  }
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
+}
+
 
 // ------------------------------------------------------- farm grouping ------
 // A pool is what a user farms, not an incentive. Measured on chain: 633 of 1,883
@@ -531,4 +584,26 @@ export async function groupStakedUsd(group) {
   for (const p of positions) if (posIds.has(String(p.id))) usd += positionUsd(p, pool, s);
   groupCache.set(group.key, usd);
   return usd;
+}
+
+
+// ---------------------------------------------------------------- history ---
+// The daily GitHub Action appends one line per run, split by month. This is the
+// only multi-year memory in the system: chain state is now-only and Hyperion's
+// retention is not ours to depend on.
+export async function loadHistory({ months = 24 } = {}) {
+  const now = new Date();
+  const names = [];
+  for (let i = 0; i < months; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    names.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  const files = await Promise.all(names.map(async n => {
+    try {
+      const r = await fetch(`data/history/${n}.ndjson`, { cache: 'no-cache' });
+      if (!r.ok) return [];
+      return (await r.text()).trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    } catch { return []; }
+  }));
+  return files.flat().sort((a, b) => a.at - b.at);
 }

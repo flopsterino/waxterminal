@@ -43,7 +43,17 @@ Two files. Nothing else needs touching.
 - **Farms** — grouped by pool, not by incentive, because a pool commonly runs several at once.
 - **My liquidity** — every position a wallet holds across both DEXes, in range or not, with uncollected fees.
 - **Compound** — the full harvest for each position and the exact transaction that redeposits it.
+- **Overview** — the dashboard: where liquidity sits, who pays the most, where APRs actually fall, WAX candles, and the multi-year TVL series.
 - **Activity** — the live swap feed: who traded what, through which pool, for how much.
+
+Charts are hand-drawn SVG for categorical work (donut, bars, distribution) and
+TradingView Lightweight Charts for price, where people expect candles, a real
+time axis and a crosshair. Candles are built from pool state deltas: every swap
+rewrites the pool row, so consecutive rows carry both the price path and the
+volume that moved it — no trade index needed.
+
+Filtering is in-memory. 19,820 objects filter in about a millisecond, which is
+faster than any server round trip, so there is no database and none is wanted.
 
 ### Where the data comes from
 
@@ -114,12 +124,34 @@ selftest.html   verifies the maths against live chain state
 
 ---
 
+## Signing
+
+WharfKit is wired (Anchor everywhere; WAX Cloud Wallet where the page is served
+over HTTPS, since its popup needs a secure context). Compounding runs as **two
+transactions on purpose**:
+
+1. **Harvest and rebalance** — `collect`, one `getreward` per incentive, then the
+   swaps that route foreign rewards into the ratio the band needs.
+2. **Redeposit** — read what actually landed, `addliquid` that into the same
+   ticks, and pay the service fee inline.
+
+The split exists because `addliquid` takes concrete amounts while a swap's output
+is only known once it executes. Predicting it means either leaving value behind
+or reverting the whole transaction on a rounding error. Reading real balances
+between the two removes the guess entirely.
+
+Set `commercial.feeAccount` in `theme.json` to collect the fee; leave it empty
+and no fee action is built at all.
+
+**The action shapes are taken from the live ABI and a real on-chain swap, but no
+compound has been executed yet.** Do the first one with a position holding a few
+dollars before pointing anyone else at it.
+
 ## Not built yet
 
-- Signing. Every write path is planned and costed but no transaction is pushed;
-  wiring WharfKit is the next step.
 - TacoSwap history and its `exchangelog` feed.
 - Premium gating, alerts and exports.
+- Restaking after a compound is built (`buildRestake`) but not yet in the flow.
 
 **Thin routes are marked, not hidden.** Only bridged dollars are declared worth
 a dollar. Everything else is priced through the pool graph, and a price carries
@@ -129,3 +161,14 @@ sat in WAX pools whose entire exit to a bridged stablecoin was $590. Declaring i
 $1 inflated headline TVL by half a million dollars of value nobody could realise.
 $2.20M of the $2.90M the terminal reports stands on routes under $1,000; it says
 so on the front page.
+
+### Sharing an IP with trading bots
+
+This terminal is client-side, so in production every visitor's browser calls the
+public nodes from their own address and nothing is shared. The daily snapshot
+runs on GitHub's runners, not yours.
+
+The one case that does share an IP is developing locally on a machine that also
+runs bots against the same public nodes. Append `?snapshot=1` to the URL while
+working on the UI: the page renders entirely from `data/pools.json` and makes
+zero chain calls. Use it instead of reloading a full sweep to check a layout.

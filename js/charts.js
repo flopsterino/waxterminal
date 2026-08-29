@@ -1,123 +1,219 @@
 // =============================================================================
-// CHARTS — hand-drawn SVG. No chart library: every colour must resolve through
-// the theme tokens so a rebrand restyles the charts too, and a static site
-// should not pull 300 KB to draw a line.
+// CHARTS — hand-drawn SVG, no library.
+//
+// Colours come from --c1..--c8 in theme.css, assigned in fixed order and never
+// cycled: colour follows the entity, so a filter that removes a series must not
+// repaint the survivors. That eight-slot set is validated against both theme
+// surfaces; charts here only consume it.
+//
+// Every plot ships a hover layer. A chart in a browser that cannot be
+// interrogated is a picture of data, not a view of it.
 // =============================================================================
 
 const NS = 'http://www.w3.org/2000/svg';
-const el = (n, attrs = {}) => { const e = document.createElementNS(NS, n); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const el = (n, a = {}) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+export const SERIES = i => `var(--c${(i % 8) + 1})`;
 
-// Area+line series. Values are [{x:number, y:number}]; x is usually a timestamp.
-export function lineChart(points, { width = 640, height = 170, pad = 28, color = 'var(--c1)', fmtY = v => v, fmtX = v => v } = {}) {
-  const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, width: '100%', height, role: 'img', preserveAspectRatio: 'none' });
-  if (!points.length) return svg;
+// ------------------------------------------------------------- tooltip ------
+let tip;
+function tooltip() {
+  if (tip) return tip;
+  tip = document.createElement('div');
+  tip.className = 'charttip';
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  return tip;
+}
+function showTip(html, x, y) {
+  const t = tooltip();
+  t.innerHTML = html; t.hidden = false;
+  const r = t.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 14));
+  const top = Math.max(8, y - r.height - 12);
+  t.style.transform = `translate(${left}px, ${top}px)`;
+}
+export const hideTip = () => { if (tip) tip.hidden = true; };
 
-  const xs = points.map(p => p.x), ys = points.map(p => p.y).filter(v => isFinite(v));
-  if (!ys.length) return svg;
+// -------------------------------------------------------------- line/area ---
+// points: [{x, y}] — x is usually a timestamp. One series: no legend, the title
+// names it. Crosshair + tooltip on hover, endpoint emphasised.
+export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v => v, fmtX = v => v, label = '' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
+
+  const W = 720, H = height, padL = 46, padR = 12, padT = 12, padB = 24;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
+  svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
+
+  const xs = points.map(p => p.x), ys = points.map(p => p.y).filter(Number.isFinite);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
-  if (y0 === y1) { y0 -= Math.abs(y0 || 1) * .05; y1 += Math.abs(y1 || 1) * .05; }
-  const padY = (y1 - y0) * .1; y0 -= padY; y1 += padY;
+  if (y0 === y1) { const p = Math.abs(y0 || 1) * 0.08; y0 -= p; y1 += p; }
+  // Start value axes at zero where the data allows: a truncated baseline makes a
+  // 2% move look like a crash.
+  if (y0 > 0 && y0 / y1 > 0.55) y0 = 0;
+  const pad = (y1 - y0) * 0.08; y1 += pad;
 
-  const X = v => pad + ((v - x0) / (x1 - x0 || 1)) * (width - pad - 8);
-  const Y = v => height - pad - ((v - y0) / (y1 - y0 || 1)) * (height - pad - 12);
+  const X = v => padL + ((v - x0) / (x1 - x0 || 1)) * (W - padL - padR);
+  const Y = v => H - padB - ((v - y0) / (y1 - y0 || 1)) * (H - padT - padB);
 
-  // Horizontal guides, drawn first so the series sits on top of them.
   for (let i = 0; i <= 3; i++) {
-    const v = y0 + (y1 - y0) * (i / 3);
-    const y = Y(v);
-    svg.appendChild(el('line', { x1: pad, x2: width - 8, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1 }));
-    const t = el('text', { x: 3, y: y + 3.5, fill: 'var(--muted)', 'font-size': 9, 'font-family': 'var(--font-data)' });
-    t.textContent = fmtY(v); svg.appendChild(t);
+    const v = y0 + (y1 - y0) * (i / 3), y = Y(v);
+    svg.appendChild(el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1 }));
+    const t = el('text', { x: padL - 6, y: y + 3.5, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': 'end' });
+    t.style.fontFamily = 'var(--font-data)'; t.textContent = fmtY(v);
+    svg.appendChild(t);
   }
 
   const d = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
-  const area = `${d}L${X(points.at(-1).x).toFixed(1)},${height - pad}L${X(points[0].x).toFixed(1)},${height - pad}Z`;
-
   const gid = 'g' + Math.random().toString(36).slice(2, 8);
-  const defs = el('defs');
-  const grad = el('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
-  const s1 = el('stop', { offset: '0%',   'stop-color': color, 'stop-opacity': .28 });
-  const s2 = el('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': 0 });
-  grad.append(s1, s2); defs.appendChild(grad); svg.appendChild(defs);
+  const defs = el('defs'), grad = el('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+  grad.append(el('stop', { offset: '0%', 'stop-color': color, 'stop-opacity': .25 }),
+              el('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': 0 }));
+  defs.appendChild(grad); svg.appendChild(defs);
+  svg.appendChild(el('path', { d: `${d}L${X(points.at(-1).x)},${H - padB}L${X(points[0].x)},${H - padB}Z`, fill: `url(#${gid})` }));
+  svg.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
 
-  svg.appendChild(el('path', { d: area, fill: `url(#${gid})` }));
-  svg.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 1.8, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
-
-  // Emphasise the last point: on a live feed that is the number people want.
   const last = points.at(-1);
-  svg.appendChild(el('circle', { cx: X(last.x), cy: Y(last.y), r: 3, fill: color }));
+  svg.appendChild(el('circle', { cx: X(last.x), cy: Y(last.y), r: 4, fill: color, stroke: 'var(--surface)', 'stroke-width': 2 }));
 
-  const lx = el('text', { x: pad, y: height - 6, fill: 'var(--muted)', 'font-size': 9, 'font-family': 'var(--font-data)' });
-  lx.textContent = fmtX(x0); svg.appendChild(lx);
-  const rx = el('text', { x: width - 8, y: height - 6, fill: 'var(--muted)', 'font-size': 9, 'font-family': 'var(--font-data)', 'text-anchor': 'end' });
-  rx.textContent = fmtX(x1); svg.appendChild(rx);
-  return svg;
+  for (const [v, anchor] of [[x0, 'start'], [x1, 'end']]) {
+    const t = el('text', { x: v === x0 ? padL : W - padR, y: H - 6, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': anchor });
+    t.style.fontFamily = 'var(--font-data)'; t.textContent = fmtX(v); svg.appendChild(t);
+  }
+
+  const cross = el('line', { y1: padT, y2: H - padB, stroke: 'var(--line-2)', 'stroke-width': 1, opacity: 0 });
+  const dot = el('circle', { r: 4, fill: color, stroke: 'var(--surface)', 'stroke-width': 2, opacity: 0 });
+  svg.append(cross, dot);
+  const hit = el('rect', { x: 0, y: 0, width: W, height: H, fill: 'transparent' });
+  svg.appendChild(hit);
+
+  hit.addEventListener('pointermove', e => {
+    const box = svg.getBoundingClientRect();
+    const vx = ((e.clientX - box.left) / box.width) * W;
+    let best = points[0], bd = Infinity;
+    for (const p of points) { const dd = Math.abs(X(p.x) - vx); if (dd < bd) { bd = dd; best = p; } }
+    cross.setAttribute('x1', X(best.x)); cross.setAttribute('x2', X(best.x)); cross.setAttribute('opacity', 1);
+    dot.setAttribute('cx', X(best.x)); dot.setAttribute('cy', Y(best.y)); dot.setAttribute('opacity', 1);
+    showTip(`<b>${fmtY(best.y)}</b><span>${fmtX(best.x)}</span>`, e.clientX, e.clientY);
+  });
+  hit.addEventListener('pointerleave', () => { cross.setAttribute('opacity', 0); dot.setAttribute('opacity', 0); hideTip(); });
+
+  wrap.appendChild(svg);
+  return wrap;
 }
 
-// Donut for share-of-total. Slices beyond `top` collapse into "other" rather
-// than producing an unreadable ring of slivers.
-export function donut(items, { size = 168, thickness = 26, top = 7, fmt = v => v } = {}) {
+// ----------------------------------------------------------------- donut ----
+// Share-of-total. Capped low on purpose: a ring of twenty slivers encodes
+// nothing, and past a handful the colours stop being separable, so the tail
+// folds into one "other" slice. Every slice is direct-labelled in the legend,
+// which is also the relief for the light theme's lower-contrast slots.
+export function donut(items, { size = 150, thickness = 22, top = 5, fmt = v => v } = {}) {
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:flex;gap:16px;align-items:center;flex-wrap:wrap';
+  wrap.className = 'donut';
   const sorted = [...items].filter(i => i.value > 0).sort((a, b) => b.value - a.value);
+  if (!sorted.length) { wrap.innerHTML = '<div class="chart-empty">Nothing to show.</div>'; return wrap; }
   const head = sorted.slice(0, top);
-  const rest = sorted.slice(top).reduce((s, i) => s + i.value, 0);
-  if (rest > 0) head.push({ label: `other (${sorted.length - top})`, value: rest });
+  const restV = sorted.slice(top).reduce((s, i) => s + i.value, 0);
+  if (restV > 0) head.push({ label: `Other (${sorted.length - top})`, value: restV, other: true });
   const total = head.reduce((s, i) => s + i.value, 0) || 1;
 
-  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, width: size, height: size });
-  const r = (size - thickness) / 2, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r;
+  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: 'img' });
+  svg.style.flex = 'none';
+  const r = (size - thickness) / 2, c = size / 2, C = 2 * Math.PI * r;
   let offset = 0;
   head.forEach((it, i) => {
     const frac = it.value / total;
-    const c = el('circle', {
-      cx, cy, r, fill: 'none',
-      stroke: `var(--c${(i % 8) + 1})`, 'stroke-width': thickness,
-      'stroke-dasharray': `${(frac * C).toFixed(2)} ${C.toFixed(2)}`,
+    // A 2px surface gap between segments keeps adjacent fills from reading as one.
+    const gap = Math.min(2, frac * C * 0.4);
+    const arc = el('circle', {
+      cx: c, cy: c, r, fill: 'none',
+      stroke: it.other ? 'var(--line-2)' : SERIES(i), 'stroke-width': thickness,
+      'stroke-dasharray': `${Math.max(0, frac * C - gap).toFixed(2)} ${C.toFixed(2)}`,
       'stroke-dashoffset': (-offset * C).toFixed(2),
-      transform: `rotate(-90 ${cx} ${cy})`,
+      transform: `rotate(-90 ${c} ${c})`,
     });
-    c.appendChild(el('title')).textContent = `${it.label}: ${fmt(it.value)}`;
-    svg.appendChild(c);
+    arc.style.cursor = 'default';
+    arc.addEventListener('pointermove', e => showTip(`<b>${it.label}</b><span>${fmt(it.value)} · ${(frac * 100).toFixed(1)}%</span>`, e.clientX, e.clientY));
+    arc.addEventListener('pointerleave', hideTip);
+    svg.appendChild(arc);
     offset += frac;
   });
   wrap.appendChild(svg);
 
   const leg = document.createElement('div');
-  leg.style.cssText = 'display:flex;flex-direction:column;gap:5px;font-size:12px;min-width:150px;flex:1';
+  leg.className = 'legend';
   head.forEach((it, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:7px';
-    row.innerHTML = `<span style="width:9px;height:9px;border-radius:2px;background:var(--c${(i % 8) + 1});flex:none"></span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${it.label}</span>
-      <span class="mono dim">${fmt(it.value)}</span>`;
+    row.innerHTML = `<span class="sw" style="background:${it.other ? 'var(--line-2)' : SERIES(i)}"></span>
+      <span class="lb">${it.label}</span><span class="vl mono">${fmt(it.value)}</span>`;
     leg.appendChild(row);
   });
   wrap.appendChild(leg);
   return wrap;
 }
 
-// Horizontal bars for ranked comparisons (volume by pool, rewards by farm).
-export function bars(items, { fmt = v => v, max = null, color = 'var(--c1)' } = {}) {
+// ------------------------------------------------------------------ bars ----
+// Ranked comparison. One measure, so one colour: hue here would encode nothing.
+// Data-ends are rounded and anchored to the baseline.
+export function bars(items, { fmt = v => v, color = 'var(--c1)', max = null } = {}) {
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+  wrap.className = 'bars';
+  if (!items.length) { wrap.innerHTML = '<div class="chart-empty">Nothing to show.</div>'; return wrap; }
   const top = max ?? Math.max(...items.map(i => i.value), 1);
   for (const it of items) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:minmax(70px,1fr) 2fr auto;gap:9px;align-items:center;font-size:12px';
-    row.innerHTML = `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${it.label}</span>
-      <span style="height:8px;background:var(--surface-3);border-radius:99px;overflow:hidden">
-        <span style="display:block;height:100%;width:${(it.value / top * 100).toFixed(1)}%;background:${color};border-radius:99px"></span>
-      </span>
-      <span class="mono dim">${fmt(it.value)}</span>`;
+    row.className = 'bar';
+    row.innerHTML = `<span class="lb" title="${it.label}">${it.label}</span>
+      <span class="tr"><span class="fill" style="width:${Math.max(1.5, it.value / top * 100).toFixed(1)}%;background:${color}"></span></span>
+      <span class="vl mono">${fmt(it.value)}</span>`;
+    row.addEventListener('pointermove', e => showTip(`<b>${it.label}</b><span>${fmt(it.value)}${it.note ? ' · ' + it.note : ''}</span>`, e.clientX, e.clientY));
+    row.addEventListener('pointerleave', hideTip);
     wrap.appendChild(row);
   }
   return wrap;
 }
 
-// A position's tick band with the market price marked on it. The one visual
-// that makes concentrated liquidity legible at a glance.
+// ------------------------------------------------------------- histogram ----
+// Distribution of one measure across many items — answers "where does the bulk
+// sit", which a top-10 list cannot.
+export function histogram(values, { bins = 18, fmtX = v => v, color = 'var(--c1)', height = 130, label = '' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  const vals = values.filter(Number.isFinite);
+  if (!vals.length) { wrap.innerHTML = '<div class="chart-empty">No data.</div>'; return wrap; }
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const counts = new Array(bins).fill(0);
+  for (const v of vals) counts[Math.min(bins - 1, Math.floor(((v - lo) / (hi - lo || 1)) * bins))]++;
+  const peak = Math.max(...counts, 1);
+
+  const W = 720, H = height, padB = 22, padT = 8;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
+  svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
+  const bw = W / bins;
+  counts.forEach((n, i) => {
+    const h = (n / peak) * (H - padT - padB);
+    const rect = el('rect', {
+      x: i * bw + 1, y: H - padB - h, width: bw - 2, height: Math.max(h, n ? 1.5 : 0),
+      fill: color, rx: 3,
+    });
+    const from = lo + (hi - lo) * (i / bins), to = lo + (hi - lo) * ((i + 1) / bins);
+    rect.addEventListener('pointermove', e => showTip(`<b>${n} pool${n === 1 ? '' : 's'}</b><span>${fmtX(from)} – ${fmtX(to)}</span>`, e.clientX, e.clientY));
+    rect.addEventListener('pointerleave', hideTip);
+    svg.appendChild(rect);
+  });
+  svg.appendChild(el('line', { x1: 0, x2: W, y1: H - padB, y2: H - padB, stroke: 'var(--line)', 'stroke-width': 1 }));
+  for (const [v, x, anchor] of [[lo, 0, 'start'], [hi, W, 'end']]) {
+    const t = el('text', { x, y: H - 6, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': anchor });
+    t.style.fontFamily = 'var(--font-data)'; t.textContent = fmtX(v); svg.appendChild(t);
+  }
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// A position's tick band with the market price on it — the one picture that
+// makes concentrated liquidity legible at a glance.
 export function rangeBar(tickLower, tickUpper, tick, { pad = 0.35 } = {}) {
   const d = document.createElement('div');
   d.className = 'rangebar';

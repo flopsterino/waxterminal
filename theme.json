@@ -10,7 +10,7 @@
     { "label": "TacoSwap", "href": "https://swap.tacocrypto.io" }
   ],
   "content": {
-    "defaultView": "pools",
+    "defaultView": "overview",
     "featuredPools": ["alcor:314", "alcor:0", "taco:TACWAX"],
     "minTvlUsd": 100
   },

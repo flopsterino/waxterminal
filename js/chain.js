@@ -52,14 +52,14 @@ export const health = () => RPC_HOSTS.map(h => ({ host: h, benched: (benched.get
 const REQ_TIMEOUT = 9000;
 const HEDGE_MS = 2200;
 
-async function once(endpoint, body, host) {
+async function once(endpoint, body, host, timeout = REQ_TIMEOUT) {
   let res;
   try {
     res = await fetch(`${host}/v1/chain/${endpoint}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(REQ_TIMEOUT),
+      signal: AbortSignal.timeout(timeout),
     });
   } catch (e) { bench(host, 25000); throw e; }          // timeout or network: bench hard
   if (res.status === 420 || res.status === 429) { bench(host, 30000); throw new Error(`${host} ${res.status}`); }
@@ -175,13 +175,29 @@ export async function hyperion(path, tries = 4) {
 
 export async function chainInfo() { return post('get_info', {}); }
 
+// What a wallet actually holds of one token. The compound flow reads this
+// BETWEEN its two transactions instead of predicting swap output, which is the
+// difference between a deposit that lands and one that reverts on a rounding
+// error.
+export async function balanceOf(account, contract, symbol) {
+  const d = await post('get_currency_balance', { code: contract, account, symbol });
+  const row = Array.isArray(d) ? d[0] : null;
+  return row ? Number(String(row).split(' ')[0]) : 0;
+}
+
 // Probe every host once so the first real sweep already knows who is dead.
-// Cheap: one tiny call each, all at the same time.
+//
+// The probe timeout is deliberately far shorter than a real request's. A health
+// check that waits nine seconds on a dead host has spent nine seconds of the
+// user's boot to learn something a healthy node answers in 150ms — and it is
+// exactly the kind of stall that makes a page look broken. Anything that cannot
+// answer get_info promptly is not a host we want leading a sweep anyway.
+const PROBE_TIMEOUT = 2500;
+
 export async function warmHosts() {
-  const results = await Promise.all(RPC_HOSTS.map(async host => {
+  return Promise.all(RPC_HOSTS.map(async host => {
     const t0 = Date.now();
-    try { await once('get_info', {}, host); return { host, ms: Date.now() - t0, ok: true }; }
+    try { await once('get_info', {}, host, PROBE_TIMEOUT); return { host, ms: Date.now() - t0, ok: true }; }
     catch { return { host, ms: Date.now() - t0, ok: false }; }
   }));
-  return results;
 }

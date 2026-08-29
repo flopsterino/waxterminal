@@ -3,9 +3,12 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
-import { lineChart, donut, bars, rangeBar } from './charts.js';
+import * as wallet from './wallet.js';
+import { buildHarvest, buildRedeposit, buildRestake } from './tx.js';
+import { areaChart, donut, bars, histogram, rangeBar, hideTip } from './charts.js';
+import { candleChart } from './tvchart.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -105,9 +108,10 @@ async function boot() {
     banner(`<div class="err">Part of the chain read did not come back (${state.shardsFailed} shard${state.shardsFailed === 1 ? '' : 's'}), so some pools are missing. Everything shown is real; the list is just incomplete. Reload to try again.</div>`);
   }
 
-  wirePools(); wireFarms(); wireWallet(); wireActivity(); wireCompound();
+  wirePools(); wireFarms(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
+  renderOverview();
   renderPools(); renderFarms();
-  if (!routeFromHash()) show(CFG.content?.defaultView || 'pools');
+  if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
 
   if (state.stale) loadCore({ force: true }).then(() => { renderPools(); renderFarms(); });
@@ -117,6 +121,7 @@ const banner = html => { $('#banner').innerHTML = html; };
 let lastView = 'pools';
 function show(v, arg = null) {
   if (v !== 'pool') lastView = v;
+  hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
   const hash = arg ? `#${v}/${arg}` : `#${v}`;
@@ -135,7 +140,7 @@ function routeFromHash() {
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
   }
   if (view === 'compound' && arg) { const a = decodeURIComponent(arg); show('compound'); $('#compInput').value = a; runCompound(a); return true; }
-  if (['pools', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
+  if (['overview', 'pools', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
     return true;
@@ -143,8 +148,129 @@ function routeFromHash() {
   return false;
 }
 
+// ------------------------------------------------------------- OVERVIEW -----
+// The page that answers "what is going on" before anyone touches a filter.
+// Charts, not tables: a 19,000-row table is a database dump, not an overview.
+function renderOverview() {
+  const pools = state.pools.filter(p => p.tvl > 0);
+  const groups = farmGroups();
+  const tvl = pools.reduce((s, p) => s + p.tvl, 0);
+  const thinTvl = pools.filter(p => p.thin).reduce((s, p) => s + p.tvl, 0);
+  const rewards = groups.reduce((s, g) => s + g.rewardUsdDay, 0);
+  const withApr = groups.filter(g => g.apr != null && g.apr < 1000);
+
+  $('#ovStats').innerHTML = `
+    <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">total value locked</span><span class="sub">${usd(tvl - thinTvl)} on solid routes</span></div>
+    <div class="stat"><span class="v">${pools.length.toLocaleString()}</span><span class="k">pools with value</span><span class="sub">of ${state.pools.length.toLocaleString()} in existence</span></div>
+    <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
+    <div class="stat"><span class="v">${usd(rewards)}</span><span class="k">rewards paid daily</span><span class="sub">${usd(rewards * 365)} a year at this rate</span></div>
+    <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">routed to a bridged dollar</span></div>`;
+
+  const box = $('#ovCharts');
+  box.innerHTML = `
+    <div class="section"><h3>Where the liquidity is</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Top pools by TVL <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
+        <div class="card"><h3>Split by venue</h3><div id="ovDex"></div></div>
+      </div>
+    </div>
+    <div class="section"><h3>Farms</h3>
+      <div class="grid g2">
+        <div class="card"><h3>Biggest daily payouts <span class="dim">— USD per day</span></h3><div id="ovRew"></div></div>
+        <div class="card"><h3>Where APRs actually sit <span class="dim">— ${withApr.length} priced farms</span></h3><div id="ovApr"></div></div>
+      </div>
+    </div>
+    <div class="section"><h3>Market</h3>
+      <div class="grid g2">
+        <div class="card"><h3>WAX price <span class="dim">— from Alcor pool #314 state changes</span></h3><div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div></div>
+        <div class="card"><h3>Fee tiers <span class="dim">— by pooled value</span></h3><div id="ovFee"></div></div>
+      </div>
+    </div>
+    <div class="section"><h3>Tracked over time</h3>
+      <div class="card"><h3>Total value locked <span class="dim">— one point per daily snapshot</span></h3><div id="ovHist"></div></div>
+    </div>`;
+
+  const top = [...pools].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
+  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + p.tvl, 0)) + ' in the top 8';
+  $('#ovTop').appendChild(bars(top.map(p => ({ label: `${p.symA}/${p.symB}`, value: p.tvl, note: p.thin ? 'thinly routed' : `${(p.feeBps / 100).toFixed(2)}% fee` })), { fmt: usd }));
+
+  const byDex = new Map();
+  for (const p of pools) byDex.set(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap', (byDex.get(p.dex === 'alcor' ? 'Alcor' : 'TacoSwap') || 0) + p.tvl);
+  $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
+
+  const payers = groups.filter(g => g.rewardUsdDay > 0).sort((a, b) => b.rewardUsdDay - a.rewardUsdDay).slice(0, 8);
+  $('#ovRew').appendChild(bars(payers.map(g => ({
+    label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+    value: g.rewardUsdDay,
+    note: `${g.tokenCount} reward token${g.tokenCount === 1 ? '' : 's'}`,
+  })), { fmt: usd, color: 'var(--c3)' }));
+
+  $('#ovApr').appendChild(withApr.length
+    ? histogram(withApr.map(g => g.apr), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No priced APRs yet — hit "Compute APR" on the farms page.' }));
+
+  const byFee = new Map();
+  for (const p of pools) { const k = `${(p.feeBps / 100).toFixed(2)}%`; byFee.set(k, (byFee.get(k) || 0) + p.tvl); }
+  $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
+
+  if (SNAPSHOT_ONLY) {
+    $('#ovWax').innerHTML = '<div class="chart-empty">Snapshot mode — chain history not fetched.</div>';
+  } else poolDeltas('314', { pages: 2 }).then(rows => {
+    const el = $('#ovWax');
+    if (!rows.length) { el.innerHTML = '<div class="chart-empty">No state changes in the window the history node keeps.</div>'; return; }
+    const candles = toCandles(rows, { bucketSec: 900 });
+    candleChart(el, candles, { height: 260, precision: 6 })
+      .catch(() => { el.innerHTML = '<div class="chart-empty">Chart library unavailable.</div>'; });
+  }).catch(() => { $('#ovWax').innerHTML = '<div class="chart-empty">History unavailable right now.</div>'; });
+
+  loadHistory().then(rows => {
+    const el = $('#ovHist');
+    if (rows.length < 2) {
+      el.innerHTML = `<div class="chart-empty">${rows.length} snapshot${rows.length === 1 ? '' : 's'} so far.
+        A daily job appends one point per day, so this series fills in from here — it is the only record of what TVL and APR were last month.</div>`;
+      return;
+    }
+    el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvl })), {
+      fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'TVL over time',
+    }));
+  }).catch(() => {});
+}
+
+// --------------------------------------------------------------- FILTERS ----
+// Numeric range filters over the loaded set. No database is involved and none is
+// needed: filtering 19,820 objects in memory takes about a millisecond, which is
+// faster than any round trip to a server could ever be.
+const num = v => { const n = parseFloat(String(v).replace(/[, ]/g, '')); return Number.isFinite(n) ? n : null; };
+
+function rangeField(key, label, store, { unit = '', step = 'any' } = {}) {
+  return `<label>${label}${unit ? ` <span style="text-transform:none;letter-spacing:0;font-weight:400">(${unit})</span>` : ''}
+    <span class="pairin">
+      <input type="number" step="${step}" placeholder="min" data-f="${key}.min" value="${store[key]?.min ?? ''}">
+      <span>to</span>
+      <input type="number" step="${step}" placeholder="max" data-f="${key}.max" value="${store[key]?.max ?? ''}">
+    </span></label>`;
+}
+const inRange = (v, r) => {
+  if (!r) return true;
+  if (r.min != null && !(v >= r.min)) return false;
+  if (r.max != null && !(v <= r.max)) return false;
+  return true;
+};
+
+function wireFilterPanel(panel, store, onChange) {
+  panel.querySelectorAll('input[data-f], select[data-f]').forEach(inp => {
+    inp.oninput = () => {
+      const [key, side] = inp.dataset.f.split('.');
+      if (side) { store[key] = store[key] || {}; store[key][side] = inp.value === '' ? null : num(inp.value); }
+      else store[key] = inp.value;
+      onChange();
+    };
+  });
+}
+
 // ---------------------------------------------------------------- POOLS -----
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvl', dir: -1 };
+const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvl', dir: -1,
+  tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
 function wirePools() {
   $('#poolSearch').oninput = e => { poolFilters.q = e.target.value.trim().toLowerCase(); renderPools(); };
@@ -154,7 +280,19 @@ function wirePools() {
   $('#fDexTaco').onclick = () => setDex('taco');
   $('#fLiq').onclick = e => { poolFilters.hideDust = !poolFilters.hideDust; e.target.setAttribute('aria-pressed', String(poolFilters.hideDust)); renderPools(); };
   $('#fThin').onclick = e => { poolFilters.hideThin = !poolFilters.hideThin; e.target.setAttribute('aria-pressed', String(poolFilters.hideThin)); renderPools(); };
+  const panel = $('#poolFilters');
+  panel.innerHTML = rangeField('tvl', 'TVL', poolFilters, { unit: 'USD' })
+    + rangeField('fee', 'Fee tier', poolFilters, { unit: '%', step: '0.01' })
+    + rangeField('depth', 'Route depth', poolFilters, { unit: 'USD' })
+    + `<label>Has a farm<select data-f="farmed">
+        <option value="any">Any</option><option value="yes">Farmed only</option><option value="no">Unfarmed only</option>
+      </select></label>`;
+  wireFilterPanel(panel, poolFilters, renderPools);
+  $('#fMorePool').onclick = e => { panel.hidden = !panel.hidden; e.target.setAttribute('aria-pressed', String(!panel.hidden)); };
 }
+
+let _farmed = null;
+const farmedPools = () => (_farmed ??= new Set(state.farms.filter(f => !f.ended).map(f => `${f.poolDex}:${f.poolId}`)));
 
 function filteredPools() {
   const min = CFG?.content?.minTvlUsd ?? 100;
@@ -162,6 +300,14 @@ function filteredPools() {
     if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
     if (poolFilters.hideDust && !(p.tvl >= min)) return false;
     if (poolFilters.hideThin && p.thin) return false;
+    if (!inRange(p.tvl ?? -1, poolFilters.tvl)) return false;
+    if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
+    if (!inRange(isFinite(p.routeDepth) ? p.routeDepth : Infinity, poolFilters.depth)) return false;
+    if (poolFilters.farmed !== 'any') {
+      const has = farmedPools().has(`${p.dex}:${p.id}`);
+      if (poolFilters.farmed === 'yes' && !has) return false;
+      if (poolFilters.farmed === 'no' && has) return false;
+    }
     if (poolFilters.q) {
       const s = `${p.symA}/${p.symB} ${p.id}`.toLowerCase();
       if (!s.includes(poolFilters.q)) return false;
@@ -228,7 +374,8 @@ function renderPools() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, sort: 'rewardUsdDay', dir: -1 };
+const farmFilters = { q: '', alcor: true, taco: true, sort: 'rewardUsdDay', dir: -1,
+  apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
 function wireFarms() {
@@ -237,6 +384,14 @@ function wireFarms() {
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco');
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
   $('#calcApr').onclick = computeVisibleApr;
+  const panel = $('#farmFilterPanel');
+  panel.innerHTML = rangeField('apr', 'APR', farmFilters, { unit: '%' })
+    + rangeField('rewards', 'Rewards per day', farmFilters, { unit: 'USD' })
+    + rangeField('staked', 'Staked value', farmFilters, { unit: 'USD' })
+    + rangeField('tokens', 'Reward tokens', farmFilters, { unit: 'count', step: '1' })
+    + `<label>Pays this token<input data-f="reward" placeholder="e.g. WAX" value=""></label>`;
+  wireFilterPanel(panel, farmFilters, renderFarms);
+  $('#fMoreFarm').onclick = e => { panel.hidden = !panel.hidden; e.target.setAttribute('aria-pressed', String(!panel.hidden)); };
 }
 
 function filteredGroups() {
@@ -246,6 +401,18 @@ function filteredGroups() {
     if (farmFilters.q) {
       const s = `${g.pool ? g.pool.symA + '/' + g.pool.symB : g.poolId} ${g.rewards.map(r => r.symbol).join(' ')} ${g.poolId}`.toLowerCase();
       if (!s.includes(farmFilters.q)) return false;
+    }
+    // An unknown APR is not a low one: a farm whose APR has not been computed is
+    // excluded by an APR filter rather than silently treated as zero.
+    if ((farmFilters.apr.min != null || farmFilters.apr.max != null) && g.apr == null) return false;
+    if (!inRange(g.apr, farmFilters.apr)) return false;
+    if (!inRange(g.rewardUsdDay, farmFilters.rewards)) return false;
+    if ((farmFilters.staked.min != null || farmFilters.staked.max != null) && g.stakedUsd == null) return false;
+    if (!inRange(g.stakedUsd, farmFilters.staked)) return false;
+    if (!inRange(g.tokenCount, farmFilters.tokens)) return false;
+    if (farmFilters.reward) {
+      const want = farmFilters.reward.trim().toUpperCase();
+      if (!g.rewards.some(r => r.symbol.toUpperCase().includes(want))) return false;
     }
     return true;
   });
@@ -490,6 +657,76 @@ async function showCompound(btn, pos) {
     </div>`;
 }
 
+// ---------------------------------------------------------- WALLET LINK -----
+function wireConnect() {
+  const btn = $('#connectBtn'), chip = $('#acctChip');
+  wallet.onSession(s => {
+    const a = wallet.account();
+    btn.hidden = !!a; chip.hidden = !a;
+    if (a) $('#acctName').textContent = a;
+    // The compound page is per-account: connecting should fill it in, not make
+    // the user retype what the wallet already told us.
+    if (a && !$('#compInput').value) { $('#compInput').value = a; $('#walletInput').value = a; }
+  });
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = 'Connecting…';
+    try { await wallet.connect(); }
+    catch (e) { if (!/cancel/i.test(e.message || '')) banner(`<div class="err">Wallet connection failed: ${esc(e.message)}</div>`); }
+    finally { btn.disabled = false; btn.textContent = 'Connect wallet'; }
+  };
+  $('#disconnectBtn').onclick = () => wallet.disconnect();
+  if (!SNAPSHOT_ONLY) wallet.restore();
+
+  if (!wallet.isSecure()) {
+    // Say this once, plainly. A Cloud Wallet popup that silently fails over
+    // plain HTTP looks like the user cancelled, and they will blame the site.
+    btn.title = 'Served over plain HTTP — only Anchor will work. HTTPS is needed for WAX Cloud Wallet.';
+  }
+}
+
+// Run one position's compound. Two transactions by design: the swap output is
+// only knowable after it executes, so we harvest, read what actually landed,
+// and deposit that. Each step is signed by the user; nothing runs unattended.
+async function runOne(box, entry, feeBps, feeAccount) {
+  const { pos, harvest, plan } = entry;
+  const steps = [
+    { t: 'Harvest and rebalance', d: `Collect fees, claim ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), swap into the band's ratio.` },
+    { t: 'Redeposit', d: 'Read what actually landed, add it back to the same tick range.' },
+  ];
+  const render = (i, msg, err) => {
+    box.innerHTML = `<div class="steps">${steps.map((s, n) => `
+      <div class="step ${n < i ? 'done' : n === i ? 'active' : ''}">
+        <span class="n">${n < i ? '&check;' : n + 1}</span>
+        <div><h4>${s.t}</h4><p>${n === i && msg ? esc(msg) : s.d}</p></div>
+      </div>`).join('')}</div>
+      ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}`;
+  };
+
+  try {
+    render(0, 'Waiting for your wallet…');
+    const { actions, swaps } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
+    const skipped = swaps.filter(s => s.skipped);
+    if (!actions.length) throw new Error('Nothing claimable to harvest.');
+    const r1 = await wallet.transact(actions);
+
+    render(1, 'Reading balances, then waiting for your wallet…');
+    // Give the chain a moment to reflect the swap before reading balances back.
+    await new Promise(r => setTimeout(r, 2500));
+    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount });
+    const r2 = await wallet.transact(dep.actions);
+
+    box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+      <b>Compounded.</b> Added ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} back into ticks ${pos.tickLower}…${pos.tickUpper}.
+      ${skipped.length ? `<br><span class="dim">${skipped.length} reward left unswapped (${skipped.map(s => esc(s.skipped)).join(', ')}) — it is in your wallet.</span>` : ''}
+      <br><span class="mono" style="font-size:11px">${r1.id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
+  } catch (e) {
+    const m = String(e.message || e);
+    render(0, null, /cancel|reject|declin/i.test(m)
+      ? 'You declined the signature — nothing happened.'
+      : `Transaction failed: ${m}`);
+  }
+}
+
 // --------------------------------------------------- COMPOUND (whole wallet) -
 function wireCompound() {
   $('#compGo').onclick = () => runCompound($('#compInput').value.trim());
@@ -570,7 +807,9 @@ async function runCompound(account) {
           <div><span class="dim">No swap needed</span><br><span class="mono">${plan.alreadyRight.map(b => esc(b.symbol)).join(', ') || '—'}</span></div>
           <div><span class="dim">Swaps</span><br><span class="mono">${plan.swaps.map(s => `${esc(s.from)}&rarr;${esc(s.to)}`).join(', ') || 'none'}</span></div>
           <div><span class="dim">Transaction</span><br><span class="mono">${plan.actions.length} actions, 1 signature</span></div>
-        </div>` : `<div class="dim" style="font-size:12.5px">${esc(plan.reason || 'Nothing to do.')}</div>`}
+        </div>
+        <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button></div>
+        <div class="runbox" data-runbox="${pos.posId}"></div>` : `<div class="dim" style="font-size:12.5px">${esc(plan.reason || 'Nothing to do.')}</div>`}
     </div>`;
   }
   html += '</div>';
@@ -581,6 +820,19 @@ async function runCompound(account) {
   </div>`;
 
   out.innerHTML = html;
+
+  out.querySelectorAll('button[data-run]').forEach(b => b.onclick = async () => {
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    if (wallet.account() !== account) {
+      alert(`Connected as ${wallet.account()}, but these positions belong to ${account}. Connect that account to compound them.`);
+      return;
+    }
+    const entry = plans.find(x => String(x.pos.posId) === b.dataset.run);
+    if (!entry) return;
+    b.disabled = true;
+    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), entry, feeBps, CFG?.commercial?.feeAccount || '');
+    b.disabled = false;
+  });
 }
 
 // ------------------------------------------------------------- ACTIVITY -----
@@ -666,22 +918,33 @@ async function openPool(key) {
         <span class="num dim">${usd(f.rewardUsdDay)} &middot; ends ${f.periodFinish ? new Date(f.periodFinish).toISOString().slice(0, 10) : 'open'}</span>
       </div>`).join('')}</div>` : ''}
     <div class="grid g2">
-      <div class="card"><h3>Price history <span class="dim">— from Hyperion table deltas</span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div></div>
+      <div class="card"><h3>Price <span class="dim">— candles built from pool state changes</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" data-iv="300" aria-pressed="false">5m</button>
+          <button class="chip" data-iv="900" aria-pressed="true">15m</button>
+          <button class="chip" data-iv="3600" aria-pressed="false">1h</button>
+        </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>`;
 
   if (dex === 'alcor') {
-    poolHistory(p.id).then(h => {
+    poolDeltas(p.id, { pages: 3 }).then(rows => {
       const box = $('#poolChart');
-      if (!h.length) { box.innerHTML = '<div class="empty">No table deltas returned for this pool in the window the history node keeps.</div>'; return; }
-      box.innerHTML = '';
-      box.appendChild(lineChart(h.map(x => ({ x: new Date(x.ts + 'Z').getTime(), y: x.price })), {
-        fmtY: v => qty(v), fmtX: t => new Date(t).toISOString().slice(5, 16).replace('T', ' '),
-      }));
+      if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; return; }
+      // Price precision follows the pair: six decimals on a token worth $4,000
+      // is noise, and two on one worth $0.000001 is a flat line.
+      const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rows.at(-1).price || 1)) + 4));
+      const draw = iv => candleChart(box, toCandles(rows, { bucketSec: iv }), { height: 300, precision: prec })
+        .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
+      draw(900);
+      document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
+        document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        draw(Number(b.dataset.iv));
+      });
       const note = document.createElement('p');
       note.className = 'sub'; note.style.marginTop = '8px';
-      note.textContent = `${h.length} state changes · ${esc(p.symB)} per ${esc(p.symA)}`;
-      box.appendChild(note);
+      note.textContent = `${rows.length.toLocaleString()} state changes · ${p.symB} per ${p.symA} · volume in ${p.symA}`;
+      box.after(note);
     }).catch(e => { $('#poolChart').innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`; });
 
     recentSwaps({ poolId: p.id, limit: 400 }).then(s => {

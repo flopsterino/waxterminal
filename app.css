@@ -176,3 +176,117 @@ footer.foot code { font-family: var(--font-data); }
   .wrap { padding: 14px 10px 60px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ===========================================================================
+   CHARTS
+   =========================================================================== */
+.charttip {
+  position: fixed; top: 0; left: 0; z-index: 200; pointer-events: none;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r);
+  padding: 7px 10px; box-shadow: var(--shadow); font-size: 12px; line-height: 1.45;
+  display: flex; flex-direction: column; gap: 1px; max-width: 260px;
+}
+.charttip b { font-weight: 600; font-family: var(--font-data); }
+.charttip span { color: var(--muted); font-size: 11px; }
+
+.chart { width: 100%; }
+.chart-empty { padding: 26px 8px; text-align: center; color: var(--muted); font-size: 12.5px; }
+
+.donut { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.donut .legend { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 170px; font-size: 12px; }
+.donut .legend > div { display: flex; align-items: center; gap: 8px; }
+.donut .legend .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.donut .legend .lb { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.donut .legend .vl { color: var(--muted); font-size: 11.5px; }
+
+.bars { display: flex; flex-direction: column; gap: 7px; }
+.bars .bar { display: grid; grid-template-columns: minmax(74px, 1.1fr) 2.2fr auto; gap: 10px; align-items: center; font-size: 12px; }
+.bars .lb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.bars .tr { height: 9px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.bars .fill { display: block; height: 100%; border-radius: 99px; }
+.bars .vl { color: var(--muted); font-size: 11.5px; }
+
+/* ===========================================================================
+   LAYOUT POLISH — the tables were legible but flat; this gives the page a
+   hierarchy so the eye lands on the summary before the detail.
+   =========================================================================== */
+.wrap { max-width: 1460px; padding: 26px 22px 90px; }
+h2.vt { font-size: 24px; letter-spacing: -.022em; margin-bottom: 5px; }
+p.vs { font-size: 13.5px; line-height: 1.6; margin-bottom: 22px; color: var(--muted); }
+
+.stats { margin-bottom: 22px; border-radius: var(--r-lg); box-shadow: var(--shadow); }
+.stat { padding: 15px 17px; }
+.stat .v { font-size: 24px; letter-spacing: -.025em; }
+.stat .k { font-size: 10px; letter-spacing: .09em; margin-top: 6px; }
+
+.card { padding: 17px 18px; box-shadow: var(--shadow); }
+.card h3 {
+  font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; margin-bottom: 13px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.card h3 .dim { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 11.5px; }
+.card h3 .hero {
+  margin-left: auto; font-family: var(--font-data); font-size: 15px;
+  color: var(--ink); font-weight: 600; letter-spacing: -.01em;
+}
+
+.section { margin-bottom: 22px; }
+.section > h3 {
+  font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
+  font-weight: 600; margin: 0 0 11px; display: flex; align-items: center; gap: 10px;
+}
+.section > h3::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.g3c { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.tablewrap { box-shadow: var(--shadow); }
+thead th { padding: 10px 14px; }
+tbody td { padding: 10px 14px; }
+
+/* Hero number: one figure that carries a whole card. */
+.hero-num {
+  font-family: var(--font-data); font-size: 30px; font-weight: 600;
+  letter-spacing: -.03em; line-height: 1.1; display: block;
+}
+.hero-sub { font-size: 12px; color: var(--muted); margin-top: 4px; display: block; }
+
+/* Wallet chip in the top bar */
+.acct {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 5px 10px; font-family: var(--font-data); font-size: 12.5px; white-space: nowrap;
+}
+.acct .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; }
+
+/* Filter panel */
+.filters {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 13px 15px; margin-bottom: 14px; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.filters label { display: flex; flex-direction: column; gap: 5px; font-size: 11px;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.filters input, .filters select {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 7px 9px; color: var(--ink); font-family: var(--font-data); font-size: 12.5px;
+}
+.filters .pairin { display: flex; gap: 6px; align-items: center; }
+.filters .pairin input { width: 100%; min-width: 0; }
+.filters .pairin span { color: var(--muted); font-size: 11px; }
+
+.steps { display: flex; flex-direction: column; gap: 10px; }
+.step {
+  display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 12px; align-items: start;
+  padding: 13px 15px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
+}
+.step.done { border-color: var(--good); }
+.step.active { border-color: var(--accent); }
+.step .n {
+  width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-3); color: var(--muted); font-size: 11px; font-weight: 700;
+  font-family: var(--font-data);
+}
+.step.done .n { background: var(--good); color: var(--on-accent); }
+.step.active .n { background: var(--accent); color: var(--on-accent); }
+.step h4 { margin: 0 0 3px; font-size: 13.5px; font-weight: 700; }
+.step p { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.5; max-width: 72ch; }

@@ -17,7 +17,8 @@
 <header class="top">
   <div class="brand"><span class="mark" id="brandMark">◩</span><span id="brandName">WAX Terminal</span></div>
   <nav class="tabs" id="tabs" role="tablist">
-    <button role="tab" data-view="pools"    aria-selected="true">Pools</button>
+    <button role="tab" data-view="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
     <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My liquidity</button>
     <button role="tab" data-view="compound" aria-selected="false">Compound</button>
@@ -25,6 +26,9 @@
   </nav>
   <div class="spacer"></div>
   <div class="waxprice" id="waxPrice">WAX <b>—</b></div>
+  <button class="btn" id="connectBtn">Connect wallet</button>
+  <div class="acct" id="acctChip" hidden><span class="dot"></span><span id="acctName"></span>
+    <button class="iconbtn" id="disconnectBtn" title="Disconnect" aria-label="Disconnect" style="width:20px;height:20px;font-size:11px">&times;</button></div>
   <button class="iconbtn" id="refreshBtn" title="Reload from chain" aria-label="Reload from chain">&#8635;</button>
   <button class="iconbtn" id="themeBtn" title="Switch theme" aria-label="Switch theme">&#9681;</button>
 </header>
@@ -32,8 +36,16 @@
 <div class="wrap">
   <div id="banner"></div>
 
+  <!-- --------------------------------------------------------- OVERVIEW -->
+  <section class="view active" id="view-overview">
+    <h2 class="vt">WAX DeFi, at a glance</h2>
+    <p class="vs">Everything below is read from <code class="mono">swap.alcor</code> and <code class="mono">swap.taco</code> in your browser. Hover any chart to interrogate it.</p>
+    <div class="stats" id="ovStats"></div>
+    <div id="ovCharts"></div>
+  </section>
+
   <!-- ------------------------------------------------------------ POOLS -->
-  <section class="view active" id="view-pools">
+  <section class="view" id="view-pools">
     <h2 class="vt">Pools</h2>
     <p class="vs">Every Alcor and TacoSwap pool, read live from chain. Only bridged dollars count as a dollar; everything else is priced through the graph, and each price carries the depth of the <em>thinnest</em> hop on its way to a real one. A pool marked <span class="badge warn">thin</span> has a correct price standing on liquidity too shallow to sell into — 997,731 PARAUSD sits in WAX pools with a $590 exit.</p>
     <div class="stats" id="poolStats"></div>
@@ -44,8 +56,10 @@
       <button class="chip" id="fDexTaco"  aria-pressed="false">TacoSwap</button>
       <button class="chip" id="fLiq"      aria-pressed="true">Hide dust</button>
       <button class="chip" id="fThin"     aria-pressed="false">Hide thin routes</button>
+      <button class="chip" id="fMorePool"  aria-pressed="false">More filters</button>
       <span class="dim" id="poolCount" style="font-size:12px"></span>
     </div>
+    <div class="filters" id="poolFilters" hidden></div>
     <div class="tablewrap"><table id="poolTable"><thead></thead><tbody></tbody></table></div>
   </section>
 
@@ -59,9 +73,11 @@
       <button class="chip" id="fLive"      aria-pressed="true">Live only</button>
       <button class="chip" id="fFarmAlcor" aria-pressed="true">Alcor</button>
       <button class="chip" id="fFarmTaco"  aria-pressed="true">TacoSwap</button>
+      <button class="chip" id="fMoreFarm" aria-pressed="false">More filters</button>
       <button class="btn ghost" id="calcApr">Compute APR for visible</button>
       <span class="dim" id="farmCount" style="font-size:12px"></span>
     </div>
+    <div class="filters" id="farmFilterPanel" hidden></div>
     <div class="tablewrap"><table id="farmTable"><thead></thead><tbody></tbody></table></div>
   </section>
 
