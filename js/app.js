@@ -1947,6 +1947,7 @@ async function openToken(id) {
     ${deepest ? `<div class="section"><h3>Price</h3>
       <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" data-tiv="300" aria-pressed="false">5m</button>
           <button class="chip" data-tiv="900" aria-pressed="false">15m</button>
           <button class="chip" data-tiv="3600" aria-pressed="true">1h</button>
           <button class="chip" data-tiv="14400" aria-pressed="false">4h</button>
