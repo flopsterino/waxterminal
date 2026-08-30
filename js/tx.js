@@ -357,3 +357,95 @@ export function buildStakeBack({
   }
   return { actions, staked: net, fee, toCpu, toNet };
 }
+
+// -------------------------------------------------- liquidity, by hand -----
+// Adding and removing liquidity directly, rather than only as the tail of a
+// compound. Both shapes read off real transactions rather than off the ABI
+// alone, because the ABI does not tell you where the tokens end up.
+//
+// They end up in different places, which is the thing worth knowing:
+//
+//   addliquid  spends from an internal balance inside swap.alcor, funded by a
+//              transfer with memo "deposit" in the same transaction. Called on
+//              its own it fails with "Insufficient balance", which is a
+//              confusing way for a contract to say "you did not send anything".
+//   subliquid  pays straight back to the wallet — principal, accrued fees and
+//              farm rewards all at once — so nothing has to be withdrawn after.
+
+// Slippage on a deposit is not the same risk as on a swap: the pool takes what
+// it needs at the current ratio and the rest stays in the internal balance. The
+// minimums exist to stop the price moving under you mid-transaction.
+const LIQ_SLIPPAGE = 0.01;
+
+export function buildAddLiquidity({
+  pool, tickLower, tickUpper, amountA, amountB,
+  me = account(), auth = null, slippage = LIQ_SLIPPAGE,
+}) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
+  const actions = [];
+
+  // Ask for what ARRIVES, not for what was sent: a token that taxes the
+  // transfer delivers less than it took, and asking for the full amount fails.
+  // Under-asking never reverts — the remainder simply stays in the internal
+  // balance and can be withdrawn.
+  const net = (amt, id) => amt * (1 - (state.depth?.get(id)?.venueTaxBps ?? 0) / 10000);
+  const askA = net(amountA, pool.tokenA);
+  const askB = net(amountB, pool.tokenB);
+
+  if (amountA > 0) actions.push({
+    account: ta.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(amountA, ta.symbol, ta.decimals), memo: 'deposit' },
+  });
+  if (amountB > 0) actions.push({
+    account: tb.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(amountB, tb.symbol, tb.decimals), memo: 'deposit' },
+  });
+
+  actions.push({
+    account: ALCOR, name: 'addliquid', authorization: auth,
+    data: {
+      poolId: Number(pool.id), owner: me,
+      tokenADesired: asset(askA, ta.symbol, ta.decimals),
+      tokenBDesired: asset(askB, tb.symbol, tb.decimals),
+      tickLower, tickUpper,
+      tokenAMin: asset(askA * (1 - slippage), ta.symbol, ta.decimals),
+      tokenBMin: asset(askB * (1 - slippage), tb.symbol, tb.decimals),
+      deadline: 0,
+    },
+  });
+  return { actions, askA, askB, venueTaxA: state.depth?.get(pool.tokenA)?.venueTaxBps ?? 0, venueTaxB: state.depth?.get(pool.tokenB)?.venueTaxBps ?? 0 };
+}
+
+// Take some or all of a position back out. `fraction` of 1 closes it.
+//
+// Liquidity is an integer and the contract compares it exactly, so the share is
+// floored: asking to burn one unit more than exists reverts the whole thing.
+export function buildRemoveLiquidity({
+  pool, position, fraction = 1, expectedA = 0, expectedB = 0,
+  me = account(), auth = null, slippage = LIQ_SLIPPAGE,
+}) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
+  const share = Math.max(0, Math.min(1, fraction));
+  const liquidity = Math.floor(Number(position.liquidity) * share);
+  if (!(liquidity > 0)) return { actions: [], liquidity: 0 };
+
+  return {
+    actions: [{
+      account: ALCOR, name: 'subliquid', authorization: auth,
+      data: {
+        poolId: Number(pool.id), owner: me,
+        liquidity: String(liquidity),
+        tickLower: position.tickLower, tickUpper: position.tickUpper,
+        // Zero when we have no expectation to check against: a floor computed
+        // from a number we did not measure would reject good transactions on a
+        // normal tick of the price.
+        tokenAMin: asset(expectedA > 0 ? expectedA * share * (1 - slippage) : 0, ta.symbol, ta.decimals),
+        tokenBMin: asset(expectedB > 0 ? expectedB * share * (1 - slippage) : 0, tb.symbol, tb.decimals),
+        deadline: 0,
+      },
+    }],
+    liquidity, share,
+  };
+}

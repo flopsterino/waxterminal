@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -1865,6 +1865,134 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
   }
 }
 
+// ------------------------------------------------------- ADD / REMOVE LP ----
+// The two operations Alcor's own positions page exists for, and the two this
+// terminal could not do — which is an odd gap in a page whose only other
+// feature, compounding, is those two run back to back.
+//
+// Both panels are deliberately plain. A deposit and a withdrawal are the
+// moments to show someone exactly what will happen and then get out of the way,
+// not to be clever about it.
+
+// A concentrated position holds the two tokens in a ratio set by where the
+// price sits inside its band, so a deposit has to arrive in that ratio or the
+// remainder simply sits in the internal balance. Typing one side and having the
+// other follow is the only version of this that does not waste money.
+function renderAddLiquidity(box, pos, account) {
+  const pool = pos.pool;
+  const ratio = pos.ratio || { shareA: 0.5, shareB: 0.5 };
+  const pxA = pool.priceUsdA, pxB = pool.priceUsdB;
+
+  box.innerHTML = `<div class="card" style="margin-top:11px;background:var(--surface-2)">
+    <h3>Add to ${pairName(pool)} <span class="dim">&mdash; ticks ${pos.tickLower}…${pos.tickUpper}</span></h3>
+    <div class="filters" style="display:grid;gap:8px;margin:0">
+      <label>${esc(pool.symA)}<input id="addA" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+      <label>${esc(pool.symB)}<input id="addB" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+    </div>
+    <p class="sub" id="addNote" style="margin:9px 0 0">This band currently wants ${(ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} and ${(ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)} by value. Type either side and the other follows; the pool takes what it needs at the live ratio and anything left over stays in your Alcor balance, where you can withdraw it.</p>
+    <div id="addOut" style="margin-top:10px"></div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <button class="btn ghost" data-close-lp>Cancel</button>
+      <button class="btn" id="addGo">Review</button>
+    </div>
+  </div>`;
+
+  // Mirroring by value: equal dollars on each side of whatever ratio the band
+  // asks for, which is the thing a depositor actually means.
+  const A = $('#addA'), B = $('#addB');
+  const mirror = (from, to, fromPx, toPx, fromShare, toShare) => {
+    const v = Number(from.value);
+    if (!(v > 0) || !(fromPx > 0) || !(toPx > 0) || !(fromShare > 0)) return;
+    to.value = ((v * fromPx / fromShare * toShare) / toPx).toPrecision(8).replace(/0+$/, '');
+  };
+  A.oninput = () => mirror(A, B, pxA, pxB, ratio.shareA, ratio.shareB);
+  B.oninput = () => mirror(B, A, pxB, pxA, ratio.shareB, ratio.shareA);
+  box.querySelector('[data-close-lp]').onclick = () => { box.innerHTML = ''; };
+
+  $('#addGo').onclick = () => {
+    const amountA = Number(A.value) || 0, amountB = Number(B.value) || 0;
+    const out = $('#addOut');
+    if (!(amountA > 0) && !(amountB > 0)) { out.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    const built = buildAddLiquidity({ pool, tickLower: pos.tickLower, tickUpper: pos.tickUpper, amountA, amountB, me: account });
+    const worth = (amountA * (pxA || 0)) + (amountB * (pxB || 0));
+    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Deposit <b>${qty(amountA)} ${esc(pool.symA)}</b> and <b>${qty(amountB)} ${esc(pool.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''} into ticks ${pos.tickLower}…${pos.tickUpper}.
+      ${built.venueTaxA || built.venueTaxB ? `<br><span class="dim">One of these taxes the transfer, so the deposit asks for what arrives rather than what was sent — the difference stays in your Alcor balance.</span>` : ''}
+      <br><span class="dim">${built.actions.length} actions in one signature: the transfers that fund it, then addliquid. Nothing else in your wallet is touched.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="addConfirm">Sign and deposit</button></div></div>`;
+    $('#addConfirm').onclick = async () => {
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const r = await wallet.transact(built.actions);
+        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Added.</b> Reload your positions to see the new size.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) {
+        const m = String(e.message || e);
+        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+      }
+    };
+  };
+}
+
+// Taking liquidity back out pays the principal, the accrued fees and any farm
+// rewards straight to the wallet in one action — checked against a real
+// subliquid on chain rather than assumed from the ABI, because the ABI does not
+// say where the tokens go and the neighbouring addliquid sends them somewhere
+// else entirely.
+function renderRemoveLiquidity(box, pos, account) {
+  const pool = pos.pool;
+  box.innerHTML = `<div class="card" style="margin-top:11px;background:var(--surface-2)">
+    <h3>Take ${pairName(pool)} back out <span class="dim">&mdash; ${usd(pos.valueUsd)} in this position</span></h3>
+    <div class="toolbar" style="margin:0">
+      ${[25, 50, 75, 100].map(p => `<button class="chip" data-pct="${p}"${p === 100 ? ' aria-pressed="true"' : ''}>${p}%</button>`).join('')}
+    </div>
+    <p class="sub" id="rmNote" style="margin:9px 0 0"></p>
+    <div id="rmOut" style="margin-top:10px"></div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <button class="btn ghost" data-close-lp>Cancel</button>
+      <button class="btn" id="rmGo">Review</button>
+    </div>
+  </div>`;
+
+  let pct = 100;
+  const note = $('#rmNote');
+  const paint = () => {
+    const share = pct / 100;
+    note.innerHTML = `Takes out ${qty(pos.amountA * share)} ${esc(pool.symA)} and ${qty(pos.amountB * share)} ${esc(pool.symB)}, about ${usd(pos.valueUsd * share)} at the current price.
+      Your fees and any farm rewards on this position are paid out in the same action, whatever fraction you take${pct === 100 ? ', and the position closes' : ''}.`;
+  };
+  paint();
+  box.querySelectorAll('[data-pct]').forEach(b => b.onclick = () => {
+    box.querySelectorAll('[data-pct]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    pct = Number(b.dataset.pct); paint();
+  });
+  box.querySelector('[data-close-lp]').onclick = () => { box.innerHTML = ''; };
+
+  $('#rmGo').onclick = () => {
+    const out = $('#rmOut');
+    const built = buildRemoveLiquidity({
+      pool, position: pos, fraction: pct / 100,
+      expectedA: pos.amountA, expectedB: pos.amountB, me: account,
+    });
+    if (!built.actions.length) { out.innerHTML = '<div class="err">That fraction rounds to nothing — liquidity is a whole number.</div>'; return; }
+    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Withdraw <b>${pct}%</b> of position #${pos.posId} &mdash; about ${qty(pos.amountA * pct / 100)} ${esc(pool.symA)} and ${qty(pos.amountB * pct / 100)} ${esc(pool.symB)}, plus everything it has earned.
+      <br><span class="dim">Paid straight to your wallet; nothing is left in an internal balance. A minimum ${(100 - 1).toFixed(0)}% of the expected amounts is enforced, so a price move mid-transaction cancels rather than fills badly.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="rmConfirm">Sign and withdraw</button></div></div>`;
+    $('#rmConfirm').onclick = async () => {
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const r = await wallet.transact(built.actions);
+        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Withdrawn.</b> ${pct === 100 ? 'The position is closed.' : `${pct}% taken out.`} Reload to refresh.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) {
+        const m = String(e.message || e);
+        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+      }
+    };
+  };
+}
+
 async function runCompound(account) {
   if (!account) return;
   show('compound', account);
@@ -1937,8 +2065,15 @@ async function runCompound(account) {
   html += '<div class="grid" style="gap:12px">';
   for (const { pos, harvest, plan } of plans) {
     if (!plan) continue;
-    const basketBits = harvest.basket.map(b =>
-      `<span class="badge" title="${esc(b.source)}">${esc(b.symbol)} ${b.priced ? usd(b.usd) : '?'}</span>`).join(' ');
+    // Selectable, because "compound everything" is not always what someone
+    // means: a farm paying a token they want to keep, or one whose reward is
+    // too small to be worth the conversion, should be leavable behind. Each
+    // entry carries where it came from, so unticking one drops its claim action
+    // as well as its share of the deposit.
+    const basketBits = harvest.basket.map((b, bi) =>
+      `<label class="pick" title="${esc(b.source)}"><input type="checkbox" data-pick="${pos.posId}" data-bi="${bi}" checked>
+        <span class="badge">${esc(b.symbol)} ${b.priced ? usd(b.usd) : '?'}</span>
+        <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm ' + b.source)}</span></label>`).join(' ');
     html += `<div class="card">
       <div class="ph" style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
         <span class="pair">${pairName(pos.pool)}</span>
@@ -1958,6 +2093,12 @@ async function runCompound(account) {
         <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button>
           ${!plan.ratio.inRange ? '<span class="sub" style="margin-left:10px">Out of range — this adds to a band the price has left.</span>' : ''}</div>
         <div class="runbox" data-runbox="${pos.posId}"></div>` : `<div class="dim" style="font-size:12.5px">Nothing claimable yet.</div>`}
+      <div class="toolbar" style="margin:11px 0 0;border-top:1px solid var(--line);padding-top:11px">
+        <button class="btn ghost" data-add="${pos.posId}">Add liquidity</button>
+        <button class="btn ghost" data-remove="${pos.posId}">Take some out</button>
+        <span class="sub">Value ${usd(pos.valueUsd)}${pos.feesUsd > 0 ? ` &middot; ${usd(pos.feesUsd)} of fees waiting` : ''}</span>
+      </div>
+      <div class="lpbox" data-lpbox="${pos.posId}"></div>
     </div>`;
   }
   html += '</div>';
@@ -1969,6 +2110,28 @@ async function runCompound(account) {
 
   out.innerHTML = html;
 
+  // Adding and removing are the two things Alcor's own positions page is for,
+  // and until now this page could only compound — which is the one operation
+  // that needs the other two to already exist.
+  const mine = async () => {
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return false; } }
+    if (wallet.account() !== account) {
+      alert(`Connected as ${wallet.account()}, but these positions belong to ${account}.`);
+      return false;
+    }
+    return true;
+  };
+  out.querySelectorAll('button[data-add]').forEach(b => b.onclick = async () => {
+    if (!await mine()) return;
+    const entry = plans.find(x => String(x.pos.posId) === b.dataset.add);
+    if (entry) renderAddLiquidity(out.querySelector(`[data-lpbox="${b.dataset.add}"]`), entry.pos, account);
+  });
+  out.querySelectorAll('button[data-remove]').forEach(b => b.onclick = async () => {
+    if (!await mine()) return;
+    const entry = plans.find(x => String(x.pos.posId) === b.dataset.remove);
+    if (entry) renderRemoveLiquidity(out.querySelector(`[data-lpbox="${b.dataset.remove}"]`), entry.pos, account);
+  });
+
   out.querySelectorAll('button[data-run]').forEach(b => b.onclick = async () => {
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     if (wallet.account() !== account) {
@@ -1977,8 +2140,22 @@ async function runCompound(account) {
     }
     const entry = plans.find(x => String(x.pos.posId) === b.dataset.run);
     if (!entry) return;
+    // Re-plan against what is actually ticked. Planning against the full basket
+    // and then claiming a subset would size the deposit for money that never
+    // arrived.
+    const picked = new Set([...out.querySelectorAll(`[data-pick="${b.dataset.run}"]:checked`)].map(c => Number(c.dataset.bi)));
+    const basket = entry.harvest.basket.filter((_, i) => picked.has(i));
+    if (!basket.length) {
+      out.querySelector(`[data-runbox="${b.dataset.run}"]`).innerHTML = '<div class="err" style="margin-top:10px">Nothing selected to compound.</div>';
+      return;
+    }
+    const run = basket.length === entry.harvest.basket.length ? entry : {
+      pos: entry.pos,
+      harvest: { ...entry.harvest, basket },
+      plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket, feeBps, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
+    };
     b.disabled = true;
-    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), entry, feeBps, feeAccount);
+    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), run, feeBps, feeAccount);
     b.disabled = false;
   });
 }

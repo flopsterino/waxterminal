@@ -22,7 +22,7 @@
     <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
     <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My wallet</button>
-    <button role="tab" data-view="compound" aria-selected="false">Compound</button>
+    <button role="tab" data-view="compound" aria-selected="false">Liquidity</button>
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   </nav>
   <div class="spacer"></div>
@@ -135,11 +135,11 @@
 
   <!-- --------------------------------------------------------- COMPOUND -->
   <section class="view" id="view-compound">
-    <h2 class="vt">Compound</h2>
-    <p class="vs">Claim your fees and farm rewards and put them straight back to work. Two signatures per position: one to claim, then &mdash; once we can see exactly what landed &mdash; one to convert and redeposit it. Only the harvest is used; the balance you already had is never touched.</p>
+    <h2 class="vt">Liquidity</h2>
+    <p class="vs">Your positions, and everything you can do with them: add, take some back out, collect what has accrued, or compound it. Compounding claims first and only then decides what to convert, because what actually landed is not knowable until the claim has run &mdash; and only the harvest is ever used, never the balance you already held.</p>
     <div class="walletbar">
       <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
-      <button class="btn" id="compGo">Scan my positions</button>
+      <button class="btn" id="compGo">Load my positions</button>
     </div>
     <div id="compOut"></div>
   </section>

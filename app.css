@@ -514,3 +514,11 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
    scroll the page under a finger. */
 .bubblemap { user-select: none; -webkit-user-select: none; }
 .bubblemap g { transition: opacity .12s ease; }
+
+/* A reward you can leave behind. The checkbox sits with its badge so the whole
+   thing is one target on a phone. */
+.pick { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; margin: 0 8px 6px 0; }
+.pick input { margin: 0; cursor: pointer; }
+.pick .sub { font-size: 10.5px; }
+.pick:has(input:not(:checked)) .badge,
+.pick:has(input:not(:checked)) .sub { opacity: .4; }
