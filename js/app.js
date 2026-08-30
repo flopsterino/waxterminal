@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
 import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap, columns, sparkline } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';

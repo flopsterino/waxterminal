@@ -65,7 +65,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null, facing: new Map(), volumeAt: null };
+export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), snapshotPools: new Map(), counts: null, facing: new Map(), volumeAt: null };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -393,26 +393,52 @@ async function loadSnapshot() {
     const k = `${f.d}:${f.i}`;
     state.snapshotFarms.set(k, { stakedUsd: f.su, stakedReal: f.sr, at: d.at });
   }
-  // Volume is refreshed hourly in its own file, because a 24h figure written
-  // into a daily snapshot reads 75% wrong a few hours later.
-  try {
-    const vr = await fetch('data/volume.json', { cache: 'no-cache' });
-    if (vr.ok) {
-      const v = await vr.json();
-      state.volumeAt = v.at;
-      const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
-      for (const [id, row] of Object.entries(v.alcor || {})) {
-        const pool = byId.get(`alcor:${id}`);
-        if (!pool) continue;
-        const [v1, v7, ch] = row;
-        pool.vol24 = v1; pool.vol7d = v7; pool.change24 = ch;
-        pool.turnover = (v1 > 0 && pool.tvlReal > 0) ? v1 / pool.tvlReal : null;
-      }
-    }
-  } catch { /* the snapshot's own figures stand in */ }
+  // Keep the snapshot's own per-pool facts for the same reason the farm rows
+  // are kept: a live chain read cannot produce them. A pool row carries
+  // reserves, not the date it was created.
+  // Only Alcor publishes volume, so the daily job counts the other venues from
+  // their own swap logs. That count is in this file and nowhere else — the
+  // hourly volume file is Alcor-only — so it is kept here for the live sweep to
+  // put back, or TacoSwap, Defibox and A-DEX report no trading at all.
+  state.snapshotPools = new Map();
+  for (const p of d.pools) {
+    if (p.bd == null && p.v1 == null) continue;
+    state.snapshotPools.set(`${p.d}:${p.i}`, { bornAt: p.bd ?? null, vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null });
+  }
+
+  await applyVolume(pools);
 
   state.fromSnapshot = true;
   return d;
+}
+
+// Volume is refreshed hourly in its own file, because a 24h figure written into
+// a daily snapshot reads 75% wrong a few hours later.
+//
+// It has to be applied to whichever set of pools is current. The live sweep
+// builds new pool objects from chain and assigns them over the snapshot's, and
+// for as long as it did not re-apply this, every volume figure in the terminal
+// silently became a dash a few seconds after the page painted — the tokens
+// table, "most traded", the pool rows, a token's 24h. A pool row on chain
+// carries reserves; volume is history, and history lives in this file.
+let volumeFile = null;
+async function applyVolume(pools) {
+  try {
+    if (!volumeFile) {
+      const r = await fetch('data/volume.json', { cache: 'no-cache' });
+      if (!r.ok) return;
+      volumeFile = await r.json();
+    }
+    state.volumeAt = volumeFile.at;
+    const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
+    for (const [id, row] of Object.entries(volumeFile.alcor || {})) {
+      const pool = byId.get(`alcor:${id}`);
+      if (!pool) continue;
+      const [v1, v7, ch] = row;
+      pool.vol24 = v1; pool.vol7d = v7; pool.change24 = ch;
+      pool.turnover = (v1 > 0 && pool.tvlReal > 0) ? v1 / pool.tvlReal : null;
+    }
+  } catch { /* the snapshot's own figures stand in */ }
 }
 
 // Development brake. This machine also runs trading bots that depend on the same
@@ -435,6 +461,8 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
     const cached = await cacheGet(CACHE_KEY);
     if (cached) {
       hydrate(cached);
+      // The cache can be an hour older than volume.json, which refreshes hourly.
+      await applyVolume(state.pools);
       state.stale = Date.now() - cached.loadedAt > FRESH_MS;
       onProgress({ phase: 'cache', done: true, stale: state.stale });
       if (!state.stale) return state;
@@ -495,6 +523,18 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
     backfilled++;
   }
   if (backfilled) onProgress({ phase: 'derive', msg: `restored staked value for ${backfilled} farms` });
+
+  // The same restoration for pools: volume and the date a pool was created are
+  // history, and the sweep reads state.
+  for (const p of pools) {
+    const snap = state.snapshotPools?.get(`${p.dex}:${p.id}`);
+    if (!snap) continue;
+    if (snap.bornAt != null) p.bornAt = snap.bornAt;
+    if (snap.vol24 != null) { p.vol24 = snap.vol24; p.vol7d = snap.vol7d; p.change24 = snap.change24; }
+  }
+  // Alcor's hourly file lands last, so where both have a figure the fresher one
+  // wins.
+  await applyVolume(pools);
 
   state.pools = pools; state.farms = farms; state.prices = prices; state.tokens = tokens;
   state.loadedAt = Date.now(); state.stale = false; state.fromSnapshot = false;

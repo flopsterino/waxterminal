@@ -210,7 +210,6 @@ the account that caused it — that stays on the Activity page, which reads
 - TacoSwap history and its `exchangelog` feed. Its pairs show TVL and price but
   no trade tape: the delta trick above is written against Alcor's `pools` table.
 - Alerts and CSV export.
-- Restaking after a compound is built (`buildRestake`) but not yet in the flow.
 - Per-token history starts the day the snapshot job first records it. The chart
   says so rather than drawing two points across a year of axis.
 

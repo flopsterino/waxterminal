@@ -269,8 +269,15 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
     venueTaxA: venueTaxOf(pool.tokenA), venueTaxB: venueTaxOf(pool.tokenB), leftoverNote: true };
 }
 
-// Restaking is separate: a position staked in several incentives needs one
-// stake action each, and only after the liquidity is in.
+// Joining a farm: one stake action per incentive.
+//
+// Deliberately NOT part of compounding, though it looks like it should be.
+// Alcor's addliquid emits logstaked for every incentive the position is already
+// in, inside the same transaction, so the added liquidity starts earning
+// immediately. Checked against a real compound: the position's liquidity went
+// to 4,540,799,113 and its staking weight to 4,540,799,088 in the same trace.
+// A restake step appended to the flow would be an extra signature that changes
+// nothing.
 export function buildRestake({ position, incentiveIds, me = account(), auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   return incentiveIds.map(id => ({
