@@ -1214,8 +1214,16 @@ async function lookupWallet(account) {
   const oorUsd = outOfRange.reduce((s, p) => s + (p.valueUsd || 0), 0);
   // What the position is earning, from the pool's own 24h volume and fee tier
   // times your share of it. Only in-range positions earn anything.
+  // Deposited, profit and value all come from Alcor's own books for the Alcor
+  // positions. The headline "liquidity value" also counts TacoSwap, valued
+  // here, so putting the two side by side invited the subtraction and gave the
+  // wrong answer: $827.74 against $750.58 deposited reads as $77 of profit,
+  // where the figure shown was $4.04. It was right — it just was not comparing
+  // against the number printed beside it.
   const deposited = res.alcor.reduce((s, p) => s + (p.depositedUsd || 0), 0);
   const pnl = res.alcor.reduce((s, p) => s + (p.pnlUsd || 0), 0);
+  const alcorValue = res.alcor.reduce((s, p) => s + (p.valueUsd || 0), 0);
+  const tacoCount = all.length - res.alcor.length;
   const dailyFees = all.reduce((s, p) => {
     const pool = p.pool;
     if (!p.inRange || !(pool.vol24 > 0) || !(pool.tvlReal > 0)) return s;
@@ -1227,7 +1235,7 @@ async function lookupWallet(account) {
       <div class="stat"><span class="v">${usd(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usd(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
-      ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">against ${usd(deposited)} deposited</span></div>` : ''}
+      ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">${usd(alcorValue)} now against ${usd(deposited)} put in, on Alcor positions only${tacoCount > 0 ? ` &mdash; the ${tacoCount} TacoSwap position${tacoCount === 1 ? '' : 's'} above ${tacoCount === 1 ? 'is' : 'are'} not in this` : ''}</span></div>` : ''}
     </div>`;
 
   if (outOfRange.length) {
