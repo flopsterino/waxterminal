@@ -522,3 +522,50 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .pick .sub { font-size: 10.5px; }
 .pick:has(input:not(:checked)) .badge,
 .pick:has(input:not(:checked)) .sub { opacity: .4; }
+
+/* ===========================================================================
+   SCALING — one layout that works from a 320px phone to an ultrawide.
+   The breakpoints below were written for a narrower app than this became: the
+   grid columns were fixed pixel minimums, so a 1400px screen and a 2560px one
+   showed the same two columns with the rest as margin, and a 340px phone got
+   horizontal scroll from tables that could not shrink further.
+   =========================================================================== */
+
+/* The shell grows with the screen instead of stopping at 1460. */
+.wrap { max-width: min(1900px, 96vw); }
+
+/* Cards stop being a fixed two-up. On a wide screen a g2 becomes three or four
+   across, because two 900px-wide cards is wasted space, not breathing room. */
+@media (min-width: 1500px) {
+  .grid.g2 { grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }
+  .grid.g3, .grid.g3c { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+}
+
+/* Type scales gently with the viewport rather than jumping at a breakpoint. */
+h2.vt { font-size: clamp(18px, 1.1vw + 14px, 26px); }
+.stat .v { font-size: clamp(17px, .8vw + 12px, 25px); }
+.card h3 { font-size: clamp(12px, .3vw + 11px, 14px); }
+
+/* Very narrow phones. Below about 380px the toolbars were wrapping into a
+   column of single buttons and tables were overflowing the viewport. */
+@media (max-width: 400px) {
+  .wrap { padding: 10px 7px 64px; }
+  .stat { flex-basis: 100%; }
+  .toolbar { gap: 5px; }
+  .chip { padding: 5px 8px; font-size: 11.5px; }
+  .btn { padding: 6px 10px; font-size: 12px; }
+  thead th, tbody td { padding: 7px 6px; font-size: 11.5px; }
+  .card { padding: 12px 11px; }
+  h2.vt { font-size: 18px; }
+  .filters { grid-template-columns: 1fr; }
+  .walletbar { flex-wrap: wrap; }
+  .walletbar input { flex: 1 1 100%; }
+}
+
+/* A table is the one thing that cannot reflow, so it scrolls inside its own
+   box rather than pushing the page sideways. */
+.tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+body { overflow-x: hidden; }
+
+/* The map fills whatever card it lands in rather than sitting at a fixed 430. */
+.bubblemap svg { max-width: 100% !important; width: 100%; }

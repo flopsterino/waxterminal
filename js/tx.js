@@ -302,17 +302,25 @@ const WAX_DECIMALS = 8;
 // changes who you vote for not at all — which is why real claims on chain are
 // almost always paired with it. Skipped when they have never voted, because
 // there is no existing choice to re-cast and this must never pick one for them.
-export function buildVoteClaim({ account: me = account(), proxy = '', producers = [], auth = null }) {
+export function buildVoteClaim({ account: me = account(), proxy = '', producers = [], fallbackProxy = '', auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
-  if (proxy || producers.length) {
+
+  // An account that has never voted earns nothing at all, and no amount of
+  // claiming changes that — so a claim that leaves it unvoted is a button that
+  // cannot work. Where there is no existing choice, the configured proxy is
+  // cast; where there is one, it is re-cast unchanged, which refreshes a
+  // decaying weight without touching who they picked.
+  const hasOwn = !!(proxy || producers.length);
+  const useProxy = hasOwn ? proxy : fallbackProxy;
+  if (hasOwn || fallbackProxy) {
     actions.push({
       account: SYSTEM, name: 'voteproducer', authorization: auth,
-      data: { voter: me, proxy: proxy || '', producers: proxy ? [] : producers },
+      data: { voter: me, proxy: useProxy || '', producers: useProxy ? [] : producers },
     });
   }
   actions.push({ account: SYSTEM, name: 'claimgbmvote', authorization: auth, data: { owner: me } });
-  return { actions, refreshedVote: !!(proxy || producers.length) };
+  return { actions, refreshedVote: hasOwn, castNewVote: !hasOwn && !!fallbackProxy, proxy: useProxy };
 }
 
 // Put back what actually landed, in the CPU/NET ratio they already run, and pay
@@ -447,5 +455,31 @@ export function buildRemoveLiquidity({
       },
     }],
     liquidity, share,
+  };
+}
+
+// ------------------------------------------------------------- promotion ----
+// Buying a promoted slot, as a button rather than as instructions.
+//
+// Telling someone to assemble `promote:p:alcor:11051` by hand and send tokens
+// to an account they typed themselves is how tokens go somewhere irreversible.
+// The memo is not a form to fill in; it is an implementation detail of a
+// payment the page can just make.
+export function buildPromotion({ kind, id, days, terms, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const amount = Math.max(0, days) * terms.perDay;
+  if (!(amount > 0)) return { actions: [], amount: 0 };
+  return {
+    actions: [{
+      account: terms.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: terms.account,
+        // Whole tokens: a fractional day buys a fractional slot and reads as a
+        // rounding error on the receipt.
+        quantity: asset(amount, terms.token, 8),
+        memo: `${terms.prefix}:${kind}:${id}`,
+      },
+    }],
+    amount, days,
   };
 }

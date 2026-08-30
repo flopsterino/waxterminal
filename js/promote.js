@@ -40,7 +40,7 @@ export function configurePromotion(commercial) {
 
 export const promotionConfigured = () => !!cfg;
 export const promotionTerms = () => cfg
-  ? { token: cfg.token.symbol, contract: cfg.token.contract, account: cfg.account, perDay: cfg.ratePerDay, slots: cfg.slots ?? 3, prefix: cfg.memoPrefix || 'promote' }
+  ? { token: cfg.token.symbol, contract: cfg.token.contract, account: cfg.account, perDay: cfg.ratePerDay, slots: cfg.slots ?? 8, prefix: cfg.memoPrefix || 'promote' }
   : null;
 
 // What a creator has to send, spelled out. Guessing a memo format is not a
@@ -89,13 +89,13 @@ export async function activePromotions({ now = Date.now() } = {}) {
     const paid = parseFloat(amtStr) || 0;
     if (!(paid > 0)) continue;
 
-    // memo: "promote:<kind>:<id>" — kind is 'p' for a pool, 't' for a token,
-    // and an id containing colons (alcor:11051) survives because only the
-    // first two segments are consumed.
+    // memo: "promote:<kind>:<id>" — 'p' a pool, 't' a token, 'f' a farm, and
+    // an id containing colons (alcor:11051) survives because only the first
+    // two segments are consumed.
     const rest = memo.slice(prefix.length).split(':');
     const kind = (rest.shift() || '').toLowerCase();
     const id = rest.join(':').trim();
-    if (!id || (kind !== 'p' && kind !== 't')) continue;
+    if (!id || !['p', 't', 'f'].includes(kind)) continue;
 
     const at = new Date(a.timestamp + (a.timestamp.endsWith('Z') ? '' : 'Z')).getTime();
     out.push({ kind, id, paid, at, days: paid / cfg.ratePerDay, from: x.from, trx: a.trx_id });
@@ -123,7 +123,12 @@ export async function activePromotions({ now = Date.now() } = {}) {
   // more puts you higher. Time remaining decides whether you appear at all,
   // not where — otherwise the only way to outrank someone would be to outlast
   // them, and a big buy would sit under a small one that started earlier.
-  return [...merged.values()]
-    .sort((a, b) => b.paid - a.paid || b.until - a.until)
-    .slice(0, cfg.slots ?? 3);
+  //
+  // Nobody is turned away. More buyers than slots means the ones who paid less
+  // sit below the fold rather than being refused a slot they already paid for,
+  // and each row carries its rank so a buyer can see exactly what it would take
+  // to move up.
+  const ranked = [...merged.values()].sort((a, b) => b.paid - a.paid || b.until - a.until);
+  ranked.forEach((r, i) => { r.rank = i + 1; r.total = ranked.length; });
+  return ranked;
 }

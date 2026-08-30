@@ -29,10 +29,11 @@
         "symbol": "HOLE",
         "contract": "hole.cheese"
       },
-      "ratePerDay": 100,
-      "slots": 3,
+      "ratePerDay": 10,
+      "slots": 8,
       "memoPrefix": "promote"
-    }
+    },
+    "stakeProxy": "waxcommunity"
   },
   "features": {
     "pools": true,

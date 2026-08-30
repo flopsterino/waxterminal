@@ -463,6 +463,22 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
     nodeEls.set(n.id, { g, c, pctText, label, p });
   }
 
+  // A short live settle after any nudge, rather than one frozen layout. The map
+  // is a physical object now: push a bubble and its neighbours get out of the
+  // way, let go and the whole thing relaxes back. That is the difference
+  // between a diagram of a graph and a thing you can interrogate.
+  let raf = 0;
+  const animate = (frames = 40) => {
+    cancelAnimationFrame(raf);
+    let left = frames;
+    const step = () => {
+      settle(3);
+      place();
+      if (--left > 0) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  };
+
   const place = () => {
     for (const l of edges) {
       const a = byId.get(l.source), b = byId.get(l.target), line = lineFor.get(l);
@@ -492,8 +508,14 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   };
 
   for (const [nid, e] of nodeEls) {
-    e.g.addEventListener('pointerenter', () => focus(nid));
-    e.g.addEventListener('pointerleave', () => focus(null));
+    e.g.addEventListener('pointerenter', () => {
+      focus(nid);
+      // Lift the hovered bubble above its neighbours so a small one inside a
+      // cluster can actually be read and clicked.
+      e.g.parentNode.appendChild(e.g);
+      e.c.setAttribute('stroke-width', 3);
+    });
+    e.g.addEventListener('pointerleave', () => { focus(null); e.c.setAttribute('stroke-width', 2); });
     // Drag to pull a bubble out of a knot and see what it is attached to.
     e.g.addEventListener('pointerdown', ev => {
       ev.preventDefault();
@@ -505,7 +527,7 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
         const nx = (m.clientX - box.left) * scale, ny = (m.clientY - box.top) * scale;
         moved += Math.abs(nx - e.p.x) + Math.abs(ny - e.p.y);
         e.p.x = nx; e.p.y = ny;
-        settle(6); place();
+        settle(4); place();
       };
       const up = () => {
         e.p.fixed = false;
@@ -513,16 +535,27 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
         window.removeEventListener('pointerup', up);
         // A press that never moved is a click, and a click opens the wallet.
         if (moved < 4 && onPick) onPick(nid);
-        else { settle(60); place(); }
+        else animate(50);
       };
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
     });
   }
 
+  // Re-throw the layout. A force graph can settle into a knot, and the fix is
+  // the same as with any physical tangle: shake it and let it fall again.
+  const shake = el('text', { x: size - 8, y: 14, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 10 });
+  shake.textContent = 'shuffle';
+  shake.style.cursor = 'pointer';
+  shake.addEventListener('click', () => {
+    for (const p of P) { p.x = cx + (Math.random() - 0.5) * size * 0.7; p.y = cy + (Math.random() - 0.5) * size * 0.7; p.vx = p.vy = 0; }
+    animate(90);
+  });
+  svg.appendChild(shake);
+
   const caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
   caption.textContent = ci > 0
-    ? 'One colour = wallets that have sent this token to each other · hover to isolate, drag to pull apart, click to open'
+    ? 'One colour = wallets that have sent this token to each other · hover to isolate, drag to pull apart, click to open a wallet'
     : 'No transfers between these wallets · click one to see what it holds';
   svg.appendChild(caption);
 

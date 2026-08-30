@@ -942,6 +942,43 @@ const DELTA_SOURCE = {
   adex:    { code: ADEX,  table: 'pools', key: p => String(p.id), a: r => r.base_token.quantity, b: r => r.quote_token.quantity },
 };
 
+// Alcor publishes its own candles, and they go back to the day the pool opened.
+//
+// Replaying pool rows was the only way to chart the venues that publish
+// nothing, and it still is for those — but on Alcor it was the wrong tool for
+// long windows. Hyperion caps a delta query at 10,000 rows, so a busy pool hit
+// that ceiling two and a half days back however wide a date range was asked
+// for: the chart cut off at 28 August because there was nothing older in hand,
+// not because nothing older happened.
+//
+// This is one request for 148,288 five-minute bars reaching to May 2023, with
+// open, high, low, close and volume already aggregated. Cheaper, longer, and
+// computed by the venue whose pool it is.
+const ALCOR_RESOLUTION = { 300: '5', 900: '15', 1800: '30', 3600: '60', 14400: '240', 86400: '1D', 604800: '1W' };
+
+const candleCache = new Map();
+export async function alcorCandles(poolId, bucketSec) {
+  const res = ALCOR_RESOLUTION[bucketSec];
+  if (!res) return null;
+  const key = `${poolId}:${res}`;
+  if (candleCache.has(key)) return candleCache.get(key);
+  const r = await fetch(`https://wax.alcor.exchange/api/v2/swap/pools/${encodeURIComponent(poolId)}/candles?resolution=${res}`,
+    { signal: AbortSignal.timeout(30000) });
+  if (!r.ok) throw new Error(`candles ${r.status}`);
+  const raw = await r.json();
+  // Numbers arrive as strings, and time in milliseconds where the chart wants
+  // seconds. A bar with a zero or missing price is dropped rather than drawn as
+  // a spike to the floor.
+  const out = raw.map(c => ({
+    time: Math.floor(c.time / 1000),
+    open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close),
+    volume: Number(c.volume) || 0,
+  })).filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0)
+    .sort((a, b) => a.time - b.time);
+  candleCache.set(key, out);
+  return out;
+}
+
 // Which venues a trade history can be replayed for at all.
 export const TRADE_VENUES = new Set(Object.keys(DELTA_SOURCE));
 

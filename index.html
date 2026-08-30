@@ -27,6 +27,7 @@
   </nav>
   <div class="spacer"></div>
   <div class="waxprice" id="waxPrice">WAX <b>—</b></div>
+  <button class="chip" id="unitToggle" title="Show every value in dollars or in WAX">USD</button>
   <button class="btn" id="connectBtn">Connect wallet</button>
   <div class="acct" id="acctChip" hidden><span class="dot"></span><span id="acctName"></span>
     <button class="iconbtn" id="disconnectBtn" title="Disconnect" aria-label="Disconnect" style="width:20px;height:20px;font-size:11px">&times;</button></div>
@@ -71,7 +72,7 @@
     <div class="stats" id="tokStats"></div>
     <div class="toolbar">
       <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
-      <button class="chip" id="fTokSolid" aria-pressed="true">Tradeable only</button>
+      <button class="chip" id="fTokSolid" aria-pressed="true" title="Has a price this terminal will stand behind, and pooled value behind that price">Tradeable only</button>
       <span class="dim" id="tokCount" style="font-size:12px"></span>
     </div>
     <div class="tablewrap"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
@@ -113,9 +114,9 @@
       <button class="btn" id="walletGo">Look up</button>
     </div>
     <div id="walletStake"></div>
-    <div id="walletFarms"></div>
     <div id="walletBalances"></div>
     <div id="walletOut"></div>
+    <div id="walletFarms"></div>
   </section>
 
   <!-- --------------------------------------------------------- ACTIVITY -->
