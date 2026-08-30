@@ -138,25 +138,35 @@ const [tacoVol, boxVol, adexVol] = await Promise.all([
 ]);
 const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
 
-// Alcor publishes safe_usd_price and sets it to zero for tokens it will not
-// stand behind. Where the venue itself refuses to quote, this terminal has no
-// business inventing one: honouring that veto is what closes the gap between
-// $2.65M of "Alcor TVL" here and the $1.69M Alcor reports, and it is a simpler
-// rule than any model of our own.
+// Alcor publishes safe_usd_price and zeroes it for tokens it will not stand
+// behind. That judgement is worth deferring to — honouring it brings Alcor TVL
+// here within 1% of what Alcor itself reports — but not on its own: they zero
+// 2,024 of their 2,064 tokens, which is a risk policy rather than a statement
+// that a token is worthless. HOLE is scored 15 and vetoed, while its own exit is
+// $915 against $1,335 pooled, a ratio of 0.68.
+//
+// So a price is dropped only when BOTH agree: Alcor declines to quote it AND
+// this terminal's own exit analysis finds nearly nothing standing behind it.
+// The goldenvaults ring fails both at 0.0015; HOLE fails neither.
+const VETO_RATIO = 0.05;
 const vetoed = new Set();
 try {
   const toks = await (await fetch('https://wax.alcor.exchange/api/v2/tokens', { signal: AbortSignal.timeout(30000) })).json();
+  let declined = 0;
   for (const t of toks) {
-    if (t.safe_usd_price === 0 || t.is_scam) vetoed.add(`${t.symbol}@${t.contract}`);
+    const id = `${t.symbol}@${t.contract}`;
+    if (!(t.safe_usd_price === 0 || t.is_scam)) continue;
+    declined++;
+    const d = state.depth.get(id);
+    if (t.is_scam || !d || d.ratio < VETO_RATIO) vetoed.add(id);
   }
-  console.log(`alcor declines to price ${vetoed.size} tokens; honouring that`);
+  console.log(`alcor declines ${declined} tokens; ${vetoed.size} of them also fail our own exit test`);
   let dropped = 0;
   for (const id of vetoed) {
     if (state.prices.delete(id)) dropped++;
     const d = state.depth.get(id);
     if (d) { d.nominal = 0; d.realisable = 0; d.ratio = 0; }
   }
-  // Re-price the pools without them.
   for (const p of state.pools) {
     if (vetoed.has(p.tokenA)) { p.priceUsdA = null; p.usdA = null; }
     if (vetoed.has(p.tokenB)) { p.priceUsdB = null; p.usdB = null; }
