@@ -47,3 +47,49 @@ export function parseAsset(q) {
 }
 
 export const tokenId = (symbol, contract) => `${symbol}@${contract}`;
+
+// ------------------------------------------------------------ fees owed -----
+// What a position has earned and not collected.
+//
+// The `feesA`/`feesB` fields on a position row are NOT this: they are what a
+// previous collect already credited and left sitting there, and on a position
+// that has never been poked they are zero while real fees accrue. Reading them
+// as "fees waiting" reported $0 on a position Alcor's own page showed $1.69 on.
+//
+// The real figure is Uniswap V3's fee-growth accounting, which Alcor implements
+// unchanged: the pool tracks fees per unit of liquidity since inception, each
+// initialised tick tracks the growth that happened on the far side of it, and
+// the difference is what accrued inside this position's band while the position
+// was in it.
+//
+//   inside = global - below(lower) - above(upper)
+//   owed   = liquidity * (inside - insideLast) / 2^64 + already credited
+//
+// Checked against Alcor's own index on position 146875 (pool 11051): 178.24
+// CHEESE against their 178.2561, and 7.8096 HOLE against their 7.80965294.
+const M128 = 1n << 128n;
+const big = v => BigInt(v ?? 0);
+// Growth counters are unsigned and wrap, so a plain subtraction can go negative
+// and turn a real balance into a nonsense one.
+const wrapSub = (a, b) => ((a - b) % M128 + M128) % M128;
+
+export function feesOwed(pos, pool, tickLowerRow, tickUpperRow) {
+  const tick = Number(pool.currSlot?.tick ?? pool.tick);
+  const out = {};
+  for (const side of ['A', 'B']) {
+    const global = big(pool[`feeGrowthGlobal${side}X64`]);
+    // An uninitialised tick has no growth recorded on its far side, which is
+    // the same thing as zero — not a reason to give up on the position.
+    const lo = big(tickLowerRow?.[`feeGrowthOutside${side}X64`]);
+    const hi = big(tickUpperRow?.[`feeGrowthOutside${side}X64`]);
+    const below = tick >= pos.tickLower ? lo : wrapSub(global, lo);
+    const above = tick < pos.tickUpper ? hi : wrapSub(global, hi);
+    const inside = wrapSub(wrapSub(global, below), above);
+    const delta = wrapSub(inside, big(pos[`feeGrowthInside${side}LastX64`]));
+    // A delta above half the range is a wrap that means "negative", i.e. the
+    // position is ahead of the counter. That is not fees owed, it is zero.
+    const accrued = delta > (M128 >> 1n) ? 0n : (big(pos.liquidity) * delta) >> 64n;
+    out[side] = Number(accrued) + Number(pos[`fees${side}`] ?? 0);
+  }
+  return { feesA: out.A, feesB: out.B };
+}

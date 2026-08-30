@@ -4,9 +4,9 @@
 // =============================================================================
 
 import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
-import { harvestFor, planCompound } from './compound.js';
+import { harvestFor, planCompound, stakedIncentives, farmGap } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -78,6 +78,15 @@ function qty(v) {
   if (a > 0)    return v.toPrecision(3);
   return '0';
 }
+const sigfig = v => {
+  if (v == null || !isFinite(v) || v === 0) return '—';
+  const a = Math.abs(v);
+  if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (a >= 1) return v.toPrecision(4).replace(/\.?0+$/, '');
+  return v.toPrecision(3);
+};
+const usdExact = v => (v == null || !isFinite(v)) ? '—'
+  : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = v => (v == null || !isFinite(v)) ? '—' : (v >= 1000 ? '>999%' : v.toFixed(1) + '%');
 const ago = t => {
   const s = (Date.now() - new Date(t + (String(t).endsWith('Z') ? '' : 'Z')).getTime()) / 1000;
@@ -1558,7 +1567,7 @@ async function renderWalletResources(account) {
         </div>
         <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET. Locked for three days after unstaking.</p>
         <div id="unOut" style="margin-top:10px"></div>
-        <div class="toolbar" style="margin:10px 0 0"><button class="btn ghost" id="unGo">Review</button></div>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unGo">Review</button></div>
       </div>
 
       <div class="card"><h3>Voting <span class="dim">&mdash; a stake that does not vote earns nothing</span></h3>
@@ -1568,7 +1577,7 @@ async function renderWalletResources(account) {
         <div class="toolbar" style="margin:0">
           <button class="chip" id="voteProxyBtn" aria-pressed="true">Use a proxy</button>
           <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" style="max-width:200px" spellcheck="false">
-          <button class="btn ghost" id="voteGo">Vote</button>
+          <button class="btn" id="voteGo">Vote</button>
         </div>
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
           <span class="sub">Re-cast this vote automatically whenever I claim or compound, so the weight never decays</span></label>
@@ -2025,6 +2034,155 @@ function autoWallet() {
   return true;
 }
 
+// Joining a farm is one stake action per incentive, in a single transaction.
+// The position stays where it is and stays yours: staking tells the incentive
+// to count it, and nothing in the action moves liquidity.
+function wireJoinFarm(root, account) {
+  root.querySelectorAll('button[data-joinfarm]').forEach(btn => {
+    btn.onclick = async () => {
+      const box = btn.closest('.pc-farm');
+      const ids = btn.dataset.inc.split(',').filter(Boolean);
+      const label = btn.textContent;
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      if (wallet.account() !== account) { alert(`Connected as ${wallet.account()}, but this position belongs to ${account}.`); return; }
+      btn.disabled = true; btn.textContent = 'Waiting for your wallet…';
+      try {
+        const tx = await wallet.transact(buildRestake({ position: { posId: btn.dataset.joinfarm }, incentiveIds: ids, me: account }).actions);
+        box.className = 'pc-farm done';
+        box.innerHTML = `<div><b>Staked into ${ids.length} farm${ids.length === 1 ? '' : 's'}.</b>
+          <span class="sub">Rewards accrue from this block. <a class="mono" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></span></div>`;
+      } catch (e) {
+        btn.disabled = false; btn.textContent = label;
+        const m = String(e.message || e);
+        box.querySelector('.sub').innerHTML = /cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m);
+      }
+    };
+  });
+}
+
+// --------------------------------------------------------- position card ---
+// A position is five questions and the old card answered them in a definition
+// list, which is the layout you reach for when you have not decided which
+// number matters: what is it worth, is it earning, what is it made of, what is
+// owed to it, and what is it NOT collecting.
+//
+// So: value and P&L in the header where the eye lands, state as pills rather
+// than prose, the price band drawn instead of described, the composition as a
+// bar because a 52/48 split is a shape and not a pair of numbers, and the farm
+// gap called out where it cannot be missed.
+function positionCard(p) {
+  const pool = p.pool;
+  const share = pool.tvl > 0 ? Math.min(1, p.valueUsd / pool.tvl) : null;
+  const f = p.farm;
+
+  // Composition by value where both sides are priced, by the band's own
+  // deposit ratio where they are not. A concentrated position is rarely 50/50
+  // and the ratio is the whole reason topping it up needs planning.
+  const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
+  const tot = vA + vB;
+  const wA = tot > 0 ? vA / tot : p.ratio.shareA;
+
+  // What this position earns a day from trading, at the pool's own 24h volume.
+  const feeDay = (p.inRange && pool.vol24 > 0 && pool.tvlReal > 0)
+    ? pool.vol24 * (pool.feeBps / 10000) * (p.valueUsd / pool.tvlReal) : 0;
+
+  // The band's edges as prices, in the pair's own units. A tick number means
+  // nothing to anyone; the price it stands for is the decision.
+  const priceAt = t => Math.pow(1.0001, t) * 10 ** (pool.decA - pool.decB);
+  const bandLo = priceAt(p.tickLower), bandHi = priceAt(p.tickUpper), bandNow = priceAt(pool.tick);
+  const farmDay = f ? f.inFarm.reduce((s, x) => {
+    if (!(x.rewardUsdDay > 0) || !(x.stakedUsd > 0) || !(p.valueUsd > 0)) return s;
+    return s + x.rewardUsdDay * (p.valueUsd / x.stakedUsd);
+  }, 0) : 0;
+
+  const pills = [
+    `<span class="pill ${p.inRange ? 'good' : 'bad'}">${p.inRange ? 'In range' : 'Out of range'}</span>`,
+    p.feesUsd > 0 ? `<span class="pill accent">${usd(p.feesUsd)} uncollected</span>` : '',
+    f && f.missing.length ? `<span class="pill warn">Not in ${f.missing.length === f.live.length ? 'the farm' : `${f.missing.length} of ${f.live.length} farms`}</span>`
+      : f && f.inFarm.length ? `<span class="pill good">Farming${f.aprLive != null ? ` &middot; ${pct(f.aprLive)} APR` : ''}</span>` : '',
+  ].filter(Boolean).join('');
+
+  const fig = (k, v, cls = '') => `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+
+  return `<article class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(pool.id)}:${p.tickLower}:${p.tickUpper}:${pool.tick}">
+    <header class="pc-head">
+      <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
+      <div class="pc-id">
+        <div class="pc-pair">${pairName(pool)}<span class="venue alcor">Alcor</span></div>
+        <div class="pc-meta">#${p.posId} &middot; ${(pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(share >= 1 ? 1 : 2)}% of the pool` : ''}</div>
+      </div>
+      <div class="pc-val">
+        <span class="v">${usdExact(p.valueUsd)}</span>
+        ${p.depositedUsd > 0 ? `<span class="d ${p.pnlUsd >= 0 ? 'pos' : 'neg'}">${p.pnlUsd >= 0 ? '+' : ''}${usdExact(p.pnlUsd)} since you opened it</span>` : ''}
+      </div>
+    </header>
+
+    <div class="pc-pills">${pills}</div>
+    <div class="rb-slot"></div>
+    <div class="pc-band">
+      <span>${sigfig(bandLo)}</span>
+      <span class="now">${sigfig(bandNow)} now</span>
+      <span>${sigfig(bandHi)}</span>
+    </div>
+
+    <div class="pc-split" title="${esc(pool.symA)} ${(wA * 100).toFixed(0)}% / ${esc(pool.symB)} ${((1 - wA) * 100).toFixed(0)}%">
+      <div class="seg a" style="width:${(wA * 100).toFixed(2)}%"></div>
+      <div class="seg b" style="width:${((1 - wA) * 100).toFixed(2)}%"></div>
+    </div>
+    <div class="pc-legend">
+      <span><i class="a"></i>${esc(pool.symA)} ${qty(p.amountA)}</span>
+      <span><i class="b"></i>${esc(pool.symB)} ${qty(p.amountB)}</span>
+    </div>
+
+    <div class="pc-figs">
+      ${fig('Fees waiting', usd(p.feesUsd), p.feesUsd > 0 ? 'accent' : 'dim')}
+      ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim')}
+      ${fig('Top up at', `${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}`)}
+    </div>
+
+    ${f && f.missing.length ? `<div class="pc-farm">
+      <div><b>${f.aprMissing != null ? `${pct(f.aprMissing)} APR` : `${f.missing.length} farm${f.missing.length === 1 ? '' : 's'}`} you are not collecting</b>
+        <span class="sub">${f.missing.map(x => esc(x.rewardSymbol)).join(' + ')} ${f.missing.length === 1 ? 'is' : 'are'} paid to staked positions only${f.missedUsdDay > 0 ? ` &mdash; about ${usd(f.missedUsdDay)} a day at this size` : ''}</span></div>
+      <button class="btn" data-joinfarm="${p.posId}" data-inc="${f.missing.map(x => esc(x.id)).join(',')}">Join the farm</button>
+    </div>` : ''}
+
+    <footer class="pc-act">
+      <button class="btn" data-compound="${esc(pool.id)}:${p.posId}">Compound</button>
+      <a class="btn" href="${venueUrl.alcor(pool)}" target="_blank" rel="noopener">Open the pool</a>
+    </footer>
+    <div class="cplan" hidden></div></article>`;
+}
+
+function tacoCard(p) {
+  const pool = p.pool;
+  const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
+  const tot = vA + vB;
+  const wA = tot > 0 ? vA / tot : 0.5;
+  const tacoDay = (pool.vol24 > 0 && pool.tvl > 0) ? pool.vol24 * (pool.feeBps / 10000) * p.share : 0;
+  return `<article class="poscard">
+    <header class="pc-head">
+      <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
+      <div class="pc-id">
+        <div class="pc-pair">${pairName(pool)}<span class="venue taco">Taco</span></div>
+        <div class="pc-meta">${qty(p.balance)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
+      </div>
+      <div class="pc-val"><span class="v">${usdExact(p.valueUsd)}</span></div>
+    </header>
+    <div class="pc-pills"><span class="pill good">Full range</span></div>
+    <div class="pc-split"><div class="seg a" style="width:${(wA * 100).toFixed(2)}%"></div><div class="seg b" style="width:${((1 - wA) * 100).toFixed(2)}%"></div></div>
+    <div class="pc-legend">
+      <span><i class="a"></i>${esc(pool.symA)} ${qty(p.amountA)}</span>
+      <span><i class="b"></i>${esc(pool.symB)} ${qty(p.amountB)}</span>
+    </div>
+    <div class="pc-figs">
+      <div class="fig"><span class="k">Pool size</span><span class="v">${pool.tvl != null ? usd(pool.tvl) : '&mdash;'}</span></div>
+      <div class="fig"><span class="k">Earning / day</span><span class="v ${tacoDay > 0 ? '' : 'dim'}">${tacoDay > 0 ? usd(tacoDay) : '&mdash;'}</span></div>
+      <div class="fig"><span class="k">Fee tier</span><span class="v">${(pool.feeBps / 100).toFixed(2)}%</span></div>
+    </div>
+    <footer class="pc-act"><a class="btn" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">Open the pool</a></footer>
+  </article>`;
+}
+
 async function lookupWallet(account) {
   if (!account) return;
   walletShown = account;
@@ -2062,6 +2220,16 @@ async function lookupWallet(account) {
       <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} this account has interacted with, plus its TacoSwap LP balances.</span></div>`;
     return;
   }
+
+  // Being an LP and being IN THE FARM are different things, and this page used
+  // to show only the first. A position sitting in a pool with a live incentive
+  // it never joined earns trading fees and nothing else, and nothing on screen
+  // said so — which is the whole reason a farmed pair could not be compounded
+  // "with farm rewards": there were none to compound.
+  try {
+    const joined = await stakedIncentives(res.alcor.map(p => p.posId));
+    for (const p of res.alcor) p.farm = farmGap(p, state.farms, joined.get(String(p.posId)) || []);
+  } catch { /* the cards render without it */ }
 
   const totalUsd = all.reduce((s, p) => s + (p.valueUsd || 0), 0);
   const feesUsd = res.alcor.reduce((s, p) => s + (p.feesUsd || 0), 0);
@@ -2117,39 +2285,21 @@ async function lookupWallet(account) {
     </div>`;
   }
 
+  // The farms running on pools this wallet is already in, that it never joined.
+  // This is the one number on the page that is pure loss: the reward is being
+  // paid, to everyone in the pool who staked, every block.
+  const gaps = res.alcor.filter(p => p.farm?.missing.length);
+  if (gaps.length) {
+    const perDay = gaps.reduce((a, p) => a + p.farm.missedUsdDay, 0);
+    html += `<div class="cta warn">
+      <div><b>${gaps.length} position${gaps.length === 1 ? ' is' : 's are'} not staked into ${gaps.length === 1 ? 'a farm running on its pool' : 'the farms running on their pools'}</b>
+        <span class="sub">${perDay > 0 ? `About ${usd(perDay)} a day` : 'Rewards'} being paid to staked positions only. Each card below has a one-click join.</span></div>
+    </div>`;
+  }
+
   html += '<div class="grid g2">';
-  for (const p of res.alcor) {
-    const share = p.pool.tvlReal > 0 ? p.valueUsd / p.pool.tvlReal : null;
-    html += `<div class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(p.pool.id)}:${p.tickLower}:${p.tickUpper}:${p.pool.tick}">
-      <div class="ph"><span data-pm="${esc(p.pool.tokenA)}|${esc(p.pool.symA)}|${esc(p.pool.tokenB)}|${esc(p.pool.symB)}"></span>
-        <span class="pairbig">${pairName(p.pool)}</span>
-        <span class="venue alcor">Alcor</span>
-        <span class="badge ${p.inRange ? 'good' : 'bad'}">${p.inRange ? 'earning' : 'out of range'}</span>
-        <span style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
-      <div class="sub">#${p.posId} &middot; ${(p.pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(1)}% of the pool` : ''}</div>
-      <div class="rb-slot" style="margin-top:10px"></div>
-      <dl class="kv">
-        <dt>${esc(p.pool.symA)}</dt><dd>${qty(p.amountA)}</dd>
-        <dt>${esc(p.pool.symB)}</dt><dd>${qty(p.amountB)}</dd>
-        <dt>Fees waiting</dt><dd>${usd(p.feesUsd)}</dd>
-        ${p.depositedUsd > 0 ? `<dt>Profit</dt><dd class="${p.pnlUsd >= 0 ? 'pos' : 'neg'}">${p.pnlUsd >= 0 ? '+' : ''}${usd(p.pnlUsd)}</dd>` : ''}
-        <dt>Needs topping up at</dt><dd>${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}</dd>
-      </dl>
-      <button class="btn${p.feesUsd > 0 ? '' : ' ghost'}" style="margin-top:10px;width:100%" data-compound="${esc(p.pool.id)}:${p.posId}">${p.feesUsd > 0 ? `Compound &mdash; ${usd(p.feesUsd)} waiting` : 'Compound'}</button>
-      <div class="cplan" hidden></div></div>`;
-  }
-  for (const p of res.taco) {
-    html += `<div class="poscard">
-      <div class="ph"><span data-pm="${esc(p.pool.tokenA)}|${esc(p.pool.symA)}|${esc(p.pool.tokenB)}|${esc(p.pool.symB)}"></span>
-        <span class="pairbig">${pairName(p.pool)}</span>
-        <span class="venue taco">Taco</span>
-        <span style="flex:1"></span><span class="pv">${usd(p.valueUsd)}</span></div>
-      <div class="sub">${qty(p.balance)} ${esc(p.pool.id)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
-      <dl class="kv">
-        <dt>${esc(p.pool.symA)}</dt><dd>${qty(p.amountA)}</dd>
-        <dt>${esc(p.pool.symB)}</dt><dd>${qty(p.amountB)}</dd>
-      </dl></div>`;
-  }
+  for (const p of res.alcor) html += positionCard(p);
+  for (const p of res.taco) html += tacoCard(p);
   html += '</div>';
   out.innerHTML = html;
   // Every position card carries a data-pm slot for its pair logos and nothing
@@ -2170,6 +2320,11 @@ async function lookupWallet(account) {
     const [, tl, tu, tk] = card.dataset.rb.split(':').map(Number);
     card.querySelector('.rb-slot')?.appendChild(rangeBar(tl, tu, tk));
   });
+  // Joining a farm is one stake action per incentive, in one transaction. The
+  // position stays where it is and stays yours; staking only tells the pool's
+  // incentive to count it. Nothing here can move it.
+  wireJoinFarm(out, account);
+
   out.querySelectorAll('button[data-compound]').forEach(btn => {
     btn.onclick = () => {
       const [poolId, posId] = btn.dataset.compound.split(':');
@@ -2714,8 +2869,17 @@ async function runCompound(account) {
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span id="cmsg">Finding your positions…</span></div>';
 
   let res;
-  try { res = await walletPositions(account, { onProgress: p => { const m = $('#cmsg'); if (m) m.textContent = p.msg; } }); }
-  catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
+  try {
+    // Alcor's own index first, exactly as the wallet page does: it is seconds
+    // rather than a pool-by-pool sweep, and both paths now report the same
+    // uncollected fees. The sweep stays as the fallback.
+    const fast = await walletPositionsFast(account);
+    res = fast.length ? { alcor: fast, taco: [], poolsChecked: 0 }
+      : await walletPositions(account, { onProgress: p => { const m = $('#cmsg'); if (m) m.textContent = p.msg; } });
+  } catch {
+    try { res = await walletPositions(account, { onProgress: p => { const m = $('#cmsg'); if (m) m.textContent = p.msg; } }); }
+    catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
+  }
 
   if (!res.alcor.length) {
     out.innerHTML = `<div class="empty">No Alcor positions found for <span class="mono">${esc(account)}</span>. Compounding applies to concentrated positions; TacoSwap LP is handled on the farms page.</div>`;
@@ -2740,6 +2904,7 @@ async function runCompound(account) {
     const chunk = await Promise.all(res.alcor.slice(i, i + BATCH).map(async pos => {
       try {
         const h = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
+        pos.farm = farmGap(pos, state.farms, h.incentiveIds || []);
         return { pos, harvest: h, plan: planCompound({ pool: pos.pool, position: pos, basket: h.basket, feeBps, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }) };
       } catch { return { pos, harvest: { basket: [] }, plan: null }; }
     }));
@@ -2803,13 +2968,19 @@ async function runCompound(account) {
         <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm')}${inPool(b) ? '' : ' &middot; not in this pool'}</span>
       </span>`).join(' ');
     html += `<div class="card">
-      <div class="ph" style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
-        <span class="pair">${pairName(pos.pool)}</span>
+      <div class="ph" style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <span data-pm="${esc(pos.pool.tokenA)}|${esc(pos.pool.symA)}|${esc(pos.pool.tokenB)}|${esc(pos.pool.symB)}"></span>
+        <span class="pairbig">${pairName(pos.pool)}</span>
         <span class="sub">#${pos.posId} &middot; ticks ${pos.tickLower}…${pos.tickUpper}</span>
         <span class="badge ${pos.inRange ? 'good' : 'bad'}">${pos.inRange ? 'in range' : 'out of range'}</span>
         <span style="flex:1"></span>
         <span class="mono" style="font-size:16px;font-weight:600">${usd(plan.grossUsd)}</span>
       </div>
+      ${pos.farm?.missing.length ? `<div class="pc-farm" style="margin-bottom:10px">
+        <div><b>${pos.farm.aprMissing != null ? `${pct(pos.farm.aprMissing)} APR` : `${pos.farm.missing.length} farm${pos.farm.missing.length === 1 ? '' : 's'}`} you are not collecting</b>
+          <span class="sub">This pool pays ${pos.farm.missing.map(x => esc(x.rewardSymbol)).join(' + ')} to staked positions, and this one is not staked${pos.farm.missedUsdDay > 0 ? ` &mdash; about ${usd(pos.farm.missedUsdDay)} a day at this size` : ''}. That is why there are no farm rewards here to compound.</span></div>
+        <button class="btn" data-joinfarm="${pos.posId}" data-inc="${pos.farm.missing.map(x => esc(x.id)).join(',')}">Join the farm</button>
+      </div>` : ''}
       ${harvest.basket.length ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
         <p class="sub" style="margin:-2px 0 8px">compound = back into the pool &middot; keep = into your wallet &middot; skip = leave it accruing</p>
@@ -2823,8 +2994,8 @@ async function runCompound(account) {
           ${!plan.ratio.inRange ? '<span class="sub" style="margin-left:10px">Out of range — this adds to a band the price has left.</span>' : ''}</div>
         <div class="runbox" data-runbox="${pos.posId}"></div>` : ''}
       <div class="toolbar" style="margin:11px 0 0;border-top:1px solid var(--line);padding-top:11px">
-        <button class="btn ghost" data-add="${pos.posId}">Add liquidity</button>
-        <button class="btn ghost" data-remove="${pos.posId}">Take some out</button>
+        <button class="btn" data-add="${pos.posId}">Add liquidity</button>
+        <button class="btn" data-remove="${pos.posId}">Take some out</button>
         <span class="sub">Value ${usd(pos.valueUsd)}${pos.feesUsd > 0 ? ` &middot; ${usd(pos.feesUsd)} of fees waiting` : ''}</span>
       </div>
       <div class="lpbox" data-lpbox="${pos.posId}"></div>
@@ -2851,6 +3022,7 @@ async function runCompound(account) {
     }
     return true;
   };
+  wireJoinFarm(out, account);
   out.querySelectorAll('button[data-add]').forEach(b => b.onclick = async () => {
     if (!await mine()) return;
     const entry = plans.find(x => String(x.pos.posId) === b.dataset.add);

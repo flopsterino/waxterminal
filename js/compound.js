@@ -59,8 +59,8 @@ export function pendingReward(incentive, stake, nowSec = Date.now() / 1000) {
 export async function harvestFor(position, pool, { prices, tokens }) {
   const basket = [];
 
-  const feeA = Number(position.feesA ?? 0) / 10 ** pool.decA;
-  const feeB = Number(position.feesB ?? 0) / 10 ** pool.decB;
+  const feeA = Number(position.feesA ?? 0);
+  const feeB = Number(position.feesB ?? 0);
   if (feeA > 0) basket.push({ tokenId: pool.tokenA, symbol: pool.symA, amount: feeA, usd: pool.priceUsdA != null ? feeA * pool.priceUsdA : null, source: 'fees', priced: pool.priceUsdA != null });
   if (feeB > 0) basket.push({ tokenId: pool.tokenB, symbol: pool.symB, amount: feeB, usd: pool.priceUsdB != null ? feeB * pool.priceUsdB : null, source: 'fees', priced: pool.priceUsdB != null });
 
@@ -177,5 +177,68 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP }) {
     viable: ratio.inRange && netUsd > 0.05,
     reason: !ratio.inRange ? 'Position is out of range — compounding into a band the price has left just parks more capital idle.'
       : netUsd <= 0.05 ? 'Nothing meaningful to harvest yet.' : null,
+  };
+}
+
+// ------------------------------------------------------------ farm gap -----
+// Being an LP and being in the farm are two different things, and the terminal
+// used to show only the first. Measured on pool 11051 (CHEESE/HOLE): two live
+// incentives paying 32.5% and 6.6%, fifteen positions staked into them and one
+// that is not — earning trading fees and nothing else, with no indication
+// anywhere that a farm was even running on the pool it is sitting in.
+//
+// That is the whole answer to "why can I not compound this one with farm
+// rewards": there are no farm rewards to compound, because nobody pressed stake.
+
+// Which incentives each position is staked in. One keyed read per position
+// rather than a walk of a 60,000-row table, run a few at a time.
+export async function stakedIncentives(posIds, { concurrency = 6 } = {}) {
+  const map = new Map();
+  const ids = [...posIds];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= ids.length) return;
+      const posId = ids[i];
+      try {
+        const d = await getRows(ALCOR, ALCOR, 'stakingpos', { limit: 1, lower: posId });
+        const row = d.rows?.[0];
+        map.set(String(posId), (row && String(row.posId) === String(posId)) ? row.incentiveIds.map(String) : []);
+      } catch { map.set(String(posId), []); }
+    }
+  }));
+  return map;
+}
+
+// The farms running on a position's pool, split into the ones it is already in
+// and the ones it is missing. `farms` is the terminal's own farm list, so this
+// costs nothing beyond the stakedIncentives read.
+export function farmGap(position, farms, joinedIds = []) {
+  const joined = new Set(joinedIds.map(String));
+  const now = Date.now();
+  const live = farms.filter(f => f.poolDex === 'alcor' && String(f.poolId) === String(position.pool.id) && f.periodFinish > now);
+  const missing = live.filter(f => !joined.has(String(f.id)));
+  const sumApr = list => {
+    const known = list.map(f => f.apr).filter(v => v != null && isFinite(v));
+    return known.length ? known.reduce((s, v) => s + v, 0) : null;
+  };
+  return {
+    live, missing,
+    inFarm: live.filter(f => joined.has(String(f.id))),
+    aprLive: sumApr(live),
+    aprMissing: sumApr(missing),
+    // What the missing farms would pay this position per day once it joins.
+    // Its own stake dilutes the pot, so the quoted APR is what the farm pays
+    // today and not what this position would get: the honest figure is the
+    // pot's daily value times the share this position would then hold. On a
+    // small farm that difference is most of the number.
+    missedUsdDay: missing.reduce((s, f) => {
+      const pot = f.rewardUsdDay;
+      const staked = f.stakedUsd;
+      if (!(pot > 0) || !(position.valueUsd > 0)) return s;
+      if (!(staked > 0)) return s + pot;                 // an empty farm pays it all
+      return s + pot * (position.valueUsd / (staked + position.valueUsd));
+    }, 0),
   };
 }

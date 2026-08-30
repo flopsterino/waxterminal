@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { getRows, getAllRows, getAllRowsSharded, hyperion, warmHosts } from './chain.js';
-import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX64, depositRatio } from './math.js';
+import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX64, depositRatio, feesOwed } from './math.js';
 import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
 import { computeDepth, poolRealisable, counterparties } from './depth.js';
 import { tradeDepth } from './depthmath.js';
@@ -649,7 +649,9 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
         const share = bal.amount / pool.lpSupply;
         taco.push({ dex: 'taco', pool, balance: bal.amount, share,
           amountA: pool.reserveA * share, amountB: pool.reserveB * share,
-          valueUsd: pool.tvlReal != null ? pool.tvlReal * share : null, inRange: true, side: 'in' });
+          valueUsd: pool.tvl != null ? pool.tvl * share : null,
+          valueRealUsd: pool.tvlReal != null ? pool.tvlReal * share : null,
+          inRange: true, side: 'in' });
       }
     } catch {}
     taco.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
@@ -673,18 +675,39 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
     if (!pool || !pool.sqrtX64) { done++; return; }
     try {
       const rows = await getAllRows(ALCOR, pid, 'positions');
+      const mine = rows.filter(p => p.owner === account);
+      if (!mine.length) { done++; return; }
       const s = sqrtPriceFromX64(pool.sqrtX64);
-      for (const p of rows) {
-        if (p.owner !== account) continue;
+
+      // A position's `feesA`/`feesB` are only what an earlier collect already
+      // credited — zero on a position nobody has poked, while fees accrue.
+      // Getting the real figure needs the pool's fee-growth counters and the
+      // two ticks bounding each band, so they are read once per pool here.
+      let raw = null, ticks = new Map();
+      try {
+        const pr = await getRows(ALCOR, ALCOR, 'pools', { limit: 1, lower: pid });
+        if (pr.rows?.[0] && String(pr.rows[0].id) === String(pid)) raw = pr.rows[0];
+        const wanted = [...new Set(mine.flatMap(p => [p.tickLower, p.tickUpper]))];
+        await Promise.all(wanted.map(async t => {
+          const d = await getRows(ALCOR, pid, 'ticks', { limit: 1, lower: t });
+          const r = d.rows?.[0];
+          if (r && Number(r.id) === Number(t)) ticks.set(Number(t), r);
+        }));
+      } catch { raw = null; }
+
+      for (const p of mine) {
         const { amountA, amountB } = amountsForLiquidity(p.liquidity, s, p.tickLower, p.tickUpper);
         const ratio = depositRatio(s, p.tickLower, p.tickUpper);
+        const owed = raw ? feesOwed(p, raw, ticks.get(p.tickLower), ticks.get(p.tickUpper))
+                         : { feesA: Number(p.feesA), feesB: Number(p.feesB) };
+        const fa = owed.feesA / 10 ** pool.decA, fb = owed.feesB / 10 ** pool.decB;
         out.push({
           dex: 'alcor', pool, posId: p.id, owner: p.owner,
           tickLower: p.tickLower, tickUpper: p.tickUpper, liquidity: Number(p.liquidity),
           amountA: amountA / 10 ** pool.decA, amountB: amountB / 10 ** pool.decB,
-          feesA: Number(p.feesA) / 10 ** pool.decA, feesB: Number(p.feesB) / 10 ** pool.decB,
+          feesA: fa, feesB: fb,
           valueUsd: positionUsd(p, pool, s),
-          feesUsd: (Number(p.feesA) / 10 ** pool.decA) * (pool.priceUsdA || 0) + (Number(p.feesB) / 10 ** pool.decB) * (pool.priceUsdB || 0),
+          feesUsd: fa * (pool.priceUsdA || 0) + fb * (pool.priceUsdB || 0),
           inRange: ratio.inRange, side: ratio.side, ratio,
         });
       }
