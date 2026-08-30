@@ -332,7 +332,7 @@ export function rangeBar(tickLower, tickUpper, tick, { pad = 0.35 } = {}) {
 // treasury, a farm funder and an airdrop account, and those three will always
 // be connected. The map shows the relationship; the share column says whether
 // it matters.
-export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = null } = {}) {
+export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = null } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart bubblemap';
   const live = nodes.filter(n => n.value > 0).slice(0, 16);
@@ -365,7 +365,7 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
   // put connected wallets next to each other, which is the finding.
   const P = live.map((n, i) => {
     const a = (i / live.length) * Math.PI * 2;
-    return { n, r: rOf(n), x: cx + Math.cos(a) * size * 0.3, y: cy + Math.sin(a) * size * 0.3, vx: 0, vy: 0 };
+    return { n, r: rOf(n), x: cx + Math.cos(a) * size * 0.34, y: cy + Math.sin(a) * size * 0.34, vx: 0, vy: 0 };
   });
   const byId = new Map(P.map(p => [p.n.id, p]));
   const linked = new Map(live.map(n => [n.id, new Set()]));
@@ -382,7 +382,7 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
           const want = a.r + b.r + 8;
           // Repulsion that turns into hard separation once they touch, so
           // bubbles never sit on top of each other however crowded it gets.
-          const force = d < want ? (want - d) * 0.5 : 900 / (d * d);
+          const force = d < want ? (want - d) * 0.5 : 2400 / (d * d);
           dx /= d; dy /= d;
           a.vx -= dx * force; a.vy -= dy * force;
           b.vx += dx * force; b.vy += dy * force;
@@ -399,7 +399,10 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
       }
       for (const p of P) {
         if (p.fixed) { p.vx = p.vy = 0; continue; }
-        p.vx += (cx - p.x) * 0.012; p.vy += (cy - p.y) * 0.012;
+        // Weak: strong enough to keep the graph on the canvas, weak enough that
+        // it does not pile everything into the middle. At 0.012 the map used a
+        // third of its box and the labels sat on top of each other.
+        p.vx += (cx - p.x) * 0.005; p.vy += (cy - p.y) * 0.005;
         p.x += p.vx; p.y += p.vy;
         const pad = p.r + 12;
         p.x = Math.max(pad, Math.min(size - pad, p.x));
@@ -427,6 +430,7 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
   }
   svg.appendChild(gLinks);
 
+  const labelled = new Set([...live].sort((a, b) => b.value - a.value).slice(0, 10).map(n => n.id));
   const nodeEls = new Map();
   for (const p of P) {
     const n = p.n, gi = groupOf.get(n.id);
@@ -445,10 +449,16 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
     const pctText = n.share != null && p.r >= 17
       ? el('text', { 'text-anchor': 'middle', fill: 'var(--surface)', 'font-size': 10, 'font-weight': 700 }) : null;
     if (pctText) { pctText.style.fontFamily = 'var(--font-data)'; pctText.textContent = (n.share * 100).toFixed(n.share >= 0.1 ? 0 : 1) + '%'; }
-    const label = el('text', { 'text-anchor': 'middle', fill: 'var(--ink-2)', 'font-size': 9.5 });
-    label.style.fontFamily = 'var(--font-data)';
-    label.textContent = n.id.length > 13 ? n.id.slice(0, 12) + '…' : n.id;
-    g.append(c, ...(pctText ? [pctText] : []), label);
+    // The ten biggest get a name. Sixteen names in a small box overlap into an
+    // unreadable mat, and a name you cannot read is worse than a hover that
+    // tells you exactly — but a radius threshold cut it to three, because most
+    // holders are small next to the largest. Rank is the honest cutoff.
+    const label = labelled.has(n.id) ? el('text', { 'text-anchor': 'middle', fill: 'var(--ink-2)', 'font-size': 9.5 }) : null;
+    if (label) {
+      label.style.fontFamily = 'var(--font-data)';
+      label.textContent = n.id.length > 13 ? n.id.slice(0, 12) + '…' : n.id;
+    }
+    g.append(c, ...(pctText ? [pctText] : []), ...(label ? [label] : []));
     svg.appendChild(g);
     nodeEls.set(n.id, { g, c, pctText, label, p });
   }
@@ -462,7 +472,7 @@ export function bubbleMap(nodes, links, { size = 380, fmt = v => v, onPick = nul
     for (const [, e] of nodeEls) {
       e.c.setAttribute('cx', e.p.x); e.c.setAttribute('cy', e.p.y);
       if (e.pctText) { e.pctText.setAttribute('x', e.p.x); e.pctText.setAttribute('y', e.p.y + 3.5); }
-      e.label.setAttribute('x', e.p.x); e.label.setAttribute('y', e.p.y + e.p.r + 11);
+      if (e.label) { e.label.setAttribute('x', e.p.x); e.label.setAttribute('y', e.p.y + e.p.r + 11); }
     }
   };
   place();
