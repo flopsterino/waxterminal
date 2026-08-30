@@ -2965,11 +2965,11 @@ async function openToken(id) {
     const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
     const box = $('#tokBubbles');
     box.innerHTML = '';
-    box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol }));
+    box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol, onPick: acct => openAccount(acct) }));
     const note = document.createElement('p');
     note.className = 'sub'; note.style.marginTop = '8px';
     note.innerHTML = links.length
-      ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts &mdash; read it next to the share column.`
+      ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts &mdash; read it next to the share column, and click a bubble to see what that wallet actually holds.`
       : 'No transfers between the largest holders.';
     box.appendChild(note);
   } catch { $('#tokBubbles').innerHTML = '<div class="chart-empty">Could not trace transfers.</div>'; }
