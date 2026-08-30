@@ -13,6 +13,7 @@ import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
 import { csvButton } from './csv.js';
+import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -303,6 +304,9 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
+    <div class="section" id="ovWatchSec" hidden><h3>Your watchlist <span class="dim">— what moved since you last looked</span></h3>
+      <div class="card"><div id="ovWatch"></div></div>
+    </div>
     <div class="section"><h3>Farms</h3>
       <div class="card"><h3>Best rates <span class="dim">— what they pay today</span>
         <span class="hero">${bestApr.length} of ${groups.length} farms</span></h3>
@@ -351,6 +355,8 @@ function renderOverview() {
   }
 
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
+  renderWatchlist(groups);
+
   $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
   $('#ovTop').appendChild(bars(top.map(p => {
     const c = state.depth.get(p.tokenA)?.topPartner, d2 = state.depth.get(p.tokenB)?.topPartner;
@@ -441,6 +447,17 @@ function renderOverview() {
 
 // Marks are DOM, not markup: rows render as strings, then the marks are grafted
 // on. Doing it this way keeps the table build a single innerHTML write.
+// Stars are DOM with state and a listener, so like the token marks they are
+// grafted on after the row strings are written rather than serialised into them.
+function fillStars(root) {
+  root.querySelectorAll('[data-star]').forEach(el => {
+    if (el.dataset.done) return;
+    const [kind, id, label] = el.dataset.star.split('|');
+    el.appendChild(watchStar(kind, id, label));
+    el.dataset.done = '1';
+  });
+}
+
 function fillMarks(root) {
   root.querySelectorAll('[data-pm]').forEach(el => {
     if (el.dataset.done) return;
@@ -505,6 +522,68 @@ const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 
 // What each table last put on screen. An export has to be exactly what the
 // reader is looking at — same filters, same sort, same order — or the
 // spreadsheet and the page quietly disagree about what was there.
+// The watchlist, drawn against what these things were worth when you last
+// looked at them. See js/watch.js for why this is a memory rather than an
+// alert: a static site has nothing awake to send you one.
+function renderWatchlist(groups) {
+  const sec = $('#ovWatchSec'), box = $('#ovWatch');
+  if (!sec || !box) return;
+  const toks = tokenTable();
+  const byToken = new Map(toks.map(t => [t.id, t]));
+  const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
+  const byFarm = new Map((groups || farmGroups()).map(g => [g.key, g]));
+
+  const items = [];
+  for (const id of watchedOf('t')) {
+    const t = byToken.get(id);
+    if (t) items.push({ kind: 't', id, name: t.symbol, sub: t.contract,
+      metrics: { price: t.price, pooled: t.tvl, vol24: t.vol24 },
+      go: () => openToken(id) });
+  }
+  for (const id of watchedOf('p')) {
+    const p = byPool.get(id);
+    if (p) items.push({ kind: 'p', id, name: `${p.symA}/${p.symB}`, sub: `${venueName[p.dex] || p.dex} · ${(p.feeBps / 100).toFixed(2)}%`,
+      metrics: { pooled: p.tvlReal, vol24: p.vol24, price: p.priceAB },
+      go: () => openPool(id) });
+  }
+  for (const id of watchedOf('f')) {
+    const g = byFarm.get(id);
+    if (g) items.push({ kind: 'f', id, name: g.pool ? `${g.pool.symA}/${g.pool.symB} farm` : `farm ${g.poolId}`, sub: [...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', '),
+      metrics: { apr: g.aprReal, paysDay: g.rewardRealDay, staked: g.stakedReal },
+      go: () => openPool(id) });
+  }
+
+  if (!items.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+
+  const LABEL = { price: 'price', pooled: 'pooled', vol24: '24h volume', apr: 'APR', paysDay: 'pays daily', staked: 'staked' };
+  const fmtOf = f => (f === 'apr' ? (v => pct(v)) : f === 'price' ? (v => (v >= 0.01 ? '$' + v.toFixed(4) : '$' + v.toPrecision(3))) : usd);
+
+  box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+    <tbody>${items.map(it => {
+      const d = sinceSeen(it.kind, it.id, it.metrics);
+      const moves = (d?.changed || []).filter(c => c.pct != null && Math.abs(c.pct) >= 0.5);
+      return `<tr class="clickable" data-watch="${esc(it.kind)}|${esc(it.id)}">
+        <td><b>${esc(it.name)}</b> <span class="sub">${esc(it.sub || '')}</span></td>
+        <td>${Object.entries(it.metrics).filter(([, v]) => v != null && isFinite(v))
+              .map(([f, v]) => `<span class="badge">${esc(LABEL[f] || f)} ${fmtOf(f)(v)}</span>`).join(' ')}</td>
+        <td class="r">${!d ? '<span class="dim">first time you are seeing this here</span>'
+          : moves.length ? moves.map(c => `<span class="${c.pct > 0 ? 'pos' : 'neg'}">${c.pct > 0 ? '+' : ''}${c.pct.toFixed(1)}% ${esc(LABEL[c.field] || c.field)}</span>`).join(' &middot; ')
+          : `<span class="dim">unchanged since ${ago(new Date(d.at).toISOString())}</span>`}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="sub" style="margin:10px 0 0">${watchCount()} followed. Held in this browser only &mdash; no account, nothing uploaded, and a static site has nothing awake to send you an alert.
+    The comparison is against what each of these was worth the last time this page showed it to you.</p>`;
+
+  box.querySelectorAll('tr[data-watch]').forEach(tr => {
+    const [kind, id] = tr.dataset.watch.split('|');
+    const it = items.find(x => x.kind === kind && x.id === id);
+    tr.onclick = () => it?.go();
+  });
+  // Recorded after the comparison is on screen, never before it.
+  for (const it of items) markSeen(it.kind, it.id, it.metrics);
+}
+
 const lastRendered = { pools: [], tokens: [], farms: [] };
 
 // Exported raw, never formatted. "$1.2k" is a thing to read; 1234.56 is a thing
@@ -678,7 +757,7 @@ function renderPools() {
     const ch = p.change24;
     return `
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
-      <td class="rank">${i + 1}</td>
+      <td class="rank">${i + 1}<span data-star="p|${esc(p.dex)}:${esc(String(p.id))}|${esc(p.symA)}/${esc(p.symB)}"></span></td>
       <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
         <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
         <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
@@ -694,6 +773,7 @@ function renderPools() {
   }).join('');
   $('#poolTable tbody').innerHTML = body || '<tr><td colspan="9" class="empty">No pools match.</td></tr>';
   fillMarks($('#poolTable tbody'));
+  fillStars($('#poolTable tbody'));
   $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 }
 
@@ -775,7 +855,7 @@ function renderTokens() {
   $('#tokCount').innerHTML = capNote(rows.length, cap('tokens'), 'tokens');
   $('#tokTable tbody').innerHTML = rows.slice(0, cap('tokens')).map((t, i) => `
     <tr class="clickable" data-tok="${esc(t.symbol)}" data-tokid="${esc(t.id)}">
-      <td class="rank">${i + 1}</td>
+      <td class="rank">${i + 1}<span data-star="t|${esc(t.id)}|${esc(t.symbol)}"></span></td>
       <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>
         <span class="sub">${esc(t.contract)}</span>${trustChip(t.id)}</td>
       <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
@@ -797,6 +877,7 @@ function renderTokens() {
       <td class="r num dim">${age(t.bornAt)}</td>
     </tr>`).join('') || '<tr><td colspan="9" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
+  fillStars($('#tokTable tbody'));
   $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
 }
 
@@ -1252,6 +1333,9 @@ function wireConnect() {
   // A change in entitlement changes how much of each table is drawn, so the
   // view that is open has to be redrawn rather than waiting for a navigation.
   onPremium(() => { renderPremiumChip(); redrawCurrent(); });
+  // Starring something on the pools page should not require a reload to see it
+  // on the front page.
+  onWatchChange(() => { if (lastView === 'overview') { try { renderWatchlist(); } catch {} } });
   btn.onclick = async () => {
     btn.disabled = true; btn.textContent = 'Connecting…';
     try { await wallet.connect(); }
@@ -1659,6 +1743,7 @@ async function openToken(id) {
         <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
       </div>
       <span style="flex:1"></span>
+      <span id="tokStar"></span>
       <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
       ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
     </div>
@@ -1769,6 +1854,7 @@ async function openToken(id) {
     </div>`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
+  $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
 
   // ---- where it trades -----------------------------------------------------
   // A table rather than bars: two pools on the same pair are common on Alcor and
@@ -2301,6 +2387,7 @@ async function openPool(key) {
     <h2 class="vt">${pairName(p)} <span class="badge ${p.dex}">${p.dex}</span> <span class="dim" style="font-weight:400">#${esc(p.id)}</span></h2>
     <p class="vs">${(p.feeBps / 100).toFixed(2)}% fee tier on ${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'TacoSwap' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}${p.bornAt ? ` &middot; first seen ${age(p.bornAt)} ago` : ''}</p>
     <div class="toolbar" style="margin-bottom:16px">
+      <span id="poolStar"></span>
       <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
       <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
       ${farms.length ? `<a class="btn ghost" href="${farmUrl(p)}" target="_blank" rel="noopener">Go to the farm &nearr;</a>` : ''}
@@ -2330,6 +2417,9 @@ async function openPool(key) {
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>`;
+
+  $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
+  if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
 
   // Every venue keeps a state table, so every venue gets a chart and a tape.
   // This used to be Alcor-only, and a TacoSwap or Defibox pool showed two boxes

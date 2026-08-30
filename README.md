@@ -45,6 +45,7 @@ Two files. Nothing else needs touching.
 - **Compound** — the full harvest for each position and the exact transaction that redeposits it.
 - **Overview** — the dashboard: where liquidity sits, who pays the most, where APRs actually fall, WAX candles, and the multi-year TVL series.
 - **Activity** — the live swap feed across all four venues: who traded what, through which pool, for how much, and the multi-hop routes those swaps add up to.
+- **Watchlist** — star anything and the front page opens with what moved since you last looked at it.
 - **Token** — one page per token: price, supply, what is burned and what can still be minted, the transfer tax and whether a DEX actually pays it, every holder with what they hold inside pools, a bubble map of who moves it to whom, the liquidity providers, every pool it trades in, the farms touching it, transfer traffic, and its whole trade history.
 
 Charts are hand-drawn SVG for categorical work (donut, bars, distribution) and
@@ -235,10 +236,27 @@ that a contract re-notifying a transfer produces a second row for the same
 movement, which doubles every count until you drop the rows that duplicate the
 exact action that created them.
 
+## Following things, without a server to watch them
+
+A real alert needs something awake while you are not: a job that watches the
+chain and pushes you a message. This is a folder of files on a static host, so
+it cannot have one, and a bell icon that never rings is worse than no bell.
+
+What a browser can do is remember. Star a token, a pool or a farm and it records
+*what that thing was worth when the page last showed it to you*; the next visit
+opens with what moved while you were gone. That answers the question an alert is
+usually asked — "did anything happen?" — without claiming to be awake.
+
+The baseline only moves forward after ten minutes, because the overview renders
+twice within seconds of loading (once from the snapshot, once when the live
+sweep lands) and re-recording on each would turn "since you last looked" into
+"since two seconds ago" before the sentence was finished.
+
+It lives in `localStorage`. No account, nothing uploaded, and clearing site data
+clears the list — which is said on the card rather than left to be discovered.
+
 ## Not built yet
 
-- Alerts. CSV export is on pools, tokens, farms, a token's trade tape and the
-  activity feed's routes and raw swaps.
 - Per-token history starts the day the snapshot job first records it. The chart
   says so rather than drawing two points across a year of axis.
 

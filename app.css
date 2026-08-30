@@ -481,3 +481,13 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .bars .bar.clickable { cursor: pointer; border-radius: 6px; margin: -3px -6px; padding: 3px 6px; }
 .bars .bar.clickable:hover { background: var(--surface-2); }
 .bars .bar.clickable:hover .lb { color: var(--ink); }
+
+/* Follow control. Small and quiet until it is on — a row of bright stars would
+   compete with the numbers, which are the point of the table. */
+.star {
+  background: none; border: 0; cursor: pointer; padding: 0 0 0 5px;
+  font-size: 13px; line-height: 1; color: var(--muted);
+}
+.star:hover { color: var(--ink-2); }
+.star[aria-pressed="true"] { color: var(--accent-ink, var(--c3)); }
+.toolbar .star { font-size: 17px; padding: 0 4px; }
