@@ -747,7 +747,11 @@ function renderPools() {
   // The body renders as far as the tier allows. Reporting rows.length made a
   // search for something ranked 900th look like it does not exist.
   const CAP = cap('pools');
-  $('#poolCount').innerHTML = capNote(rows.length, CAP, 'pools');
+  // "showing top 400 of 574" invites the reader to think 574 is all there is,
+  // when the dust filter is holding back twenty thousand more. Say both.
+  const hidden = state.pools.length - rows.length;
+  $('#poolCount').innerHTML = capNote(rows.length, CAP, 'pools')
+    + (hidden > 0 ? ` <span class="dim">&middot; ${hidden.toLocaleString()} more filtered out</span>` : '');
 
   const thead = $('#poolTable thead');
   thead.innerHTML = '<tr>' + POOL_COLS.map(c =>
@@ -857,7 +861,9 @@ function renderTokens() {
     renderTokens();
   });
 
-  $('#tokCount').innerHTML = capNote(rows.length, cap('tokens'), 'tokens');
+  const tokHidden = tokRows.length - rows.length;
+  $('#tokCount').innerHTML = capNote(rows.length, cap('tokens'), 'tokens')
+    + (tokHidden > 0 ? ` <span class="dim">&middot; ${tokHidden.toLocaleString()} more filtered out</span>` : '');
   $('#tokTable tbody').innerHTML = rows.slice(0, cap('tokens')).map((t, i) => `
     <tr class="clickable" data-tok="${esc(t.symbol)}" data-tokid="${esc(t.id)}">
       <td class="rank">${i + 1}<span data-star="t|${esc(t.id)}|${esc(t.symbol)}"></span></td>
@@ -1809,7 +1815,7 @@ async function openToken(id) {
     </div>` : ''}
 
     ${tradePools.length ? `<div class="section"><h3>Trading</h3>
-      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; every trade in ${esc(t.symbol)}, sized from the pool it moved</span>
+      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; each trade sized from the pool it moved</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" data-tvol="24" aria-pressed="true">24h</button>
           <button class="chip" data-tvol="72" aria-pressed="false">3d</button>
@@ -1818,7 +1824,7 @@ async function openToken(id) {
         <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
         <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
       <div class="grid g2">
-        <div class="card"><h3>Every trade <span class="dim">&mdash; newest first</span></h3>
+        <div class="card"><h3>Trades <span class="dim">&mdash; newest first, read out of the pool rows</span></h3>
           <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>
         <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
@@ -2157,7 +2163,7 @@ async function openToken(id) {
           &ldquo;through&rdquo; means the route crossed two of ${esc(t.symbol)}&rsquo;s pools in one block and handed it straight on &mdash; arbitrage, not someone buying.
           Who traded is beside this, read from the swap memos.</p>`;
         // The whole reconstruction, not the shown slice: a reader who wants to
-        // do their own arithmetic on it should get every trade this page found,
+        // do their own arithmetic on it should get every trade this page read,
         // and a tape is exactly the shape a spreadsheet is for.
         tape.appendChild(csvButton(`Export ${all.length.toLocaleString()} trades`, `${t.symbol.toLowerCase()}-trades`, () => all, [
           { h: 'time', v: x => new Date(x.ts).toISOString() },
