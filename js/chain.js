@@ -180,6 +180,38 @@ export async function chainInfo() { return post('get_info', {}); }
 // asking one host fifty times in parallel is exactly the shape that earns a 420.
 export const rpc = (endpoint, body, opts) => post(endpoint, body, opts);
 
+// A contract that re-notifies a transfer it just received produces a second
+// Hyperion row for the same movement: same parties, same amount, with
+// `creator_action_ordinal` pointing back at the original. Alcor does this on
+// every swap, so a feed that keeps both counts every trade twice.
+//
+// Deduping on trx_id would be worse than the disease — a split route really
+// does send several transfers in one transaction — so a row is dropped only
+// when it duplicates the exact action that created it, which leaves two
+// genuine equal legs alone. Shared, because every per-account and per-token
+// feed in this app hits it and two of them had already got it wrong.
+export function dropEchoes(actions) {
+  const byTrx = new Map();
+  for (const a of actions) {
+    if (!byTrx.has(a.trx_id)) byTrx.set(a.trx_id, []);
+    byTrx.get(a.trx_id).push(a);
+  }
+  const seen = new Set();
+  return actions.filter(a => {
+    const key = `${a.trx_id}:${a.action_ordinal}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (!a.creator_action_ordinal) return true;
+    const d = a.act?.data || {};
+    const echo = (byTrx.get(a.trx_id) || []).some(b => b !== a
+      && b.action_ordinal === a.creator_action_ordinal
+      && b.act?.data?.quantity === d.quantity
+      && b.act?.data?.from === d.from
+      && b.act?.data?.to === d.to);
+    return !echo;
+  });
+}
+
 // What a wallet actually holds of one token. The compound flow reads this
 // BETWEEN its two transactions instead of predicting swap output, which is the
 // difference between a deposit that lands and one that reverts on a rounding

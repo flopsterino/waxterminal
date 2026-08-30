@@ -504,3 +504,8 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 /* Two stacked TradingView panes: the series and what it traded, sharing a card
    so the eye reads them against the same dates. */
 .tvpair { display: flex; flex-direction: column; gap: 6px; }
+
+/* An account name you can open. Underlined on hover only — a table full of
+   permanently-underlined wallets is noise, and every one of them is a link. */
+.acct-link { cursor: pointer; border-bottom: 1px dotted var(--line-2); }
+.acct-link:hover { color: var(--accent-ink, var(--ink)); border-bottom-color: currentColor; }

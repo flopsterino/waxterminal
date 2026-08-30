@@ -10,7 +10,7 @@
 // same kind of fact as a bubble map edge: worth seeing, yours to interpret.
 // =============================================================================
 
-import { hyperion, rpc } from './chain.js';
+import { hyperion, rpc, dropEchoes } from './chain.js';
 
 const LIGHT = 'https://wax.light-api.net/api';
 
@@ -367,39 +367,9 @@ export async function transferActivity(contract, symbol, { hours = 24, maxPages 
     for (const got of rest) rows.push(...got);
   }
 
-  // A contract that re-notifies a transfer it just received produces a second
-  // row for the same movement: same parties, same amount, with
-  // `creator_action_ordinal` pointing back at the original. Alcor does this on
-  // every swap, so keeping both counts every trade twice — the same trap that
-  // once made a single 1.6128 CHEESE swap look like two.
-  //
-  // Deduping on `trx_id` would be worse than the disease: a split route really
-  // does send several transfers in one transaction. A row is dropped only when
-  // it duplicates the exact action that created it, which leaves two genuine
-  // equal legs alone.
-  const byTrx = new Map();
-  for (const a of rows) {
-    if (!byTrx.has(a.trx_id)) byTrx.set(a.trx_id, []);
-    byTrx.get(a.trx_id).push(a);
-  }
-  const isEcho = a => {
-    if (!a.creator_action_ordinal) return false;
-    const d = a.act?.data || {};
-    return (byTrx.get(a.trx_id) || []).some(b => b !== a
-      && b.action_ordinal === a.creator_action_ordinal
-      && b.act?.data?.quantity === d.quantity
-      && b.act?.data?.from === d.from
-      && b.act?.data?.to === d.to);
-  };
-
-  const seen = new Set();
   const out = [];
   let oldest = Infinity;
-  for (const a of rows) {
-    const key = `${a.trx_id}:${a.action_ordinal}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (isEcho(a)) continue;
+  for (const a of dropEchoes(rows)) {
     const x = a.act?.data;
     if (!x?.quantity) continue;
     const [amtStr, sym] = String(x.quantity).split(' ');

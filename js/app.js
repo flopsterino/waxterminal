@@ -11,7 +11,8 @@ import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMa
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
-import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
+import { cap } from './limits.js';
+import { accountInfo, valueBalances, accountSwaps } from './account.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, promotionMemo, activePromotions } from './promote.js';
@@ -75,6 +76,43 @@ const swapUrl = p => p.dex === 'alcor'
 const farmUrl = p => p.dex === 'alcor' ? 'https://wax.alcor.exchange/positions' : 'https://swap.tacocrypto.io/farms';
 
 const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
+
+// waxblock is the explorer everyone on WAX already reads, so a transaction or a
+// block links straight out to it. An *account* does not: clicking a wallet
+// should show what they hold here, where their balances are already priced and
+// their positions already valued.
+// A price is a ratio, and which way round it reads is a preference, not a
+// fact. WAXUSDC per WAX and WAX per WAXUSDC are the same chart seen from either
+// end — so it is the same chart, with a switch, rather than two.
+//
+// Inverting swaps high and low as well as taking the reciprocal: the highest
+// price of X in Y is the lowest price of Y in X, and forgetting that draws
+// candles inside out.
+function invertCandles(candles) {
+  return candles
+    .filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0)
+    .map(c => ({ time: c.time, open: 1 / c.open, high: 1 / c.low, low: 1 / c.high, close: 1 / c.close, volume: c.volume }));
+}
+
+// Decimals follow the magnitude: two on a price near a dollar is a flat line,
+// six on a price near four thousand is noise.
+const precisionFor = v => Math.max(2, Math.min(8, Math.ceil(-Math.log10(Math.abs(v) || 1)) + 4));
+
+const trxUrl = id => `https://waxblock.io/transaction/${id}`;
+const blockUrl = n => `https://waxblock.io/block/${n}`;
+// Rendered as a span rather than an anchor: the row it sits in is often itself
+// clickable, and a nested <a> steals that click on touch.
+const acctLink = name => `<span class="acct-link" data-acct="${esc(name)}" title="See what ${esc(name)} holds">${esc(name)}</span>`;
+
+// One delegated handler for every account name on the page, however it got
+// there — tables are rewritten constantly and rebinding each time is how a
+// click quietly stops working.
+document.addEventListener('click', e => {
+  const el = e.target.closest?.('[data-acct]');
+  if (!el) return;
+  e.stopPropagation();
+  openAccount(el.dataset.acct);
+});
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
 const $ = s => document.querySelector(s);
@@ -112,7 +150,6 @@ let hiddenViews = new Set();
 async function boot() {
   try {
     CFG = await (await fetch('theme.json')).json();
-    configurePremium(CFG.commercial);
     configurePromotion(CFG.commercial);
     $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
     if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
@@ -135,6 +172,7 @@ async function boot() {
   $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
   $('#poolBack').onclick = () => show(lastView || 'pools');
   $('#tokBack').onclick = () => show(lastView || 'tokens');
+  $('#acctBack').onclick = () => show(lastView || 'overview');
 
   // Wire everything BEFORE loading. Handlers do not need data, and hanging the
   // first render off a progress callback meant one early return anywhere in
@@ -236,23 +274,10 @@ let lastView = 'pools';
 function capNote(total, shown, noun, { filterable = true } = {}) {
   if (!(total > shown)) return `${total.toLocaleString()} ${noun}`;
   // Only tables that actually have a search box may advise using one.
-  const narrow = filterable ? ', or narrow it with search and filters' : '';
-  const lift = premiumConfigured() && !isPremium()
-    ? ` <span class="dim">&mdash; hold ${esc(premiumTerms())} to see them all${narrow}</span>`
-    : filterable ? ' <span class="dim">&mdash; narrow it with search or filters</span>' : '';
+  const lift = filterable ? ' <span class="dim">&mdash; narrow it with search or filters</span>' : '';
   return `showing top ${shown.toLocaleString()} of ${total.toLocaleString()} ${noun}${lift}`;
 }
 
-function renderPremiumChip() {
-  const el = $('#premChip');
-  if (!el) return;
-  if (!premiumConfigured() || !wallet.account()) { el.hidden = true; return; }
-  const p = premiumState();
-  el.hidden = false;
-  if (p.ok) { el.className = 'badge good'; el.textContent = p.cfg?.label || 'Premium'; el.title = `Unlocked by holding ${premiumTerms()}`; }
-  else if (p.errored) { el.className = 'badge warn'; el.textContent = 'tier unknown'; el.title = p.reason; }
-  else { el.className = 'badge'; el.textContent = 'Free'; el.title = `Holding ${premiumTerms()} lifts the row limits`; }
-}
 
 // Entitlement changes how many rows a table draws, so whichever table is on
 // screen has to be redrawn instead of waiting for the next navigation.
@@ -268,7 +293,7 @@ function redrawCurrent() {
 function show(v, arg = null) {
   // A view the partner turned off is not a view.
   if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
-  if (v !== 'pool' && v !== 'token') lastView = v;
+  if (v !== 'pool' && v !== 'token' && v !== 'account') lastView = v;
   hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
@@ -284,6 +309,7 @@ function routeFromHash() {
   if (!view) return false;
   if (view === 'pool' && arg) { openPool(decodeURIComponent(arg)); return true; }
   if (view === 'token' && arg) { openToken(decodeURIComponent(arg)); return true; }
+  if (view === 'account' && arg) { openAccount(decodeURIComponent(arg)); return true; }
   if (view === 'wallet' && arg) {
     const acct = decodeURIComponent(arg);
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
@@ -587,7 +613,7 @@ function promoteBox(kind, id, name) {
   return `<div class="section"><h3>Promote ${esc(name)}</h3>
     <div class="card"><p class="sub" style="margin:0">Send ${esc(t.token)} <span class="dim">(${esc(t.contract)})</span> to <span class="mono">${esc(t.account)}</span> with this exact memo:</p>
       <p class="mono" style="font-size:13px;margin:8px 0;word-break:break-all">${esc(promoteMemoFor(kind, id))}</p>
-      <p class="sub" style="margin:0">${qty(t.perDay)} ${esc(t.token)} buys one day in the ${t.slots} slots on the front page, counted from the moment the transfer lands, and paying again extends it rather than replacing it.
+      <p class="sub" style="margin:0">${qty(t.perDay)} ${esc(t.token)} buys one day in the ${t.slots} slots on the front page, counted from the moment the transfer lands, and paying again extends it rather than replacing it. The slots are ordered by total spend, so paying more puts you higher.
       ${t.account === 'eosio.null' ? 'It goes to <span class="mono">eosio.null</span>, so it is burned rather than paid to anyone.' : ''}
       A promoted slot is labelled as paid and changes no ranking, filter or total anywhere in this terminal &mdash; you are buying a place on the page, not a place in the numbers.</p>
     </div></div>`;
@@ -623,8 +649,8 @@ async function renderPromoted() {
       <td class="r num dim">${qty(r.pr.paid)} ${esc(t.token)}${r.pr.payments > 1 ? ` <span class="sub">in ${r.pr.payments} payments</span>` : ''}</td>
       <td class="r num dim">${days(r.pr.until - Date.now())}d left</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">These slots were bought, and that is the only reason they are here &mdash; nothing on this page ranks, filters or totals differently because of it.
-    Each was paid for on chain: ${rows.map(r => `<span class="mono">${esc(r.pr.from)}</span>`).join(', ')} sent ${esc(t.token)} to <span class="mono">${esc(t.account)}</span>, and the payment buys a day per ${qty(t.perDay)} ${esc(t.token)} from the moment it lands.
+    <p class="sub" style="margin:10px 0 0">These slots were bought, and that is the only reason they are here &mdash; ordered by what was spent, and nothing else on this page ranks, filters or totals differently because of it.
+    Each was paid for on chain: ${rows.map(r => acctLink(r.pr.from)).join(', ')} sent ${esc(t.token)} to <span class="mono">${esc(t.account)}</span>, and the payment buys a day per ${qty(t.perDay)} ${esc(t.token)} from the moment it lands.
     ${t.account === 'eosio.null' ? `It is burned on arrival, so a promotion costs supply rather than paying anyone.` : ''}
     To buy one, send ${esc(t.token)} to <span class="mono">${esc(t.account)}</span> with memo <span class="mono">${esc(t.prefix)}:p:&lt;venue&gt;:&lt;pool id&gt;</span> for a pool, or <span class="mono">${esc(t.prefix)}:t:&lt;SYMBOL&gt;@&lt;contract&gt;</span> for a token. Every pool and token page shows its own memo.</p>`;
 
@@ -1464,11 +1490,9 @@ function wireConnect() {
     // The compound page is per-account: connecting should fill it in, not make
     // the user retype what the wallet already told us.
     if (a && !$('#compInput').value) { $('#compInput').value = a; $('#walletInput').value = a; }
-    if (premiumConfigured()) checkPremium(a);
   });
   // A change in entitlement changes how much of each table is drawn, so the
   // view that is open has to be redrawn rather than waiting for a navigation.
-  onPremium(() => { renderPremiumChip(); redrawCurrent(); });
   // Starring something on the pools page should not require a reload to see it
   // on the front page.
   onWatchChange(() => { if (lastView === 'overview') { try { renderWatchlist(); } catch {} } });
@@ -1783,7 +1807,7 @@ async function renderActivity() {
           <td class="r num dim">${r.hops}</td>
           <td class="r num">${r.n.toLocaleString()}</td>
           <td class="r num">${r.priced ? usd(r.usd) : '<span class="dim">&mdash;</span>'}</td>
-          <td class="mono">${esc(r.top[0][0])}${r.top.length > 1 ? ` <span class="sub">and ${r.top.length - 1} other${r.top.length === 2 ? '' : 's'}</span>` : ' <span class="sub">only</span>'}</td>
+          <td class="mono">${acctLink(r.top[0][0])}${r.top.length > 1 ? ` <span class="sub">and ${r.top.length - 1} other${r.top.length === 2 ? '' : 's'}</span>` : ' <span class="sub">only</span>'}</td>
           <td class="r num dim">${ago(r.last)}</td>
         </tr>`).join('')}</tbody></table></div>
     </div>
@@ -1791,9 +1815,9 @@ async function renderActivity() {
       <th>When</th><th>Pool</th><th>Trader</th><th class="r">In</th><th class="r">Out</th><th class="r">Value</th>
     </tr></thead><tbody>${swaps.slice(0, cap('swaps')).map(s => {
       const inA = s.amountA > 0;
-      return `<tr><td class="num dim">${ago(s.ts)}</td>
+      return `<tr><td class="num dim"><a href="${trxUrl(s.trx)}" target="_blank" rel="noopener" title="Open this transaction on waxblock">${ago(s.ts)} &nearr;</a></td>
         <td${s.pool ? ` class="clickable" data-pool="${esc(s.pool.dex)}:${esc(String(s.pool.id))}"` : ''}>${s.pool ? `<span class="pair">${pairName(s.pool)}</span> <span class="venue ${esc(s.pool.dex)}">${esc(venueName[s.pool.dex] || s.pool.dex)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
-        <td class="mono">${esc(s.trader)}</td>
+        <td class="mono">${acctLink(s.trader)}</td>
         <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${esc(inA ? s.symA : s.symB)}</span></td>
         <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${esc(inA ? s.symB : s.symA)}</span></td>
         <td class="r num">${usd(s.volumeReal ?? s.volumeUsd)}</td></tr>`;
@@ -1832,6 +1856,117 @@ async function renderActivity() {
   $('#actDonut').appendChild(donut([...byPool].map(([label, value]) => ({ label, value })), { fmt: usd }));
   $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
     .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
+}
+
+// -------------------------------------------------------- ACCOUNT DETAIL ----
+// What one account holds, and what it has been doing.
+//
+// Reached by clicking any wallet name anywhere in the terminal — a holder, a
+// liquidity provider, a trader in the feed. The question "who is that" is the
+// one this app was asking readers to answer somewhere else.
+let acctGen = 0;
+async function openAccount(name) {
+  if (!name) return;
+  show('account', encodeURIComponent(name));
+  const gen = ++acctGen;
+  const stale = () => gen !== acctGen;
+  const box = $('#accountDetail');
+
+  box.innerHTML = `
+    <div class="tokhead">
+      <div>
+        <h2 class="vt" style="margin:0">${esc(name)} <span id="acctKind"></span></h2>
+        <p class="vs" style="margin:2px 0 0">Everything this account holds, priced the same way as the rest of this terminal.</p>
+      </div>
+      <span style="flex:1"></span>
+      <a class="btn ghost" href="https://waxblock.io/account/${esc(name)}" target="_blank" rel="noopener">Explorer &nearr;</a>
+      <button class="btn" id="acctLiq">Their liquidity</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="v" id="aTotal">—</span><span class="k">tokens held</span><span class="sub" id="aTotalSub">what a sale could realise</span></div>
+      <div class="stat"><span class="v" id="aFace">—</span><span class="k">at face value</span><span class="sub">every balance at its quoted price</span></div>
+      <div class="stat"><span class="v" id="aCount">—</span><span class="k">tokens with a balance</span><span class="sub" id="aCountSub">&nbsp;</span></div>
+      <div class="stat"><span class="v" id="aCpu">—</span><span class="k">staked for CPU</span><span class="sub" id="aNet">&nbsp;</span></div>
+      <div class="stat"><span class="v" id="aRam">—</span><span class="k">RAM</span><span class="sub">bought, not rented</span></div>
+    </div>
+
+    <div class="section"><h3>Holdings</h3>
+      <div class="card"><div id="aHold"><div class="loading"><span class="spinner"></span><span>Reading balances…</span></div></div></div>
+    </div>
+
+    <div class="section"><h3>Recent trades <span class="dim">&mdash; read from the swap memos they signed</span></h3>
+      <div class="card"><div id="aSwaps"><div class="loading"><span class="spinner"></span><span>Reading their history…</span></div></div></div>
+    </div>
+
+    <div class="section" id="aLiqSec" hidden><h3>Liquidity positions</h3>
+      <div class="card"><div id="aLiq"></div></div>
+    </div>`;
+
+  $('#acctLiq').onclick = () => { show('wallet'); $('#walletInput').value = name; lookupWallet(name); };
+
+  // ---- balances -----------------------------------------------------------
+  accountInfo(name).then(info => {
+    if (stale()) return;
+    const v = valueBalances(info.balances, state.prices, state.depth);
+    const kind = $('#acctKind');
+    if (kind && info.isContract) kind.innerHTML = '<span class="venue" title="This account carries code — a balance here is often held for other people">contract</span>';
+
+    const set = (sel, html) => { const e = $(sel); if (e) e.innerHTML = html; };
+    set('#aTotal', usd(v.realisable));
+    set('#aFace', usd(v.priced));
+    set('#aTotalSub', v.priced > v.realisable * 1.05
+      ? `${((1 - v.realisable / v.priced) * 100).toFixed(0)}% of the face value has no route out`
+      : 'what a sale could realise');
+    set('#aCount', info.balances.length.toLocaleString());
+    set('#aCountSub', info.zeroed ? `${info.zeroed.toLocaleString()} more sit at zero` : '&nbsp;');
+    if (info.resources) {
+      set('#aCpu', qty(info.resources.cpu_weight / 1e8) + ' WAX');
+      set('#aNet', qty(info.resources.net_weight / 1e8) + ' WAX for NET');
+      set('#aRam', (info.resources.ram_bytes / 1024).toFixed(0) + ' KB');
+    }
+
+    const box = $('#aHold');
+    if (!v.rows.length) { box.innerHTML = '<div class="chart-empty">No token balances.</div>'; return; }
+    const known = v.rows.filter(r => r.usd != null);
+    const unknown = v.rows.filter(r => r.usd == null);
+    box.innerHTML = `<div class="tablewrap" style="max-height:520px;border:0"><table style="font-size:12.5px">
+      <thead><tr><th>Token</th><th class="r">Balance</th><th class="r">Price</th><th class="r">Face value</th><th class="r">Realisable</th></tr></thead>
+      <tbody>${known.slice(0, cap('tokens')).map(r => `
+        <tr class="clickable" data-tokid="${esc(r.id)}">
+          <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span> <span class="sub">${esc(r.contract)}</span></td>
+          <td class="r num">${qty(r.amount)}</td>
+          <td class="r num dim">${r.price >= 0.01 ? '$' + r.price.toFixed(4) : '$' + r.price.toPrecision(3)}</td>
+          <td class="r num">${usd(r.usd)}</td>
+          <td class="r num ${r.ratio < 0.5 ? 'dim' : ''}" title="${(r.ratio * 100).toFixed(0)}% of the face value has a route to a bridged dollar">${usd(r.real)}</td>
+        </tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${known.length.toLocaleString()} priced${unknown.length ? `, and ${unknown.length.toLocaleString()} with no pool deep enough to quote &mdash; ${unknown.slice(0, 6).map(r => esc(r.symbol)).join(', ')}${unknown.length > 6 ? '…' : ''}` : ''}.
+      ${info.zeroed ? `${info.zeroed.toLocaleString()} balances sit at exactly zero and are left out; most of those are unsolicited airdrops.` : ''}
+      Realisable is what a route to a bridged dollar could carry out, which on a thin token is a long way under the quoted price.</p>`;
+    fillMarks($('#aHold'));
+    box.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
+  }).catch(e => {
+    if (stale()) return;
+    $('#aHold').innerHTML = `<div class="chart-empty">Balances unavailable (${esc(e.message)}).</div>`;
+  });
+
+  // ---- their trades -------------------------------------------------------
+  accountSwaps(name, { hours: 168 }).then(sw => {
+    if (stale()) return;
+    const box = $('#aSwaps'); if (!box) return;
+    if (!sw.length) { box.innerHTML = '<div class="chart-empty">No swaps signed by this account in the last week.</div>'; return; }
+    const byId = new Map();
+    for (const p of state.pools) if (p.dex === 'alcor') byId.set(String(p.id), p);
+    const poolName = id => { const p = byId.get(String(id)); return p ? `${p.symA}/${p.symB}` : `#${id}`; };
+    box.innerHTML = `<div class="tablewrap" style="max-height:420px;border:0"><table style="font-size:12px">
+      <thead><tr><th>When</th><th class="r">Sent</th><th>Route</th><th>Venue</th></tr></thead>
+      <tbody>${sw.slice(0, cap('swaps')).map(x => `<tr>
+        <td class="num dim"><a href="${trxUrl(x.trx)}" target="_blank" rel="noopener" title="Open this transaction on waxblock">${ago(new Date(x.ts).toISOString())} &nearr;</a></td>
+        <td class="r num">${qty(x.amount)} <span class="sub">${esc(x.symbol)}</span></td>
+        <td><span class="route">${x.route.map(poolName).map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
+        <td class="dim">${esc(venueName[({ 'swap.alcor': 'alcor', 'swap.taco': 'taco', 'swap.box': 'defibox', 'swap.adex': 'adex' })[x.venue]] || x.venue)}</td>
+      </tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} swaps in the last week, newest first. Read from the transfers this account signed &mdash; the memo names every pool the route crossed. Each row opens the transaction on waxblock.</p>`;
+  }).catch(() => { const b = $('#aSwaps'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>'; });
 }
 
 // ---------------------------------------------------------- TOKEN DETAIL ----
@@ -1945,8 +2080,9 @@ async function openToken(id) {
     </div>
 
     ${deepest ? `<div class="section"><h3>Price</h3>
-      <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">&mdash; rebuilt from pool state changes</span>
+      <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" id="tokFlip" title="Show the price the other way round">&#8646;</button>
           <button class="chip" data-tiv="300" aria-pressed="false">5m</button>
           <button class="chip" data-tiv="900" aria-pressed="false">15m</button>
           <button class="chip" data-tiv="3600" aria-pressed="true">1h</button>
@@ -2144,14 +2280,22 @@ async function openToken(id) {
       const box = $('#tokChart');
       if (!box) return;
       if (!rws.length) { box.innerHTML = '<div class="chart-empty">The history node keeps no state changes for this pool in its window.</div>'; return; }
-      const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rws.at(-1).price || 1)) + 4));
-      const draw = iv => candleChart(box, toCandles(rws, { bucketSec: iv }), { height: 280, precision: prec })
-        .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
-      draw(3600);
+      let iv = 3600, flipped = false;
+      const draw = () => {
+        const c = toCandles(rws, { bucketSec: iv });
+        const shown = flipped ? invertCandles(c) : c;
+        const pair = $('#tokPair');
+        if (pair) pair.textContent = flipped ? `${deepest.symB}/${deepest.symA}` : `${deepest.symA}/${deepest.symB}`;
+        candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close) })
+          .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
+      };
+      draw();
       document.querySelectorAll('[data-tiv]').forEach(b => b.onclick = () => {
         document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-        draw(Number(b.dataset.tiv));
+        iv = Number(b.dataset.tiv); draw();
       });
+      const flip = $('#tokFlip');
+      if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
     }).catch(() => { const b = $('#tokChart'); if (b) b.innerHTML = '<div class="chart-empty">History unavailable.</div>'; });
   }
 
@@ -2304,13 +2448,13 @@ async function openToken(id) {
         tape.innerHTML = `<div class="tablewrap" style="max-height:360px;border:0"><table style="font-size:12px">
           <thead><tr><th>When</th><th>Through</th><th></th><th class="r">${esc(t.symbol)}</th><th class="r">Value</th></tr></thead>
           <tbody>${all.slice(0, cap('tokenTape')).map(s => `<tr>
-            <td class="num dim">${ago(new Date(s.ts).toISOString())}</td>
+            <td class="num dim"><a href="${blockUrl(s.block)}" target="_blank" rel="noopener" title="Open this block on waxblock">${ago(new Date(s.ts).toISOString())} &nearr;</a></td>
             <td>${s.pools.map(esc).join('<span class="dim"> + </span>')}</td>
             <td class="${s.side === 'bought' ? 'pos' : s.side === 'sold' ? 'neg' : 'dim'}">${s.side}</td>
             <td class="r num">${qty(s.amount)}</td>
             <td class="r num">${s.usd != null ? usd(s.usd) : '<span class="dim">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div>
-          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades reconstructed, newest ${Math.min(all.length, cap('tokenTape'))} shown${premiumConfigured() && !isPremium() ? `, and ${esc(premiumTerms())} shows more` : ''}.
+          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades reconstructed, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown.
           Sizes are what actually moved in the pool, so they are the trade rather than an estimate of it.
           &ldquo;through&rdquo; means the route crossed two of ${esc(t.symbol)}&rsquo;s pools in one block and handed it straight on &mdash; arbitrage, not someone buying.
           Who traded is beside this, read from the swap memos.</p>`;
@@ -2361,10 +2505,10 @@ async function openToken(id) {
       <h3 style="font-size:12px;margin:0 0 6px">Largest single moves</h3>
       <div class="tablewrap" style="max-height:200px;border:0"><table style="font-size:12px"><tbody>${
         biggest.map(x => `<tr>
-          <td class="num dim">${ago(new Date(x.ts).toISOString())}</td>
-          <td class="mono">${esc(x.from)} <span class="dim">&rarr;</span> ${esc(x.to)}</td>
+          <td class="num dim"><a href="${trxUrl(x.trx)}" target="_blank" rel="noopener">${ago(new Date(x.ts).toISOString())} &nearr;</a></td>
+          <td class="mono">${acctLink(x.from)} <span class="dim">&rarr;</span> ${acctLink(x.to)}</td>
           <td class="r num">${qty(x.amount)}</td></tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${top.length ? `Most active sender${top.length === 1 ? '' : 's'}, the DEX contracts aside: ${top.map(([a, v]) => `${esc(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}.` : 'Every transfer in this window came from a DEX contract.'}
+      <p class="sub" style="margin:9px 0 0">${top.length ? `Most active sender${top.length === 1 ? '' : 's'}, the DEX contracts aside: ${top.map(([a, v]) => `${acctLink(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}.` : 'Every transfer in this window came from a DEX contract.'}
       Transfers include claims, farm payouts and swaps, so this runs well ahead of trading volume on a token people actually use.</p>`;
   }).catch(() => { const b = $('#tokMoves'); if (b) b.innerHTML = '<div class="chart-empty">Transfer history unavailable.</div>'; });
 
@@ -2406,7 +2550,7 @@ async function openToken(id) {
         const top = [...r.routes].sort((a, b) => b[1] - a[1])[0];
         const hops = top ? top[0].split(' \u2192 ').length : 0;
         return `<tr>
-          <td class="mono">${esc(r.acct)}</td>
+          <td class="mono">${acctLink(r.acct)}</td>
           <td class="r num">${r.n}</td>
           <td class="r num">${qty(r.amount)}</td>
           <td>${top ? `<span class="route">${esc(top[0])}</span>${hops > 2 ? ' <span class="badge warn">multi-hop</span>' : ''}` : '<span class="dim">out only</span>'}</td>
@@ -2425,7 +2569,7 @@ async function openToken(id) {
     const tot = lps.reduce((s, l) => s + l.amount, 0);
     box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px"><tbody>${
       lps.slice(0, 10).map((l, i) => `<tr><td class="rank">${i + 1}</td>
-        <td class="mono">${esc(l.account)}</td>
+        <td class="mono">${acctLink(l.account)}</td>
         <td class="r num">${qty(l.amount)}</td>
         <td class="r num dim">${(l.amount / tot * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it &mdash; the largest supplier often does not appear there at all.</p>`;
@@ -2520,7 +2664,7 @@ async function openToken(id) {
     <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
     <tbody>${top.map((h, i) => `
     <tr><td class="rank">${i + 1}</td>
-      <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
+      <td class="mono">${acctLink(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
       <td class="r num">${qty(h.balance)}</td>
       <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
       <td class="r num ${share(h.balance) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
@@ -2590,8 +2734,9 @@ async function openPool(key) {
         <span class="num dim">${usd(f.rewardUsdDay)} &middot; ends ${f.periodFinish ? new Date(f.periodFinish).toISOString().slice(0, 10) : 'open'}</span>
       </div>`).join('')}</div>` : ''}
     <div class="grid g2">
-      <div class="card"><h3>Price <span class="dim">— candles built from pool state changes</span>
+      <div class="card"><h3><span id="poolPair">Price</span> <span class="dim">— candles built from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" id="poolFlip" title="Show the price the other way round">&#8646;</button>
           <button class="chip" data-iv="300" aria-pressed="false">5m</button>
           <button class="chip" data-iv="900" aria-pressed="false">15m</button>
           <button class="chip" data-iv="3600" aria-pressed="true">1h</button>
@@ -2615,18 +2760,28 @@ async function openPool(key) {
       if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; return; }
       // Price precision follows the pair: six decimals on a token worth $4,000
       // is noise, and two on one worth $0.000001 is a flat line.
-      const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rows.at(-1).price || 1)) + 4));
-      const draw = iv => candleChart(box, toCandles(rows, { bucketSec: iv }), { height: 300, precision: prec })
-        .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
-      draw(3600);
-      document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
-        document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-        draw(Number(b.dataset.iv));
-      });
       const note = document.createElement('p');
       note.className = 'sub'; note.style.marginTop = '8px';
-      note.textContent = `${rows.length.toLocaleString()} state changes · ${p.symB} per ${p.symA} · volume in ${p.symA}`;
       box.after(note);
+
+      let iv = 3600, flipped = false;
+      const draw = () => {
+        const c = toCandles(rows, { bucketSec: iv });
+        const shown = flipped ? invertCandles(c) : c;
+        const [num, den] = flipped ? [p.symA, p.symB] : [p.symB, p.symA];
+        const pair = $('#poolPair');
+        if (pair) pair.textContent = `${den}/${num}`;
+        note.textContent = `${rows.length.toLocaleString()} state changes · ${num} per ${den} · volume in ${p.symA}`;
+        candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close) })
+          .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
+      };
+      draw();
+      document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
+        document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        iv = Number(b.dataset.iv); draw();
+      });
+      const flip = $('#poolFlip');
+      if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
     }).catch(e => { $('#poolChart').innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`; });
 
     // The tape comes from the same rows, not from the swap feed. Filtering the

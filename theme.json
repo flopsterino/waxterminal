@@ -20,21 +20,11 @@
     "minTvlUsd": 100
   },
   "commercial": {
-    "feeAccount": "",
+    "feeAccount": "hole.cheese",
     "compoundFeeBps": 75,
-    "premium": {
-      "enabled": false,
-      "label": "Premium",
-      "token": {
-        "symbol": "HOLE",
-        "contract": "hole.cheese",
-        "min": 1000
-      },
-      "collection": null
-    },
     "promotion": {
-      "enabled": false,
-      "account": "",
+      "enabled": true,
+      "account": "hole.cheese",
       "token": {
         "symbol": "HOLE",
         "contract": "hole.cheese"

@@ -20,11 +20,15 @@
 //      is its own section. Money buys a slot on the page, never a position in a
 //      list of what is actually the biggest or the best paying.
 //
-// Sending to eosio.null makes it a burn rather than revenue, which is a choice
-// the operator makes by what they put in `promotion.account`.
+// Two things are being sold: whether you appear, and how high. Days remaining
+// decides the first, total spend decides the second — so a creator who wants
+// the top slot buys it by paying more, not by having started earlier.
+//
+// Sending to eosio.null would make it a burn rather than revenue, which is a
+// choice the operator makes by what they put in `promotion.account`.
 // =============================================================================
 
-import { hyperion } from './chain.js';
+import { hyperion, dropEchoes } from './chain.js';
 
 let cfg = null;
 
@@ -70,12 +74,8 @@ export async function activePromotions({ now = Date.now() } = {}) {
     if (got.length < 1000) break;
   }
 
-  const seen = new Set();
   const out = [];
-  for (const a of rows) {
-    const key = `${a.trx_id}:${a.action_ordinal}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+  for (const a of dropEchoes(rows)) {
     const x = a.act?.data;
     if (!x || x.to !== cfg.account) continue;
     // Case-insensitive on the prefix, case-preserving on the rest: a token id is
@@ -119,9 +119,11 @@ export async function activePromotions({ now = Date.now() } = {}) {
   }
   for (const [k, r] of merged) if (r.until <= now) merged.delete(k);   // run has lapsed
 
-  // Ordered by what is still owed to the payer — time remaining — so a slot
-  // that runs out tomorrow does not sit above one paid through next month.
+  // Ordered by what was spent, because that is what is being bought: paying
+  // more puts you higher. Time remaining decides whether you appear at all,
+  // not where — otherwise the only way to outrank someone would be to outlast
+  // them, and a big buy would sit under a small one that started earlier.
   return [...merged.values()]
-    .sort((a, b) => b.until - a.until)
+    .sort((a, b) => b.paid - a.paid || b.until - a.until)
     .slice(0, cfg.slots ?? 3);
 }
