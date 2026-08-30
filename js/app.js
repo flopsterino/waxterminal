@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -14,6 +14,7 @@ import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, t
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
+import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
 import { balanceOf } from './chain.js';
 import { csvButton } from './csv.js';
@@ -777,10 +778,7 @@ function wirePromote() {
         const r = await wallet.transact(built.actions);
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Promoted.</b> Live on the front page for ${days} days.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
-      } catch (e) {
-        const m2 = String(e.message || e);
-        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m2) ? 'You declined the signature — nothing was sent.' : esc(m2)}</div>`;
-      }
+      } catch (e) { out.innerHTML = txError(e); }
     };
   };
 }
@@ -1489,6 +1487,189 @@ function wireWallet() {
 // terminal does on your behalf — several transactions, measured balances, sized
 // deposits — and it is only ever taken from what was just claimed.
 
+// ---------------------------------------------------------- RESOURCES ------
+// CPU, NET and RAM, and the three things people actually need to do with them:
+// top up, get staked WAX back, and vote so the stake earns something.
+//
+// The numbers that say how close you are to being unable to transact live in
+// get_account and nowhere a normal person looks. A meter is the whole point.
+// Whether a claim should re-cast the vote on its way past. On by default,
+// because a decayed vote silently stops the reward and the fix is free — but a
+// preference, because re-voting is a transaction someone might not want.
+const autoVoteOn = () => { try { return localStorage.getItem('waxterminal.autovote') !== '0'; } catch { return true; } };
+
+async function renderWalletResources(account) {
+  const out = $('#walletRes');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your resources…</span></div>';
+
+  let r;
+  try { r = await resourcesOf(account); } catch { out.innerHTML = ''; return; }
+
+  const cheese = state.tokens.get('CHEESE@cheeseburger') || { symbol: 'CHEESE', contract: 'cheeseburger', decimals: 4 };
+  const meter = (label, frac, detail) => `
+    <div class="meter">
+      <div class="meterhead"><span>${label}</span><span class="mono ${frac > 0.9 ? 'neg' : frac > 0.7 ? 'warnish' : 'dim'}">${(frac * 100).toFixed(1)}% used</span></div>
+      <div class="metertrack"><span class="meterfill ${frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : ''}" style="width:${Math.max(1, frac * 100).toFixed(1)}%"></span></div>
+      <div class="sub">${detail}</div>
+    </div>`;
+
+  const refund = r.refund;
+  const ready = refund && Date.now() >= refund.readyAt;
+
+  out.innerHTML = `<div class="section"><h3>Resources <span class="dim">&mdash; what makes an account able to transact at all</span></h3>
+    <div class="grid g2">
+      <div class="card"><h3>Where you stand</h3>
+        ${meter('CPU', useFraction(r.cpu), `${micros(r.cpu.available)} left &mdash; about ${cpuTransactions(r.cpu.available).toLocaleString()} more transactions, from ${qty(r.staked.cpu)} WAX staked`)}
+        ${meter('NET', useFraction(r.net), `${bytes(r.net.available)} left, from ${qty(r.staked.net)} WAX staked`)}
+        ${meter('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)} free of ${bytes(r.ram.max)} &mdash; RAM is bought, not staked, and holds your token rows`)}
+        <p class="sub" style="margin:10px 0 0">CPU refills over a day. Running out is the usual reason an account suddenly cannot do anything, and it is the cheapest problem here to fix.</p>
+      </div>
+
+      <div class="card"><h3>Power up with CHEESE <span class="dim">&mdash; burned, not paid to anyone</span></h3>
+        <div class="toolbar" style="margin:0">
+          ${[0.5, 2, 5, 20].map((a, i) => `<button class="chip" data-pw="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a} CHEESE</button>`).join('')}
+        </div>
+        <p class="sub" style="margin:9px 0 0" id="pwNote"></p>
+        <div id="pwOut" style="margin-top:10px"></div>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwGo">Power up</button></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h3>Unstake <span class="dim">&mdash; three days in a queue before it lands</span></h3>
+        <div class="filters" style="display:grid;gap:8px;margin:0">
+          <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
+          <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
+        </div>
+        <p class="sub" style="margin:9px 0 0">You have ${qty(r.staked.cpu)} WAX in CPU and ${qty(r.staked.net)} in NET. Unstaking lowers what you can transact with, and the WAX is neither staked nor spendable for three days.</p>
+        <div id="unOut" style="margin-top:10px"></div>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn ghost" id="unGo">Review</button></div>
+      </div>
+
+      <div class="card"><h3>Voting <span class="dim">&mdash; a stake that does not vote earns nothing</span></h3>
+        ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
+          <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? `through the proxy ${acctLink(r.voter.proxy)}` : `for ${r.voter.producers.length} producers directly`}${r.voter.weight > 0 ? '' : ', but the weight has decayed to nothing &mdash; claiming re-casts it'}.</p>`
+        : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting.</b> Staked WAX earns a reward only while it votes, so this stake is earning nothing at all.</p>`}
+        <div class="toolbar" style="margin:0">
+          <button class="chip" id="voteProxyBtn" aria-pressed="true">Use a proxy</button>
+          <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" style="max-width:200px" spellcheck="false">
+          <button class="btn ghost" id="voteGo">Vote</button>
+        </div>
+        <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
+          <span class="sub">Re-cast this vote automatically whenever I claim or compound, so the weight never decays</span></label>
+        <div id="voteOut" style="margin-top:10px"></div>
+        <p class="sub" style="margin:10px 0 0">A proxy votes on your behalf and you can change or drop it whenever you like. Voting for producers directly works too &mdash; this terminal does not pick either for you.</p>
+      </div>
+
+      <div class="card"><h3>Refund queue</h3>
+        ${refund ? `<div class="stats" style="margin:0 0 10px">
+            <div class="stat"><span class="v">${qty(refund.total)} WAX</span><span class="k">on its way back</span><span class="sub">${qty(refund.cpu)} from CPU, ${qty(refund.net)} from NET</span></div>
+            <div class="stat"><span class="v ${ready ? 'pos' : ''}">${ready ? 'ready' : ago(new Date(refund.readyAt).toISOString()).replace(' ago', '')}</span><span class="k">${ready ? 'claim it' : 'until it lands'}</span><span class="sub">unstaked ${ago(new Date(refund.at).toISOString())}</span></div>
+          </div>
+          <div id="rfOut"></div>
+          <div class="toolbar" style="margin:0"><button class="btn" id="rfGo"${ready ? '' : ' disabled'}>Collect refund</button></div>`
+        : `<p class="sub" style="margin:0">Nothing unstaking. Anything you take out of CPU or NET waits here for three days, and this is where it appears &mdash; it usually lands on its own, and this page can nudge it if it does not.</p>`}
+      </div>
+    </div>
+  </div>`;
+
+  // ---- power up ------------------------------------------------------------
+  let pw = 2;
+  const pwNote = $('#pwNote');
+  const paintPw = () => {
+    // Priced from what the service has actually done: 2,636 CHEESE bought 4,778
+    // WAX of powerup over its life. An observed rate, not a promised one.
+    const waxish = pw * 1.81;
+    pwNote.innerHTML = `${pw} CHEESE buys roughly ${qty(waxish)} WAX of CPU and NET for a day, going by what this service has historically delivered.
+      The CHEESE is burned to <span class="mono">eosio.null</span> &mdash; it pays nobody, it leaves circulation.`;
+  };
+  paintPw();
+  out.querySelectorAll('[data-pw]').forEach(b => b.onclick = () => {
+    out.querySelectorAll('[data-pw]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    pw = Number(b.dataset.pw); paintPw();
+  });
+  $('#pwGo').onclick = async () => {
+    const box = $('#pwOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const built = buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span> to power up <span class="mono">${esc(account)}</span>.
+      <br><span class="dim">One transfer. The service burns the CHEESE and pays the system powerup fee in its own WAX.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
+    $('#pwSign').onclick = async () => {
+      box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const tx = await wallet.transact(built.actions);
+        box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Powered up.</b> CPU and NET should be available within a block.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) { box.innerHTML = txError(e); }
+    };
+  };
+
+  // ---- unstake -------------------------------------------------------------
+  $('#unGo').onclick = () => {
+    const box = $('#unOut');
+    const cpu = Number($('#unCpu').value) || 0, net = Number($('#unNet').value) || 0;
+    if (!(cpu > 0) && !(net > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    if (cpu > r.staked.cpu || net > r.staked.net) { box.innerHTML = '<div class="err">That is more than you have staked.</div>'; return; }
+    const built = buildUnstake({ cpu, net, me: account });
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Unstake <b>${qty(built.total)} WAX</b> &mdash; ${qty(cpu)} from CPU and ${qty(net)} from NET.
+      <br><span class="dim">It lands in your wallet in three days. Until then it is not staked, not spendable, and not earning &mdash; and your CPU drops immediately.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unSign">Sign and unstake</button></div></div>`;
+    $('#unSign').onclick = async () => {
+      box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const tx = await wallet.transact(built.actions);
+        box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Unstaked.</b> ${qty(built.total)} WAX is in the refund queue for three days.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) { box.innerHTML = txError(e); }
+    };
+  };
+
+  // ---- voting --------------------------------------------------------------
+  const va = $('#voteAuto');
+  if (va) va.onchange = () => { try { localStorage.setItem('waxterminal.autovote', va.checked ? '1' : '0'); } catch {} };
+  const vg = $('#voteGo');
+  if (vg) vg.onclick = async () => {
+    const box = $('#voteOut');
+    const proxy = $('#voteProxy').value.trim().toLowerCase();
+    if (!/^[a-z1-5.]{1,12}$/.test(proxy)) { box.innerHTML = '<div class="err">That is not a WAX account name.</div>'; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Vote through <span class="mono">${esc(proxy)}</span>. This replaces whatever you vote for now, and you can change it again at any time from here or any wallet.
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="voteSign">Sign and vote</button></div></div>`;
+    $('#voteSign').onclick = async () => {
+      box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const tx = await wallet.transact(buildVote({ proxy, me: wallet.account() }).actions);
+        box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Voted.</b> Your stake earns from here on.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) { box.innerHTML = txError(e); }
+    };
+  };
+
+  // ---- refund --------------------------------------------------------------
+  const rf = $('#rfGo');
+  if (rf) rf.onclick = async () => {
+    const box = $('#rfOut');
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+    try {
+      const tx = await wallet.transact(buildRefund({ me: account }).actions);
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Collected.</b>
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+    } catch (e) { box.innerHTML = txError(e); }
+  };
+}
+
+// Every signing path in this app reports a decline the same way, and a decline
+// is not an error worth alarming anyone about.
+const txError = e => {
+  const m = String(e?.message || e);
+  return `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+};
+
 // ---- staked WAX ------------------------------------------------------------
 async function renderWalletStake(account, feeBps, feeAccount) {
   const out = $('#walletStake');
@@ -1676,6 +1857,7 @@ async function lookupWallet(account) {
   // position sweep is the slowest of them and should not hold up a balance.
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
+  renderWalletResources(account).catch(() => {});
   renderWalletStake(account, feeBps, feeAccount).catch(() => {});
   renderWalletFarms(account).catch(() => {});
   renderWalletBalances(account).catch(() => {});
@@ -2010,7 +2192,11 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
     const before = await balanceOf(account, 'eosio.token', 'WAX');
 
     render(0, 'Waiting for your wallet…');
-    const claim = buildVoteClaim({ account, proxy: info.proxy, producers: info.producers, fallbackProxy: CFG?.commercial?.stakeProxy || '' });
+    const claim = buildVoteClaim({
+      account, proxy: info.proxy, producers: info.producers,
+      // Off means claim only; the vote is left exactly as it is, decay and all.
+      fallbackProxy: autoVoteOn() ? (CFG?.commercial?.stakeProxy || '') : '',
+    });
     const r1 = await wallet.transact(claim.actions);
 
     if (claimOnly) {

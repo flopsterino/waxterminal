@@ -483,3 +483,70 @@ export function buildPromotion({ kind, id, days, terms, me = account(), auth = n
     amount, days,
   };
 }
+
+// -------------------------------------------------------------- resources ---
+// Powering up with CHEESE rather than with WAX.
+//
+// cheesepowerz takes CHEESE, burns it to eosio.null, and pays for the system
+// powerup out of its own WAX. Read off the chain rather than from an ABI: the
+// action a user signs is an ordinary token transfer, and the memo is simply the
+// account to power up. Measured over its lifetime, 2,636 CHEESE bought 4,778
+// WAX of powerup — about 1.8 WAX per CHEESE — and every one of those CHEESE
+// was destroyed, which makes this the largest sink the token has.
+const CHEESE_POWERUP = 'cheesepowerz';
+
+export function buildPowerup({ amount, target, token, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  if (!(amount > 0)) return { actions: [] };
+  return {
+    actions: [{
+      account: token.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: CHEESE_POWERUP,
+        quantity: asset(amount, token.symbol, token.decimals),
+        // The memo is the account that gets the resources, which is usually but
+        // not always the sender — powering up a friend is a normal thing to do.
+        memo: target || me,
+      },
+    }],
+    amount, target: target || me,
+  };
+}
+
+// Taking staked WAX back out. Three days in a refund queue before it lands,
+// which is the chain's rule and not something a UI can soften — so it is said
+// plainly rather than buried.
+export function buildUnstake({ cpu = 0, net = 0, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  if (!(cpu > 0) && !(net > 0)) return { actions: [] };
+  return {
+    actions: [{
+      account: SYSTEM, name: 'undelegatebw', authorization: auth,
+      data: {
+        from: me, receiver: me,
+        unstake_net_quantity: asset(net, 'WAX', WAX_DECIMALS),
+        unstake_cpu_quantity: asset(cpu, 'WAX', WAX_DECIMALS),
+      },
+    }],
+    cpu, net, total: cpu + net,
+  };
+}
+
+// Collect a refund that has matured. The chain releases it automatically in
+// most cases, but a stuck one needs asking, and there is no harm in asking.
+export function buildRefund({ me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  return { actions: [{ account: SYSTEM, name: 'refund', authorization: auth, data: { owner: me } }] };
+}
+
+// Voting, on its own rather than as a side effect of claiming. A proxy and a
+// producer list are mutually exclusive on chain: setting one clears the other.
+export function buildVote({ proxy = '', producers = [], me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  return {
+    actions: [{
+      account: SYSTEM, name: 'voteproducer', authorization: auth,
+      data: { voter: me, proxy: proxy || '', producers: proxy ? [] : [...producers].sort() },
+    }],
+  };
+}

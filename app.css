@@ -569,3 +569,15 @@ body { overflow-x: hidden; }
 
 /* The map fills whatever card it lands in rather than sitting at a fixed 430. */
 .bubblemap svg { max-width: 100% !important; width: 100%; }
+
+/* A resource meter. The number alone ("232,008 µs available") means nothing to
+   anyone; a bar that fills says the one thing that matters, which is how close
+   you are to not being able to transact. */
+.meter { margin-bottom: 14px; }
+.meter:last-of-type { margin-bottom: 0; }
+.meterhead { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 5px; }
+.metertrack { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.meterfill { display: block; height: 100%; background: var(--good); border-radius: 99px; transition: width .3s ease; }
+.meterfill.warm { background: var(--accent); }
+.meterfill.hot { background: var(--bad); }
+.meter .sub { margin-top: 4px; }
