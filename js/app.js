@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, TRADE_VENUES } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
@@ -288,9 +288,9 @@ function renderOverview() {
     // Emissions outrunning the pool: the rate is real and the token cannot
     // survive it. Worth seeing, not worth ranking first.
     g.runaway = g.pool?.tvlReal > 0 && g.rewardRealDay > g.pool.tvlReal * 0.5;
-    g.aprAt = (g.rewardRealDay > 0 && g.stakedReal != null) ? (g.rewardRealDay * 365 / (g.stakedReal + SIZE)) * 100 : null;
+    g.aprAt = aprAtSize(g, SIZE);
   }
-  const bestApr = groups.filter(g => g.aprAt != null && !g.tooSmall).sort((a, b) => b.aprAt - a.aprAt);
+  const bestApr = groups.filter(g => g.aprAt != null && !g.tooSmall && !g.runaway).sort((a, b) => b.aprAt - a.aprAt);
   const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
@@ -338,7 +338,7 @@ function renderOverview() {
   if (!bestApr.length) bestBox.innerHTML = '<div class="chart-empty">No farm currently has both real rewards and real staked capital.</div>';
   else {
     bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
-      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+      label: `${g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId} · ${usd(g.pool?.tvlReal || 0)}`,
       value: g.aprAt,
       note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', ')}`,
       go: () => openPool(g.key),
@@ -818,6 +818,13 @@ function aprAtSize(g, size) {
   if (!(g.rewardRealDay > 0)) return null;
   const staked = g.stakedReal;
   if (staked == null) return null;
+  // An APR needs a real denominator. $0.001 a day against two cents staked is
+  // 1,774% and is arithmetic, not a return — and with no deposit entered there
+  // was nothing else to disqualify it, so the front page's "best rates" was a
+  // list of farms holding pennies. The floor is the same one the rest of the
+  // app uses; once you enter an amount, your own money is what lifts a farm
+  // over it, which is exactly right.
+  if (staked + size < MIN_STAKE_FOR_APR_USD) return null;
   return (g.rewardRealDay * 365 / (staked + size)) * 100;
 }
 
