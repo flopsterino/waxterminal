@@ -743,7 +743,7 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
     const nominal = preferA ? (usdA ?? usdB) : (usdB ?? usdA);
     const ratio = Math.max(dA?.ratio ?? 0, dB?.ratio ?? 0);
     out.push({
-      ts: a.timestamp, trx: a.trx_id, pool, poolId: String(x.poolId),
+      ts: a.timestamp, trx: a.trx_id, seq: Number(a.global_sequence) || 0, pool, poolId: String(x.poolId),
       trader: x.sender, symA: ta.symbol, symB: tb.symbol,
       amountA: ta.amount, amountB: tb.amount,
       volumeUsd: nominal ?? null,
@@ -758,6 +758,54 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
   out.reportedTotal = first.total?.value ?? out.length;
   return out;
 }
+
+// A multi-hop trade is one intent, not several. Swaps that share a transaction
+// are the hops of a single route, ordered by global_sequence — 314 of every
+// 1,000 Alcor logswaps are one of these, and read as separate trades they
+// scatter a single decision across the table with no way to see the shape of
+// it. Reconstructing the path also separates the two kinds of trade on WAX: a
+// route that ends in the token it started from is an arbitrage cycle, and one
+// that ends somewhere else is somebody actually swapping.
+export function tradeRoutes(swaps) {
+  const byTx = new Map();
+  for (const s of swaps) {
+    if (!byTx.has(s.trx)) byTx.set(s.trx, []);
+    byTx.get(s.trx).push(s);
+  }
+  const routes = new Map();
+  for (const [trx, hops] of byTx) {
+    hops.sort((a, b) => a.seq - b.seq);
+    const path = [];
+    const pools = [];
+    for (const h of hops) {
+      const inA = h.amountA > 0;
+      if (!path.length) path.push(inA ? h.symA : h.symB);
+      path.push(inA ? h.symB : h.symA);
+      pools.push(h.poolId);
+    }
+    // Every hop carries roughly the same value, so summing them counts one
+    // trade several times. The route is worth what went into it.
+    const value = hops[0]?.volumeReal ?? hops[0]?.volumeUsd ?? null;
+    const key = path.join('\u2009\u2192\u2009');
+    let r = routes.get(key);
+    if (!r) {
+      r = { path, key, hops: hops.length, pools, cycle: path.length > 2 && path[0] === path[path.length - 1],
+            n: 0, usd: 0, priced: 0, traders: new Map(), last: hops[0].ts, sample: trx };
+      routes.set(key, r);
+    }
+    r.n++;
+    if (value != null) { r.usd += value; r.priced++; }
+    if (hops[0].ts > r.last) { r.last = hops[0].ts; r.sample = trx; }
+    r.traders.set(hops[0].trader, (r.traders.get(hops[0].trader) || 0) + 1);
+  }
+  const all = [...routes.values()];
+  for (const r of all) {
+    r.top = [...r.traders].sort((a, b) => b[1] - a[1]);
+    r.solo = r.top.length === 1;
+  }
+  return all;
+}
+
 
 // Hyperion get_deltas replays a table row over time — this is the entire history
 // layer, for free, with no indexer. `primary_key` filters server-side, so one

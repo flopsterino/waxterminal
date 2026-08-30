@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom } from './tx.js';
@@ -1357,6 +1357,9 @@ async function renderActivity() {
     t.usd += s.volumeReal ?? 0; t.n++;
     traders.set(s.trader, t);
   }
+  const routes = tradeRoutes(swaps).sort((a, b) => b.n - a.n);
+  const cycles = routes.filter(r => r.cycle);
+  const multi = routes.filter(r => r.hops > 1);
 
   $('#actMeta').innerHTML = `${swaps.length.toLocaleString()} swaps over ${actWindow >= 60 ? (actWindow / 60) + ' hours' : actWindow + ' min'} &middot; ${priced.length.toLocaleString()} priceable`
     + (swaps.capped
@@ -1371,10 +1374,26 @@ async function renderActivity() {
       <div class="stat"><span class="v">${swaps.length.toLocaleString()}</span><span class="k">swaps</span><span class="sub">${(swaps.length / actWindow).toFixed(0)} per minute</span></div>
       <div class="stat"><span class="v">${byPool.size}</span><span class="k">pools touched</span></div>
       <div class="stat"><span class="v">${traders.size}</span><span class="k">unique traders</span></div>
+      <div class="stat"><span class="v">${routes.length.toLocaleString()}</span><span class="k">distinct routes</span><span class="sub">${cycles.length} of them arbitrage cycles</span></div>
     </div>
     <div class="grid g2" style="margin-bottom:12px">
       <div class="card"><h3>Volume by pool <span class="dim">— share of window</span></h3><div id="actDonut"></div></div>
       <div class="card"><h3>Most active traders <span class="dim">— by volume</span></h3><div id="actBars"></div></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <h3>Routes traded <span class="dim">&mdash; swaps sharing a transaction are one trade, in order</span></h3>
+      <p class="note">${multi.length.toLocaleString()} of these took more than one hop${cycles.length ? `, and ${cycles.length.toLocaleString()} ended in the token they started from &mdash; an arbitrage cycle rather than somebody swapping` : ''}.</p>
+      <div class="tablewrap"><table><thead><tr>
+        <th>Route</th><th class="r">Hops</th><th class="r">Times</th><th class="r">Value in</th><th>Traded by</th><th class="r">Last</th>
+      </tr></thead><tbody>${routes.slice(0, 40).map(r => `
+        <tr>
+          <td>${r.cycle ? '<span class="badge warn">arb</span> ' : ''}<span class="route">${r.path.map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
+          <td class="r num dim">${r.hops}</td>
+          <td class="r num">${r.n.toLocaleString()}</td>
+          <td class="r num">${r.priced ? usd(r.usd) : '<span class="dim">&mdash;</span>'}</td>
+          <td class="mono">${esc(r.top[0][0])}${r.top.length > 1 ? ` <span class="sub">and ${r.top.length - 1} other${r.top.length === 2 ? '' : 's'}</span>` : ' <span class="sub">only</span>'}</td>
+          <td class="r num dim">${ago(r.last)}</td>
+        </tr>`).join('')}</tbody></table></div>
     </div>
     <div class="tablewrap"><table><thead><tr>
       <th>When</th><th>Pool</th><th>Trader</th><th class="r">In</th><th class="r">Out</th><th class="r">Value</th>
