@@ -1354,7 +1354,7 @@ async function showCompound(btn, pos) {
         <ol style="margin:0;padding-left:20px;font-size:12.5px;line-height:1.75">
           ${b.actions.map(a => `<li><code class="mono">${esc(a.name)}</code> <span class="dim">${esc(a.note)}</span></li>`).join('')}
         </ol>
-        <p class="sub" style="margin:10px 0 0">Two signatures, because a swap's output is only known once it runs: the first claims and swaps, then we read what actually landed and the second puts it back. No contract holds your funds and no permission is delegated.</p>
+        <p class="sub" style="margin:10px 0 0">Claim, convert, redeposit &mdash; three signatures, or two when there is nothing to convert. The splits exist because the amount to convert is only known once the claim has executed, and the deposit only once the conversion has. No contract holds your funds and no permission is delegated.</p>
       </div>
     </div>`;
 }
@@ -1529,6 +1529,11 @@ async function runCompound(account) {
   const fee = worth.reduce((s, x) => s + x.plan.feeUsd, 0);
   const swaps = worth.reduce((s, x) => s + x.plan.swaps.length, 0);
   const actions = worth.reduce((s, x) => s + x.plan.actions.length, 0);
+  // Two signatures where the harvest already arrives in the right two tokens,
+  // three where it has to be converted first. Announcing a flat two and then
+  // asking for three is the one surprise this screen must not spring.
+  const needSwap = worth.filter(x => x.plan.swaps.length > 0).length;
+  const sigs = worth.length * 2 + needSwap;
   const unpriceable = plans.reduce((s, x) => s + (x.plan?.unpriced.length || 0), 0);
   const tokensSeen = new Set(plans.flatMap(x => x.harvest.basket.map(b => b.symbol)));
 
@@ -1537,7 +1542,7 @@ async function runCompound(account) {
       <div class="stat"><span class="v">${usd(gross - fee)}</span><span class="k">back to work</span><span class="sub">${feeBps > 0 ? `after ${usd(fee)} fee at ${(feeBps / 100).toFixed(2)}%` : 'no fee charged'}</span></div>
       <div class="stat"><span class="v">${worth.length}/${plans.length}</span><span class="k">positions with something to claim</span></div>
       <div class="stat"><span class="v">${swaps}</span><span class="k">swaps needed</span><span class="sub">across all positions</span></div>
-      <div class="stat"><span class="v">${worth.length * 2}</span><span class="k">signatures</span><span class="sub">${actions} actions, two per position</span></div>
+      <div class="stat"><span class="v">${sigs}</span><span class="k">signatures</span><span class="sub">${actions} actions &middot; ${needSwap} position${needSwap === 1 ? '' : 's'} also need${needSwap === 1 ? 's' : ''} a conversion</span></div>
     </div>`;
 
   if (unpriceable) {
@@ -1562,9 +1567,9 @@ async function runCompound(account) {
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
-          <div><span class="dim">No swap needed</span><br><span class="mono">${plan.alreadyRight.map(b => esc(b.symbol)).join(', ') || '—'}</span></div>
-          <div><span class="dim">Swaps</span><br><span class="mono">${plan.swaps.map(s => `${esc(s.from)}&rarr;${esc(s.to)}`).join(', ') || 'none'}</span></div>
-          <div><span class="dim">To sign</span><br><span class="mono">${plan.actions.length} actions, 2 signatures</span></div>
+          <div><span class="dim">Already the right token</span><br><span class="mono">${[...new Set(plan.alreadyRight.map(b => b.symbol))].map(esc).join(', ') || '—'}</span></div>
+          <div><span class="dim">To convert</span><br><span class="mono">${plan.swaps.map(s => `${esc(s.from)}&rarr;${esc(s.to)}`).join(', ') || 'nothing'}</span></div>
+          <div><span class="dim">To sign</span><br><span class="mono">${plan.actions.length} actions, ${plan.swaps.length ? 3 : 2} signatures</span></div>
         </div>
         <div style="margin-top:11px"><button class="btn" data-run="${pos.posId}">Compound this position</button>
           ${!plan.ratio.inRange ? '<span class="sub" style="margin-left:10px">Out of range — this adds to a band the price has left.</span>' : ''}</div>

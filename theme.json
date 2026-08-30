@@ -17,11 +17,6 @@
   ],
   "content": {
     "defaultView": "overview",
-    "featuredPools": [
-      "alcor:314",
-      "alcor:0",
-      "taco:TACWAX"
-    ],
     "minTvlUsd": 100
   },
   "commercial": {

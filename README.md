@@ -2,8 +2,8 @@
 
 Pools, farms and liquidity across the WAX blockchain, in one page.
 
-**There is no backend.** The browser reads `swap.alcor` and `swap.taco` straight
-off chain and derives everything itself. That means the whole thing deploys as
+**There is no backend.** The browser reads `swap.alcor`, `swap.taco`, `swap.box`
+and `swap.adex` straight off chain and derives everything itself. That means the whole thing deploys as
 static files — GitHub Pages is enough — and there is no database to run, no
 indexer to babysit, and no server that could hold anyone's funds.
 
@@ -33,16 +33,16 @@ Two files. Nothing else needs touching.
 | File | What it controls |
 |---|---|
 | `theme.css` | Every colour, radius and font, in both light and dark. No component declares a colour of its own. |
-| `theme.json` | Name, favicon, links, featured pools, default view, fee account, compound fee rate, per-surface feature flags. |
+| `theme.json` | Name, tagline, favicon, footer links, default view, fee account, compound fee rate, and per-surface feature flags — a view switched off loses its tab *and* its route. |
 
 ---
 
 ## What it does
 
-- **Pools** — all ~19,800 Alcor pools and TacoSwap pairs with live TVL, price and fee tier.
+- **Pools** — every pool on all four venues (11,585 Alcor, 8,252 TacoSwap, 1,443 Defibox, 9 A-DEX) with live pooled value, price and fee tier.
 - **Farms** — grouped by pool, not by incentive, because a pool commonly runs several at once.
-- **My liquidity** — every position a wallet holds across both DEXes, in range or not, with uncollected fees.
-- **Compound** — the full harvest for each position and the exact transaction that redeposits it.
+- **My liquidity** — every position a wallet holds across the four venues, in range or not, with uncollected fees, profit against what was deposited, and what it earns per day.
+- **Compound** — the full harvest for each position, then claim, convert and redeposit. Three signatures, because the amount to convert is unknowable until the claim has executed and the deposit is sized from what the conversion returned.
 - **Overview** — the dashboard: where liquidity sits, who pays the most, where APRs actually fall, WAX candles, and the multi-year TVL series.
 - **Activity** — the live swap feed across all four venues: who traded what, through which pool, for how much, and the multi-hop routes those swaps add up to.
 - **Watchlist** — star anything and the front page opens with what moved since you last looked at it.
@@ -129,9 +129,19 @@ app.css         structure; no colours
 js/chain.js     RPC + Hyperion, host rotation, sharded table sweeps
 js/math.js      Uniswap-V3 maths on X64 fixed point
 js/price.js     routing to a stablecoin, with a depth floor
-js/store.js     loads both DEXes, derives pools/farms/positions, IndexedDB cache
+js/store.js     loads all four venues, derives pools/farms/positions, replays
+                pool rows for trade history, IndexedDB cache
+js/depth.js     what stands behind a token, and what of it is realisable
 js/compound.js  harvest discovery and the N-asset rebalance planner
+js/tx.js        the actions a compound signs, and nothing else
+js/wallet.js    WharfKit session
+js/holders.js   holders, clusters, LPs, supply, transfer taxes
+js/tokens.js    logos and Alcor's own token metadata
 js/charts.js    hand-drawn SVG; no chart library
+js/tvchart.js   TradingView Lightweight Charts, for candles only
+js/premium.js   entitlement from the chain, and every row cap in one table
+js/watch.js     the watchlist, in localStorage
+js/csv.js       exports, with spreadsheet formula injection blocked
 js/app.js       views and wiring
 selftest.html   verifies the maths against live chain state
 ```
@@ -141,25 +151,41 @@ selftest.html   verifies the maths against live chain state
 ## Signing
 
 WharfKit is wired (Anchor everywhere; WAX Cloud Wallet where the page is served
-over HTTPS, since its popup needs a secure context). Compounding runs as **two
-transactions on purpose**:
+over HTTPS, since its popup needs a secure context). Compounding runs as **three
+transactions on purpose**, and it cannot be fewer:
 
-1. **Harvest and rebalance** — `collect`, one `getreward` per incentive, then the
-   swaps that route foreign rewards into the ratio the band needs.
-2. **Redeposit** — read what actually landed, `addliquid` that into the same
-   ticks, and pay the service fee inline.
+1. **Claim** — `collect` plus one `getreward` per incentive. Nothing is swapped
+   or spent.
+2. **Convert** — read the wallet, subtract what was there before, and sell only
+   the difference into the two tokens the position holds. Skipped entirely when
+   the harvest already arrives in those two.
+3. **Redeposit** — `addliquid` exactly what the conversion returned, into the
+   same ticks, with the service fee inline.
 
-The split exists because `addliquid` takes concrete amounts while a swap's output
-is only known once it executes. Predicting it means either leaving value behind
-or reverting the whole transaction on a rounding error. Reading real balances
-between the two removes the guess entirely.
+The splits exist because `addliquid` takes concrete amounts while a swap's
+output is only known once it executes, and the amount to convert is only known
+once the claim has. Predicting either means leaving value behind or reverting on
+a rounding error; reading real balances in between removes the guess. It also
+removes a far worse failure: sizing from the wallet rather than from the
+measured harvest once spent a user's pre-existing balance.
+
+`addliquid` spends from an internal balance inside `swap.alcor`, funded by a
+`transfer` with memo `deposit` in the same transaction — calling it alone fails
+with "Insufficient balance". It asks for what *arrives*, not what was sent, so a
+token that taxes the deposit does not revert the whole compound.
+
+Re-staking afterwards is not needed: `addliquid` emits `logstaked` for every
+incentive the position is in, inside the same transaction. Verified against a
+real compound, where the staking weight followed the new liquidity to within 25
+units.
 
 Set `commercial.feeAccount` in `theme.json` to collect the fee; leave it empty
-and no fee action is built at all.
+and no fee action is built at all, and the plan does not deduct one either.
 
-**The action shapes are taken from the live ABI and a real on-chain swap, but no
-compound has been executed yet.** Do the first one with a position holding a few
-dollars before pointing anyone else at it.
+**Executed on chain**: a live compound on a CHEESE/HOLE position claimed 4.0258
+CHEESE, swapped 1.6128, redeposited 2.4129, and left the 59.3096 CHEESE already
+in the wallet untouched. Still do your first one with a position holding a few
+dollars.
 
 ## The premium tier
 
