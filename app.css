@@ -62,9 +62,13 @@ h2.vt { font-size: 19px; font-weight: 700; letter-spacing: -.015em; margin: 0 0 
 p.vs { color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: 74ch; }
 
 /* --------------------------------------------------------------- stats --- */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+/* Flex, not grid. A grid of equal columns leaves the last row short whenever the
+   tile count does not divide into it — seven stats in an eight-column grid drew
+   an empty bordered box, which reads as a value that failed to load. Flex items
+   grow to fill whatever row they land on, at any count and any width. */
+.stats { display: flex; flex-wrap: wrap; gap: 1px;
   background: var(--line); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; margin-bottom: 18px; }
-.stat { background: var(--surface); padding: 13px 15px; }
+.stat { flex: 1 1 150px; min-width: 0; background: var(--surface); padding: 13px 15px; }
 .stat .v { font-family: var(--font-data); font-size: 21px; font-weight: 600; letter-spacing: -.02em; display: block; line-height: 1.2; }
 .stat .k { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-top: 5px; display: block; }
 .stat .sub { font-size: 11px; color: var(--muted); font-family: var(--font-data); margin-top: 2px; display: block; }
@@ -434,10 +438,7 @@ tbody tr.faded:hover td { opacity: .85; }
   .filters { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 480px) {
-  .stats { grid-template-columns: 1fr 1fr; }
-  /* An odd last tile left an empty bordered box beside it, which reads as a
-     value that failed to load. Only two columns can strand one. */
-  .stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .stat { flex-basis: 42%; }
   .filters { grid-template-columns: 1fr; }
   #farmTable td:nth-child(4) { max-width: 130px; }
 }
