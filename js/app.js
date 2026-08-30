@@ -473,7 +473,10 @@ function renderOverview() {
         <div id="ovBest"></div></div>
       <div class="grid g2">
         <div class="card"><h3>Biggest daily payouts
-          <span style="margin-left:auto"><button class="chip" id="riskyToggle" aria-pressed="${showRisky}" title="Farms emitting more in a day than their pool is worth — a real rate, on a token that cannot survive paying it">risky</button></span></h3><div id="ovRew"></div></div>
+          <span style="margin-left:auto" class="switchwrap">
+            <span class="switchlabel">risky</span>
+            <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
+          </span></h3><div id="ovRew"></div></div>
         <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} farms</span></h3><div id="ovApr"></div></div>
       </div>
     </div>
@@ -567,7 +570,7 @@ function renderOverview() {
     $('#ovRew').appendChild(n);
   }
   const rt = $('#riskyToggle');
-  if (rt) rt.onclick = () => { showRisky = !showRisky; renderOverview(); };
+  if (rt) rt.onclick = () => { showRisky = !showRisky; rt.setAttribute('aria-checked', String(showRisky)); renderOverview(); };
 
   $('#ovApr').appendChild(withApr.length
     ? histogram(withApr.map(g => g.aprAt), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })

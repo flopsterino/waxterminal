@@ -601,3 +601,21 @@ body { overflow-x: hidden; }
 .subtabs button:hover { color: var(--ink-2); }
 .subtabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 @media (max-width: 400px) { .subtabs button { padding: 7px 10px; font-size: 12px; } }
+
+/* A switch, not a chip that happens to be pressed. A lone word with a highlight
+   state reads as a label on the list beneath it — "risky" looked like it was
+   describing what you were already looking at, rather than offering to add it. */
+.switchwrap { display: inline-flex; align-items: center; gap: 7px; }
+.switchlabel { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.switch {
+  position: relative; width: 34px; height: 19px; padding: 0; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 99px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--muted); transition: transform .15s ease, background .15s ease;
+}
+.switch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.switch[aria-checked="true"] .knob { transform: translateX(15px); background: var(--accent); }
+.switch:hover { border-color: var(--accent); }
