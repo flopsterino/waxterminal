@@ -31,6 +31,17 @@
         "min": 1000
       },
       "collection": null
+    },
+    "promotion": {
+      "enabled": false,
+      "account": "",
+      "token": {
+        "symbol": "HOLE",
+        "contract": "hole.cheese"
+      },
+      "ratePerDay": 100,
+      "slots": 3,
+      "memoPrefix": "promote"
     }
   },
   "features": {

@@ -239,7 +239,10 @@ export function bars(items, { fmt = v => v, color = 'var(--c1)', max = null } = 
   for (const it of items) {
     const row = document.createElement('div');
     row.className = 'bar';
-    row.innerHTML = `<span class="lb" title="${it.label}">${it.label}</span>
+    // The label column is narrow on a phone, so anything appended to the name
+    // pushes the name out of view — "WAX/LEEF · $30" became "WAX/LEEF · S…".
+    // A second line keeps both readable, and a tooltip is no answer on touch.
+    row.innerHTML = `<span class="lb" title="${it.label}">${it.label}${it.sub ? `<span class="lbsub">${it.sub}</span>` : ''}</span>
       <span class="tr"><span class="fill" style="width:${Math.max(1.5, it.value / top * 100).toFixed(1)}%;background:${color}"></span></span>
       <span class="vl mono">${fmt(it.value)}</span>`;
     row.addEventListener('pointermove', e => showTip(`<b>${it.label}</b><span>${fmt(it.value)}${it.note ? ' · ' + it.note : ''}</span>`, e.clientX, e.clientY));

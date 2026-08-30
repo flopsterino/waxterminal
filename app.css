@@ -491,3 +491,12 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .star:hover { color: var(--ink-2); }
 .star[aria-pressed="true"] { color: var(--accent-ink, var(--c3)); }
 .toolbar .star { font-size: 17px; padding: 0 4px; }
+
+/* A bar's label can carry a second line — what the rate is standing on, which
+   must not eat the name it belongs to. */
+.bars .lb { display: block; white-space: normal; }
+.bars .lbsub { display: block; color: var(--muted); font-size: 10.5px; font-family: var(--font-data); margin-top: 1px; }
+
+/* An odd last stat tile left an empty bordered box beside it, which reads as a
+   value that failed to load. */
+.stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }

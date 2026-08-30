@@ -33,7 +33,7 @@ Two files. Nothing else needs touching.
 | File | What it controls |
 |---|---|
 | `theme.css` | Every colour, radius and font, in both light and dark. No component declares a colour of its own. |
-| `theme.json` | Name, tagline, favicon, footer links, default view, fee account, compound fee rate, and per-surface feature flags — a view switched off loses its tab *and* its route. |
+| `theme.json` | Name, tagline, favicon, footer links, default view, fee account, compound fee rate, the premium tier, paid promotion, and per-surface feature flags — a view switched off loses its tab *and* its route. |
 
 ---
 
@@ -261,6 +261,41 @@ the token page's transfer feed answers it without another fetch — after learni
 that a contract re-notifying a transfer produces a second row for the same
 movement, which doubles every count until you drop the rows that duplicate the
 exact action that created them.
+
+## Selling a slot without selling the numbers
+
+Promoted pools are a paid placement whose receipt is on chain. A creator sends
+the configured token to the configured account with the pool in the memo:
+
+```
+promote:p:alcor:11051          a pool
+promote:t:HOLE@hole.cheese     a token
+```
+
+Every pool and token page prints its own memo, because asking someone to
+assemble one by hand before sending real tokens somewhere irreversible is how
+tokens end up somewhere irreversible.
+
+Deliberately not a list in `theme.json`. A static list needs the operator to
+edit and redeploy for every sale, cannot expire on its own, and asks the reader
+to trust that what they are seeing was actually paid for. A transfer is
+self-serve, expires by arithmetic, and anyone can check it.
+
+`ratePerDay` tokens buy one day, counted from the moment the transfer lands.
+Payments **queue** rather than overlap — two one-day payments an hour apart are
+two days, not one — and a payment made after a run has lapsed starts fresh.
+Point `promotion.account` at `eosio.null` and the fee is burned rather than
+collected, which turns the whole thing into a token sink.
+
+Two rules the code holds:
+
+1. **A paid slot is labelled paid**, every time, with the amount, the payer and
+   the days remaining. A terminal people use to decide where to put money cannot
+   sell an unmarked position in its own numbers and stay worth reading.
+2. **Promotion touches no ranking, filter, total or average.** It is its own
+   section. Money buys a place on the page, never a place in the figures.
+
+Ships disabled.
 
 ## Following things, without a server to watch them
 

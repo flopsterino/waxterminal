@@ -14,6 +14,7 @@ import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, t
 import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
+import { configurePromotion, promotionConfigured, promotionTerms, promotionMemo, activePromotions } from './promote.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -112,6 +113,7 @@ async function boot() {
   try {
     CFG = await (await fetch('theme.json')).json();
     configurePremium(CFG.commercial);
+    configurePromotion(CFG.commercial);
     $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
     if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
     document.title = CFG.identity?.name ?? 'WAX Terminal';
@@ -334,6 +336,9 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
+    <div class="section" id="ovPromoSec" hidden><h3>Promoted <span class="dim">— paid placement, not a ranking</span></h3>
+      <div class="card"><div id="ovPromo"></div></div>
+    </div>
     <div class="section" id="ovWatchSec" hidden><h3>Your watchlist <span class="dim">— what moved since you last looked</span></h3>
       <div class="card"><div id="ovWatch"></div></div>
     </div>
@@ -373,7 +378,8 @@ function renderOverview() {
   if (!bestApr.length) bestBox.innerHTML = '<div class="chart-empty">No farm currently has both real rewards and real staked capital.</div>';
   else {
     bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
-      label: `${g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId} · ${usd(g.pool?.tvlReal || 0)}`,
+      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
+      sub: `${usd(g.pool?.tvlReal || 0)} pool`,
       value: g.aprAt,
       note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', ')}`,
       go: () => openPool(g.key),
@@ -386,6 +392,7 @@ function renderOverview() {
 
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
   renderWatchlist(groups);
+  renderPromoted();
 
   $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
   $('#ovTop').appendChild(bars(top.map(p => {
@@ -552,6 +559,68 @@ const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 
 // What each table last put on screen. An export has to be exactly what the
 // reader is looking at — same filters, same sort, same order — or the
 // spreadsheet and the page quietly disagree about what was there.
+// Paid slots, read back off the chain. See js/promote.js for why this is a
+// ledger of transfers rather than a list in the config.
+//
+// Labelled as paid on every row, and kept out of every ranking, filter and
+// total on the page. A terminal people use to decide where to put money cannot
+// sell an unmarked position in its own numbers and still be worth reading.
+// What a creator has to send to promote this exact thing. Shown on the page it
+// applies to, because the alternative is asking someone to assemble a memo by
+// hand before sending real tokens somewhere irreversible.
+function promoteBox(kind, id, name) {
+  if (!promotionConfigured()) return '';
+  const t = promotionTerms();
+  return `<div class="section"><h3>Promote ${esc(name)}</h3>
+    <div class="card"><p class="sub" style="margin:0">Send ${esc(t.token)} <span class="dim">(${esc(t.contract)})</span> to <span class="mono">${esc(t.account)}</span> with this exact memo:</p>
+      <p class="mono" style="font-size:13px;margin:8px 0;word-break:break-all">${esc(promoteMemoFor(kind, id))}</p>
+      <p class="sub" style="margin:0">${qty(t.perDay)} ${esc(t.token)} buys one day in the ${t.slots} slots on the front page, counted from the moment the transfer lands, and paying again extends it rather than replacing it.
+      ${t.account === 'eosio.null' ? 'It goes to <span class="mono">eosio.null</span>, so it is burned rather than paid to anyone.' : ''}
+      A promoted slot is labelled as paid and changes no ranking, filter or total anywhere in this terminal &mdash; you are buying a place on the page, not a place in the numbers.</p>
+    </div></div>`;
+}
+const promoteMemoFor = (kind, id) => promotionMemo(kind, id) || '';
+
+async function renderPromoted() {
+  const sec = $('#ovPromoSec'), box = $('#ovPromo');
+  if (!sec || !box || !promotionConfigured()) return;
+  const t = promotionTerms();
+  let live = [];
+  try { live = await activePromotions(); } catch { return; }
+  if (!live.length) { sec.hidden = true; return; }
+
+  const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
+  const byToken = new Map(tokenTable().map(x => [x.id, x]));
+  const rows = live.map(pr => {
+    const subject = pr.kind === 'p' ? byPool.get(pr.id) : byToken.get(pr.id);
+    if (!subject) return null;
+    const name = pr.kind === 'p' ? `${subject.symA}/${subject.symB}` : subject.symbol;
+    const sub = pr.kind === 'p'
+      ? `${venueName[subject.dex] || subject.dex} · ${(subject.feeBps / 100).toFixed(2)}% · ${usd(subject.tvlReal)} pooled`
+      : `${subject.contract} · ${usd(subject.tvl)} pooled · ${subject.pools} pools`;
+    return { pr, name, sub };
+  }).filter(Boolean);
+  if (!rows.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+
+  const days = ms => Math.max(0, Math.round(ms / 86400000));
+  box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+    <tbody>${rows.map(r => `<tr class="clickable" data-promo="${esc(r.pr.kind)}|${esc(r.pr.id)}">
+      <td><span class="badge warn">paid</span> <b>${esc(r.name)}</b> <span class="sub">${esc(r.sub)}</span></td>
+      <td class="r num dim">${qty(r.pr.paid)} ${esc(t.token)}${r.pr.payments > 1 ? ` <span class="sub">in ${r.pr.payments} payments</span>` : ''}</td>
+      <td class="r num dim">${days(r.pr.until - Date.now())}d left</td>
+    </tr>`).join('')}</tbody></table></div>
+    <p class="sub" style="margin:10px 0 0">These slots were bought, and that is the only reason they are here &mdash; nothing on this page ranks, filters or totals differently because of it.
+    Each was paid for on chain: ${rows.map(r => `<span class="mono">${esc(r.pr.from)}</span>`).join(', ')} sent ${esc(t.token)} to <span class="mono">${esc(t.account)}</span>, and the payment buys a day per ${qty(t.perDay)} ${esc(t.token)} from the moment it lands.
+    ${t.account === 'eosio.null' ? `It is burned on arrival, so a promotion costs supply rather than paying anyone.` : ''}
+    To buy one, send ${esc(t.token)} to <span class="mono">${esc(t.account)}</span> with memo <span class="mono">${esc(t.prefix)}:p:&lt;venue&gt;:&lt;pool id&gt;</span> for a pool, or <span class="mono">${esc(t.prefix)}:t:&lt;SYMBOL&gt;@&lt;contract&gt;</span> for a token. Every pool and token page shows its own memo.</p>`;
+
+  box.querySelectorAll('tr[data-promo]').forEach(tr => {
+    const [kind, id] = tr.dataset.promo.split('|');
+    tr.onclick = () => (kind === 'p' ? openPool(id) : openToken(id));
+  });
+}
+
 // The watchlist, drawn against what these things were worth when you last
 // looked at them. See js/watch.js for why this is a memory rather than an
 // alert: a static site has nothing awake to send you one.
@@ -1923,7 +1992,8 @@ async function openToken(id) {
     <div class="section"><h3>Tracked over time</h3>
       <div class="card"><h3>Pooled value and daily volume <span class="dim">&mdash; one point per day from the snapshot job</span></h3>
         <div id="tokHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
-    </div>`;
+    </div>
+    ${promoteBox('t', id, t.symbol)}`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
@@ -2499,7 +2569,8 @@ async function openPool(key) {
           <button class="chip" data-iv="86400" aria-pressed="false">24h</button>
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
-    </div>`;
+    </div>
+    ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
 
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
