@@ -553,7 +553,12 @@ function wireFilterPanel(panel, store, onChange) {
 }
 
 // ---------------------------------------------------------------- POOLS -----
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvlReal', dir: -1,
+// Sorted by what trades, not by what sits. Ranking on pooled value put
+// NBG/WAXCASH fifth on $7,428 of liquidity and $0 of trading, while WAX/LFGK —
+// $463 pooled turning over $366 in a day — did not appear at all. Depth is
+// still a column, and still sortable; it is just not the question most people
+// open this page with.
+const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'vol24', dir: -1,
   tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
 // What each table last put on screen. An export has to be exactly what the
@@ -771,7 +776,11 @@ function filteredPools() {
   const min = CFG?.content?.minTvlUsd ?? 100;
   return state.pools.filter(p => {
     if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
-    if (poolFilters.hideDust && !((p.tvl ?? 0) >= min)) return false;
+    // Dust is a pool nobody uses, not merely a small one. Now that the table
+    // leads on volume, a pool that traded a hundred dollars today has earned
+    // its row whatever its size — hiding it would have meant ranking on a
+    // number the filter was throwing away.
+    if (poolFilters.hideDust && !((p.tvl ?? 0) >= min || (p.vol24 ?? 0) >= min)) return false;
     if (poolFilters.hideThin && p.thin) return false;
     if (!inRange(p.tvlReal ?? -1, poolFilters.tvl)) return false;
     if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
@@ -886,7 +895,8 @@ function renderPools() {
 }
 
 // --------------------------------------------------------------- TOKENS -----
-const tokFilters = { q: '', solidOnly: true, sort: 'tvl', dir: -1 };
+// Same argument as the pools table: what trades, not what sits.
+const tokFilters = { q: '', solidOnly: true, sort: 'vol24', dir: -1 };
 let tokRows = null;
 
 function wireTokens() {
