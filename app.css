@@ -455,3 +455,10 @@ a.btn:hover { text-decoration: none; }
 .aprmove { display: inline-flex; align-items: baseline; gap: 5px; justify-content: flex-end; }
 .aprmove .was { color: var(--muted); font-family: var(--font-data); font-size: 12px; text-decoration: line-through; text-decoration-color: var(--line-2); }
 .aprmove .arrow { color: var(--muted); font-size: 11px; }
+dl.facts {
+  display: grid; grid-template-columns: max-content 1fr; gap: 7px 20px;
+  margin: 0; font-size: 13px; align-items: baseline;
+}
+dl.facts dt { color: var(--muted); font-size: 11.5px; }
+dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+@media (max-width: 620px) { dl.facts { grid-template-columns: 1fr; gap: 2px 0; } dl.facts dd { margin-bottom: 8px; } }

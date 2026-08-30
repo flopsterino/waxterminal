@@ -251,3 +251,51 @@ export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
   }));
   return [...owners].map(([account, amount]) => ({ account, amount })).sort((a, b) => b.amount - a.amount);
 }
+
+
+// ------------------------------------------------------------------ tax -----
+// Some WAX tokens take a cut of every transfer. It is not a standard, so each
+// contract keeps it in its own table, but the handful of shapes in use cover
+// most of the taxed supply:
+//
+//   waxpepetoken.txfeecfg  transaction_fee_percent 3 + dev_fee_percent 2, with
+//                          the first going to eosio.null — burned on every send
+//   buzzingarden.configs   per symbol, tx_fees: [{recipient, bps}]
+//
+// This matters beyond curiosity: a 3% transfer tax silently eats a swap route
+// and turns a profitable compound into a loss, which is exactly the class of
+// bug that is invisible until you are looking for it.
+const TAX_TABLES = ['txfeecfg', 'configs', 'config', 'taxcfg', 'fees', 'settings'];
+
+export async function tokenTax(contract, symbol) {
+  const { getRows } = await import('./chain.js');
+  for (const table of TAX_TABLES) {
+    let rows;
+    try { rows = (await getRows(contract, contract, table, { limit: 60 })).rows; } catch { continue; }
+    if (!rows?.length) continue;
+
+    for (const r of rows) {
+      // Per-symbol config (buzzingarden shape)
+      if (r.code && String(r.code) !== symbol) continue;
+
+      if (Array.isArray(r.tx_fees) && r.tx_fees.length) {
+        const bps = r.tx_fees.reduce((a, f) => a + (Number(f.bps) || 0), 0);
+        if (bps > 0) return {
+          bps, source: `${contract}.${table}`,
+          parts: r.tx_fees.map(f => ({ to: f.recipient, bps: Number(f.bps) || 0 })),
+          tradeable: r.is_tradeable === undefined ? null : !!r.is_tradeable,
+        };
+      }
+
+      const pct = Number(r.transaction_fee_percent) || 0;
+      const dev = Number(r.dev_fee_percent) || 0;
+      if (pct + dev > 0 && r.is_active !== 0) {
+        const parts = [];
+        if (pct > 0) parts.push({ to: r.tx_fee_vault || '?', bps: Math.round(pct * 100) });
+        if (dev > 0) parts.push({ to: r.dev_fee_vault || '?', bps: Math.round(dev * 100) });
+        return { bps: Math.round((pct + dev) * 100), source: `${contract}.${table}`, parts, tradeable: null };
+      }
+    }
+  }
+  return { bps: 0, source: null, parts: [], tradeable: null };
+}

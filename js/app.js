@@ -10,7 +10,7 @@ import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.j
 import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
-import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs } from './holders.js';
+import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax } from './holders.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -1399,6 +1399,21 @@ async function openToken(id) {
       <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
     </div>
 
+    <div class="section"><h3>The token itself</h3>
+      <div class="card"><dl class="facts" id="tokFacts">
+        <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
+        <dt>Symbol</dt><dd class="mono">${esc(t.symbol)}</dd>
+        <dt>Decimals</dt><dd class="mono" id="fDec">—</dd>
+        <dt>Issued by</dt><dd class="mono" id="fIssuer">—</dd>
+        <dt>Total supply</dt><dd class="mono" id="fSupply">—</dd>
+        <dt>Maximum ever</dt><dd class="mono" id="fMax">—</dd>
+        <dt>Burned</dt><dd class="mono" id="fBurned">—</dd>
+        <dt>Circulating</dt><dd class="mono" id="fCirc">—</dd>
+        <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
+        <dt>Transfer tax</dt><dd class="mono" id="fTax">checking…</dd>
+      </dl></div>
+    </div>
+
     ${deepest ? `<div class="section"><h3>Price</h3>
       <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">— candles from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
@@ -1455,11 +1470,37 @@ async function openToken(id) {
     })), { fmt: v => usd(v) + '/day', color: 'var(--c3)' }));
   }
 
+  // ---- the facts -----------------------------------------------------------
+  const decs = state.tokens.get(id)?.decimals;
+  if (decs != null) $('#fDec').textContent = String(decs);
+  tokenTax(t.contract, t.symbol).then(tax => {
+    const el = $('#fTax');
+    if (!el) return;
+    if (!tax.bps) {
+      // Absence of evidence: some contracts hold the rate in code rather than a
+      // readable table, so this cannot promise there is none.
+      el.innerHTML = '<span class="dim">none found in the contract\'s tables</span>';
+      return;
+    }
+    const burnPart = tax.parts.find(x => x.to === 'eosio.null');
+    el.innerHTML = `<b class="neg">${(tax.bps / 100).toFixed(2)}% on every transfer</b>`
+      + `<span class="dim"> — ${tax.parts.map(x => `${(x.bps / 100).toFixed(2)}% to ${esc(x.to)}`).join(', ')}</span>`
+      + (burnPart ? `<span class="dim"><br>The share to eosio.null is burned, so supply falls with every send.</span>` : '')
+      + `<span class="dim"><br>A swap route through this token pays it at each hop.</span>`;
+  }).catch(() => { const el = $('#fTax'); if (el) el.textContent = 'could not read'; });
+
   // ---- supply, burn, market cap -------------------------------------------
   let stats = null;
   try {
     stats = await tokenStats(t.contract, t.symbol);
     if (stats) {
+      $('#fSupply').textContent = qty(stats.supply);
+      $('#fMax').textContent = qty(stats.maxSupply);
+      $('#fBurned').innerHTML = stats.burned > 0
+        ? `${qty(stats.burned)} <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>`
+        : '<span class="dim">none</span>';
+      $('#fCirc').textContent = qty(stats.circulating);
+      $('#fIssuer').textContent = stats.issuer || '—';
       $('#tokCirc').textContent = qty(stats.circulating);
       $('#tokBurn').innerHTML = stats.burned > 0
         ? `${qty(stats.burned)} burned <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}%)</span>`
