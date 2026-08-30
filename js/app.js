@@ -17,6 +17,7 @@ import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
+import { pepperStakes, buildPepperClaim } from './pepperstake.js';
 import { balanceOf } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
@@ -1468,6 +1469,16 @@ function wireWallet() {
   // restoring a session pre-fills it with your own name, so the field showed
   // the account and then refused to look it up. Gate on what has actually been
   // rendered instead.
+  // Three panes, one lookup. Everything still loads together — the split is
+  // about not making someone scroll past their CPU meter to reach a balance,
+  // not about loading less.
+  $('#walletTabs')?.addEventListener('click', e => {
+    const b = e.target.closest('button[data-wtab]');
+    if (!b) return;
+    document.querySelectorAll('#walletTabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+    document.querySelectorAll('.wpane').forEach(p2 => { p2.hidden = p2.dataset.wpane !== b.dataset.wtab; });
+  });
+
   wallet.onSession(() => {
     const a = wallet.account();
     if (a && lastView === 'wallet') autoWallet();
@@ -1759,6 +1770,57 @@ async function renderWalletStake(account, feeBps, feeAccount) {
   $('#stakeGo').onclick = () => runStake(account, info, feeBps, feeAccount, {});
 }
 
+// ---- pepperstake claims ----------------------------------------------------
+// The same forgotten-rewards problem as the WaxDAO farms, on a contract that
+// makes you collect each period separately before a withdraw pays anything.
+// Someone away for six months is a hundred and eighty collect actions behind,
+// which is not one transaction — so the batch is bounded and says what is left.
+async function renderPepperClaims(account) {
+  const out = $('#walletClaims');
+  if (!out) return;
+  let stakes = [];
+  try { stakes = await pepperStakes(account); } catch { out.innerHTML = ''; return; }
+  const live = stakes.filter(s => s.collected > 0 || s.behind > 0);
+  if (!live.length) { out.innerHTML = ''; return; }
+
+  out.innerHTML = `<div class="section"><h3>PepperStake <span class="dim">&mdash; rewards that accrue period by period and wait to be collected</span></h3>
+    <div class="card">
+      <div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+        <thead><tr><th></th><th>Pool</th><th>Pays</th><th class="r">Uncollected</th><th class="r">Staked</th></tr></thead>
+        <tbody>${live.map(s => `<tr>
+          <td><input type="checkbox" class="peppick" data-pool="${s.poolId}" checked></td>
+          <td class="mono">#${s.poolId}</td>
+          <td>${s.pool?.reward ? `${qty(s.pool.reward.amount)} ${esc(s.pool.reward.symbol)} <span class="sub">per period</span>` : '<span class="dim">unknown</span>'}</td>
+          <td class="r num ${s.behindTotal > 0 ? '' : 'dim'}">${s.behindTotal > 0 ? `${s.behindTotal} period${s.behindTotal === 1 ? '' : 's'}` : '—'}${s.behindTotal > s.behind ? ` <span class="sub">${s.behind} this go</span>` : ''}</td>
+          <td class="r num dim">${s.stakedAssets ? `${s.stakedAssets} NFTs` : s.stakedTokens ? qty(s.stakedTokens) : '—'}</td>
+        </tr>`).join('')}</tbody></table></div>
+      <div id="pepSteps"></div>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pepGo">Claim selected &mdash; no fee</button></div>
+      <p class="sub" style="margin:10px 0 0">This contract accrues one period at a time and only pays out what has been collected, so a claim is a run of collects followed by a withdraw.
+      Up to forty periods per pool per transaction &mdash; a longer absence takes more than one go, and the button says how much is left.
+      No fee: this is a claim, not a compound.</p>
+    </div></div>`;
+
+  $('#pepGo').onclick = async () => {
+    const picked = new Set([...document.querySelectorAll('.peppick:checked')].map(c => Number(c.dataset.pool)));
+    const box = $('#pepSteps');
+    const chosen = live.filter(s => picked.has(s.poolId));
+    if (!chosen.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected.</div>'; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+
+    const built = chosen.map(s => ({ s, b: buildPepperClaim({ account, stake: s }) }));
+    const actions = built.flatMap(x => x.b.actions);
+    const left = built.reduce((n, x) => n + x.b.remaining, 0);
+    box.innerHTML = `<div class="loading" style="margin-top:10px"><span class="spinner"></span><span>Waiting for your wallet — ${actions.length} actions across ${chosen.length} pool${chosen.length === 1 ? '' : 's'}…</span></div>`;
+    try {
+      const tx = await wallet.transact(actions);
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft);margin-top:10px"><b>Claimed.</b> ${chosen.length} pool${chosen.length === 1 ? '' : 's'} collected and withdrawn.
+        ${left > 0 ? `<br><span class="dim">${left} period${left === 1 ? '' : 's'} still uncollected — run it again to catch up the rest.</span>` : ''}
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+    } catch (e) { box.innerHTML = `<div style="margin-top:10px">${txError(e)}</div>`; }
+  };
+}
+
 // ---- WaxDAO farm rewards ---------------------------------------------------
 async function renderWalletFarms(account) {
   const out = $('#walletFarms');
@@ -1919,6 +1981,7 @@ async function lookupWallet(account) {
   renderWalletResources(account).catch(() => {});
   renderWalletStake(account, feeBps, feeAccount).catch(() => {});
   renderWalletFarms(account).catch(() => {});
+  renderPepperClaims(account).catch(() => {});
   renderWalletBalances(account).catch(() => {});
 
   const out = $('#walletOut');

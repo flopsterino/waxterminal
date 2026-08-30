@@ -108,17 +108,30 @@
   <!-- ----------------------------------------------------------- WALLET -->
   <section class="view" id="view-wallet">
     <h2 class="vt">My wallet</h2>
-    <p class="vs">Everything this account holds and everything it is owed, in one place. Claiming is free; the fee is only for compounding, and only ever taken from what was just claimed.</p>
+    <p class="vs">Everything this account holds and everything it is owed. Claiming is free; the fee is only for compounding, and only ever taken from what was just claimed.</p>
     <div class="walletbar">
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
     </div>
-    <div id="walletRes"></div>
-    <div id="walletStake"></div>
-    <div id="walletBalances"></div>
-    <div id="walletOrders"></div>
-    <div id="walletOut"></div>
-    <div id="walletFarms"></div>
+    <div class="subtabs" id="walletTabs" role="tablist">
+      <button role="tab" data-wtab="balances" aria-selected="true">Balances</button>
+      <button role="tab" data-wtab="resources" aria-selected="false">Resources</button>
+      <button role="tab" data-wtab="claims" aria-selected="false">Claims</button>
+    </div>
+
+    <div class="wpane" data-wpane="balances">
+      <div id="walletBalances"></div>
+      <div id="walletOrders"></div>
+      <div id="walletOut"></div>
+    </div>
+    <div class="wpane" data-wpane="resources" hidden>
+      <div id="walletRes"></div>
+      <div id="walletStake"></div>
+    </div>
+    <div class="wpane" data-wpane="claims" hidden>
+      <div id="walletClaims"></div>
+      <div id="walletFarms"></div>
+    </div>
   </section>
 
   <!-- --------------------------------------------------------- ACTIVITY -->

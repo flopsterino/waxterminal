@@ -589,3 +589,15 @@ body { overflow-x: hidden; }
 .obrow .obbar span { display: block; height: 14px; border-radius: 2px; opacity: .28; }
 .obbid { background: var(--good); }
 .obask { background: var(--bad); }
+
+/* Sub-tabs within a view. One page had grown seven sections and asked you to
+   scroll past resources to reach a balance; three panes is a shorter answer
+   than a longer page. */
+.subtabs { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+.subtabs button {
+  background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
+  padding: 8px 14px; color: var(--muted); font: inherit; font-size: 13px; font-weight: 500;
+}
+.subtabs button:hover { color: var(--ink-2); }
+.subtabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+@media (max-width: 400px) { .subtabs button { padding: 7px 10px; font-size: 12px; } }
