@@ -285,3 +285,75 @@ export function buildRestake({ position, incentiveIds, me = account(), auth = nu
     data: { incentiveId: Number(id), posId: Number(position.posId) },
   }));
 }
+
+// ------------------------------------------------------- stake rewards -----
+// Compounding the yield on staked WAX, which is the one most holders never
+// collect: it does not arrive on its own, it has a daily cooldown, and the vote
+// that earns it decays until re-cast.
+//
+// Split in two for the same reason the LP compound is: the payout comes from a
+// shared bucket divided by a continuously-updating voteshare, so the amount is
+// not knowable until the claim has executed. Predicting it means either leaving
+// WAX unstaked or trying to stake more than arrived.
+const SYSTEM = 'eosio';
+const WAX_DECIMALS = 8;
+
+// Re-casting the same proxy or producers refreshes a decaying vote weight and
+// changes who you vote for not at all — which is why real claims on chain are
+// almost always paired with it. Skipped when they have never voted, because
+// there is no existing choice to re-cast and this must never pick one for them.
+export function buildVoteClaim({ account: me = account(), proxy = '', producers = [], auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const actions = [];
+  if (proxy || producers.length) {
+    actions.push({
+      account: SYSTEM, name: 'voteproducer', authorization: auth,
+      data: { voter: me, proxy: proxy || '', producers: proxy ? [] : producers },
+    });
+  }
+  actions.push({ account: SYSTEM, name: 'claimgbmvote', authorization: auth, data: { owner: me } });
+  return { actions, refreshedVote: !!(proxy || producers.length) };
+}
+
+// Put back what actually landed, in the CPU/NET ratio they already run, and pay
+// the fee from the same claim. Anything the caller did not measure is not spent:
+// `claimed` is a balance difference, never a balance.
+export function buildStakeBack({
+  claimed, cpuWeight = 1, netWeight = 0,
+  account: me = account(), feeBps = 0, feeAccount = '', auth = null,
+}) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  if (!(claimed > 0)) return { actions: [], staked: 0, fee: 0 };
+
+  // The fee is the partner's to set and stays off until they name an account —
+  // an empty recipient must never mean "charge it anyway".
+  const bps = feeAccount ? Math.max(0, Math.min(100, feeBps)) : 0;
+  const fee = claimed * (bps / 10000);
+  const net = Math.max(0, claimed - fee);
+
+  // Keep their existing split rather than imposing one. An account staked
+  // entirely to CPU should stay that way.
+  const total = cpuWeight + netWeight;
+  const cpuShare = total > 0 ? cpuWeight / total : 1;
+  const toCpu = net * cpuShare;
+  const toNet = Math.max(0, net - toCpu);
+
+  const actions = [{
+    account: SYSTEM, name: 'delegatebw', authorization: auth,
+    data: {
+      from: me, receiver: me,
+      stake_net_quantity: asset(toNet, 'WAX', WAX_DECIMALS),
+      stake_cpu_quantity: asset(toCpu, 'WAX', WAX_DECIMALS),
+      // Staking to yourself: never transfer ownership of the stake.
+      transfer: false,
+    },
+  }];
+
+  if (fee > 0) {
+    actions.push({
+      account: 'eosio.token', name: 'transfer', authorization: auth,
+      data: { from: me, to: feeAccount, quantity: asset(fee, 'WAX', WAX_DECIMALS), memo: 'stake compound fee' },
+    });
+  }
+  return { actions, staked: net, fee, toCpu, toNet };
+}

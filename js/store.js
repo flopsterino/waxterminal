@@ -950,7 +950,7 @@ export const TRADE_VENUES = new Set(Object.keys(DELTA_SOURCE));
 // replays a single row filtered server-side by primary key — one query per
 // pool instead of pulling the whole table and discarding 99% of it. Retention
 // is the history node's, not ours.
-export async function venueDeltas(pool, { limit = 1000, pages = 3 } = {}) {
+export async function venueDeltas(pool, { limit = 1000, pages = 3, after = null, before = null } = {}) {
   const src = DELTA_SOURCE[pool.dex];
   if (!src) return [];
   const key = src.key(pool);
@@ -959,6 +959,7 @@ export async function venueDeltas(pool, { limit = 1000, pages = 3 } = {}) {
     const q = new URLSearchParams({
       code: src.code, scope: src.code, table: src.table,
       primary_key: key, limit: String(limit), skip: String(page * limit), sort: 'desc',
+      ...(after ? { after } : {}), ...(before ? { before } : {}),
     });
     let d;
     try { d = await hyperion(`/v2/history/get_deltas?${q}`); }
@@ -980,6 +981,39 @@ export async function venueDeltas(pool, { limit = 1000, pages = 3 } = {}) {
       price, liquidity: Number(x.data.liquidity ?? x.data.liquidity_token ?? 0),
     };
   }).filter(r => r.price > 0).reverse();
+}
+
+// How far back a chart reaches should follow the candle you asked for, not a
+// row count. Three pages of a busy pool is 1.7 days — fine at five minutes a
+// candle, useless at one a day, which is why the long intervals looked cut off:
+// there was nothing older to draw, and the chart was honestly showing all it
+// had.
+//
+// `get_deltas` accepts a time range, and the 10,000-row ceiling is per query
+// rather than per pool, so a window is fetched by date and paged within it.
+export const CHART_WINDOW_DAYS = { 300: 2, 900: 5, 3600: 21, 14400: 90, 86400: 400 };
+
+// Cached per pool: switching 1h → 24h → 1h should not refetch what is already
+// in hand, and the widest window fetched so far covers every narrower one.
+const deltaCache = new Map();
+
+export async function chartDeltas(pool, bucketSec, { onProgress = null } = {}) {
+  const days = CHART_WINDOW_DAYS[bucketSec] ?? 21;
+  const key = `${pool.dex}:${pool.id}`;
+  const held = deltaCache.get(key);
+  if (held && held.days >= days) return held.rows;
+
+  onProgress?.(days);
+  const after = new Date(Date.now() - days * 86400000).toISOString();
+  // A wide window on a busy pool is a lot of rows, so the page budget grows
+  // with it rather than being spent on the first two days.
+  const pages = days <= 5 ? 3 : days <= 21 ? 6 : 10;
+  const rows = await venueDeltas(pool, { pages, after });
+  // A wider window that came back with less than a narrower one means the
+  // history node's retention ran out, not that the pool went quiet — keep
+  // whichever reaches further back.
+  if (!held || rows.length >= held.rows.length) deltaCache.set(key, { days, rows });
+  return deltaCache.get(key).rows;
 }
 
 export const poolDeltas = (poolId, opts) => venueDeltas({ dex: 'alcor', id: poolId }, opts);

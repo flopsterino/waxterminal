@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
@@ -2274,29 +2274,38 @@ async function openToken(id) {
 
   // ---- price chart ---------------------------------------------------------
   if (deepest) {
-    deltasP.then(sets => {
-      if (stale()) return;
-      const rws = sets.find(x => x.pool.id === deepest.id)?.rows || [];
+    let iv = 3600, flipped = false, busy = false;
+    const draw = async () => {
       const box = $('#tokChart');
-      if (!box) return;
-      if (!rws.length) { box.innerHTML = '<div class="chart-empty">The history node keeps no state changes for this pool in its window.</div>'; return; }
-      let iv = 3600, flipped = false;
-      const draw = () => {
+      if (!box || busy) return;
+      busy = true;
+      try {
+        const rws = await chartDeltas(deepest, iv, {
+          onProgress: d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} days of this pool…</span></div>`; },
+        });
+        if (stale()) return;
+        if (!rws.length) { box.innerHTML = '<div class="chart-empty">The history node keeps no state changes for this pool.</div>'; return; }
         const c = toCandles(rws, { bucketSec: iv });
         const shown = flipped ? invertCandles(c) : c;
         const pair = $('#tokPair');
         if (pair) pair.textContent = flipped ? `${deepest.symB}/${deepest.symA}` : `${deepest.symA}/${deepest.symB}`;
-        candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close) })
+        await candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close) })
           .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
-      };
-      draw();
-      document.querySelectorAll('[data-tiv]').forEach(b => b.onclick = () => {
-        document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-        iv = Number(b.dataset.tiv); draw();
-      });
-      const flip = $('#tokFlip');
-      if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
-    }).catch(() => { const b = $('#tokChart'); if (b) b.innerHTML = '<div class="chart-empty">History unavailable.</div>'; });
+        const span = (Date.now() - rws[0].ts) / 86400000;
+        box.insertAdjacentHTML('afterend', '');
+        const note = box.nextElementSibling?.classList?.contains('chartspan') ? box.nextElementSibling : (() => {
+          const n = document.createElement('p'); n.className = 'sub chartspan'; n.style.marginTop = '8px'; box.after(n); return n;
+        })();
+        note.textContent = `${rws.length.toLocaleString()} state changes, reaching back ${span < 1 ? Math.round(span * 24) + ' hours' : span.toFixed(1) + ' days'}. A longer candle loads a longer window.`;
+      } finally { busy = false; }
+    };
+    draw();
+    document.querySelectorAll('[data-tiv]').forEach(b => b.onclick = () => {
+      document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      iv = Number(b.dataset.tiv); draw();
+    });
+    const flip = $('#tokFlip');
+    if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
   }
 
   // ---- trades, read back out of the pool rows ------------------------------
@@ -2754,35 +2763,47 @@ async function openPool(key) {
   // This used to be Alcor-only, and a TacoSwap or Defibox pool showed two boxes
   // saying the feature was not wired up yet.
   {
-    const deltasP = venueDeltas(p, { pages: 8 });
-    deltasP.then(rows => {
-      const box = $('#poolChart');
-      if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; return; }
-      // Price precision follows the pair: six decimals on a token worth $4,000
-      // is noise, and two on one worth $0.000001 is a flat line.
-      const note = document.createElement('p');
-      note.className = 'sub'; note.style.marginTop = '8px';
-      box.after(note);
+    const note = document.createElement('p');
+    note.className = 'sub'; note.style.marginTop = '8px';
+    $('#poolChart').after(note);
 
-      let iv = 3600, flipped = false;
-      const draw = () => {
+    // How far back this reaches follows the candle you asked for. Three pages
+    // of a busy pool is 1.7 days, which is fine at five minutes a candle and
+    // useless at one a day — the long intervals looked cut off because there
+    // was nothing older to draw.
+    let iv = 3600, flipped = false, busy = false;
+    const draw = async () => {
+      const box = $('#poolChart');
+      if (!box || busy) return;
+      busy = true;
+      try {
+        const rows = await chartDeltas(p, iv, {
+          onProgress: d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} days of this pool…</span></div>`; },
+        });
+        if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; note.textContent = ''; return; }
         const c = toCandles(rows, { bucketSec: iv });
         const shown = flipped ? invertCandles(c) : c;
         const [num, den] = flipped ? [p.symA, p.symB] : [p.symB, p.symA];
         const pair = $('#poolPair');
         if (pair) pair.textContent = `${den}/${num}`;
-        note.textContent = `${rows.length.toLocaleString()} state changes · ${num} per ${den} · volume in ${p.symA}`;
-        candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close) })
+        const span = (Date.now() - rows[0].ts) / 86400000;
+        note.textContent = `${rows.length.toLocaleString()} state changes over ${span < 1 ? Math.round(span * 24) + ' hours' : span.toFixed(1) + ' days'} · ${num} per ${den} · volume in ${p.symA}. A longer candle loads a longer window.`;
+        await candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close) })
           .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
-      };
-      draw();
-      document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
-        document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-        iv = Number(b.dataset.iv); draw();
-      });
-      const flip = $('#poolFlip');
-      if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
-    }).catch(e => { $('#poolChart').innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`; });
+      } catch (e) {
+        const box2 = $('#poolChart');
+        if (box2) box2.innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`;
+      } finally { busy = false; }
+    };
+    draw();
+    document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
+      document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      iv = Number(b.dataset.iv); draw();
+    });
+    const flip = $('#poolFlip');
+    if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
+
+    const deltasP = chartDeltas(p, 3600);
 
     // The tape comes from the same rows, not from the swap feed. Filtering the
     // chain-wide logswap firehose down to one pool finds almost nothing for a
