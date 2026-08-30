@@ -147,10 +147,43 @@ and no fee action is built at all.
 compound has been executed yet.** Do the first one with a position holding a few
 dollars before pointing anyone else at it.
 
+## The premium tier
+
+There is no backend, so there is nowhere to keep a subscriber list and no
+account to log into. The only fact both sides already agree on is what the chain
+says a visitor holds, so entitlement is a token balance or an NFT, checked in the
+browser against the same public nodes as everything else. Set it in
+`theme.json`:
+
+```json
+"premium": {
+  "enabled": true,
+  "label": "Premium",
+  "token": { "symbol": "HOLE", "contract": "hole.cheese", "min": 1000 }
+}
+```
+
+or `"collection": "yourcollection"` for NFT-gating instead. The NFT check walks
+the owner's `atomicassets` rows rather than reading the first page, because the
+table is keyed by asset id with no index on the collection and a holder of
+several thousand assets would otherwise be denied for sorting late.
+
+**Premium never changes a number.** It does not hide a warning, gate a price, or
+shorten a list of things the free view would have flagged as wrong. It lifts row
+caps and adds convenience — the free tier is a complete and honest terminal, the
+paid one is more of it at once. Gating the numbers themselves makes the free
+tier a *worse answer* rather than a smaller one, which is precisely how a free
+tier drives people away. Every cap lives in one table in `js/premium.js` so the
+whole offer can be read at a glance, and any capped table says out loud that it
+is capped and what lifts it — a visitor cannot otherwise tell whether a row is
+missing because of the tier or because the data ends there.
+
+With `enabled: false` nothing is gated and every cap stays where it is today.
+
 ## Not built yet
 
 - TacoSwap history and its `exchangelog` feed.
-- Premium gating, alerts and exports.
+- Alerts and CSV export.
 - Restaking after a compound is built (`buildRestake`) but not yet in the flow.
 
 **Thin routes are marked, not hidden.** Only bridged dollars are declared worth

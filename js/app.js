@@ -11,6 +11,7 @@ import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap } from 
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax } from './holders.js';
+import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -76,6 +77,7 @@ let CFG = null;
 async function boot() {
   try {
     CFG = await (await fetch('theme.json')).json();
+    configurePremium(CFG.commercial);
     $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
     if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
     document.title = CFG.identity?.name ?? 'WAX Terminal';
@@ -188,6 +190,42 @@ async function boot() {
 
 const banner = html => { $('#banner').innerHTML = html; };
 let lastView = 'pools';
+// The chip states what the tier is doing, including when it could not be
+// checked — a node that will not answer must not quietly demote a holder.
+// One line for every capped table. Whether a row is missing because the tier
+// limits the view or because the data ends there is exactly the thing a visitor
+// cannot tell by looking, so it is always said out loud — and the free cap
+// always names what lifts it rather than pretending the list simply stops.
+function capNote(total, shown, noun) {
+  if (!(total > shown)) return `${total.toLocaleString()} ${noun}`;
+  const lift = premiumConfigured() && !isPremium()
+    ? ` <span class="dim">&mdash; hold ${esc(premiumTerms())} to see them all, or narrow it with search and filters</span>`
+    : ` <span class="dim">&mdash; narrow it with search or filters</span>`;
+  return `showing top ${shown.toLocaleString()} of ${total.toLocaleString()}${lift}`;
+}
+
+function renderPremiumChip() {
+  const el = $('#premChip');
+  if (!el) return;
+  if (!premiumConfigured() || !wallet.account()) { el.hidden = true; return; }
+  const p = premiumState();
+  el.hidden = false;
+  if (p.ok) { el.className = 'badge good'; el.textContent = p.cfg?.label || 'Premium'; el.title = `Unlocked by holding ${premiumTerms()}`; }
+  else if (p.errored) { el.className = 'badge warn'; el.textContent = 'tier unknown'; el.title = p.reason; }
+  else { el.className = 'badge'; el.textContent = 'Free'; el.title = `Holding ${premiumTerms()} lifts the row limits`; }
+}
+
+// Entitlement changes how many rows a table draws, so whichever table is on
+// screen has to be redrawn instead of waiting for the next navigation.
+function redrawCurrent() {
+  try {
+    if (lastView === 'pools') renderPools();
+    else if (lastView === 'tokens') renderTokens();
+    else if (lastView === 'farms') renderFarms();
+    else if (lastView === 'activity' && activityLoaded) renderActivity();
+  } catch {}
+}
+
 function show(v, arg = null) {
   if (v !== 'pool' && v !== 'token') lastView = v;
   hideTip();
@@ -541,12 +579,10 @@ function renderPools() {
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">deepest stable route</span></div>`;
 
-  // The body renders the first 400. Reporting rows.length made a search for
-  // something ranked 900th look like it does not exist.
-  const CAP = 400;
-  $('#poolCount').innerHTML = rows.length > CAP
-    ? `showing top ${CAP} of ${rows.length.toLocaleString()}<span class="dim"> &mdash; narrow it with search or filters</span>`
-    : `${rows.length.toLocaleString()} pools`;
+  // The body renders as far as the tier allows. Reporting rows.length made a
+  // search for something ranked 900th look like it does not exist.
+  const CAP = cap('pools');
+  $('#poolCount').innerHTML = capNote(rows.length, CAP, 'pools');
 
   const thead = $('#poolTable thead');
   thead.innerHTML = '<tr>' + POOL_COLS.map(c =>
@@ -557,7 +593,7 @@ function renderPools() {
     renderPools();
   });
 
-  const body = rows.slice(0, 400).map((p, i) => {
+  const body = rows.slice(0, cap('pools')).map((p, i) => {
     const ch = p.change24;
     return `
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
@@ -642,7 +678,8 @@ function renderTokens() {
     renderTokens();
   });
 
-  $('#tokTable tbody').innerHTML = rows.slice(0, 300).map((t, i) => `
+  $('#tokCount').innerHTML = capNote(rows.length, cap('tokens'), 'tokens');
+  $('#tokTable tbody').innerHTML = rows.slice(0, cap('tokens')).map((t, i) => `
     <tr class="clickable" data-tok="${esc(t.symbol)}" data-tokid="${esc(t.id)}">
       <td class="rank">${i + 1}</td>
       <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>
@@ -829,7 +866,8 @@ function renderFarms() {
     renderFarms();
   });
 
-  $('#farmTable tbody').innerHTML = rows.slice(0, 250).map((g, i) => {
+  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'farms');
+  $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
          <span class="pairbig">${pairName(g.pool)}</span>
@@ -1105,7 +1143,11 @@ function wireConnect() {
     // The compound page is per-account: connecting should fill it in, not make
     // the user retype what the wallet already told us.
     if (a && !$('#compInput').value) { $('#compInput').value = a; $('#walletInput').value = a; }
+    if (premiumConfigured()) checkPremium(a);
   });
+  // A change in entitlement changes how much of each table is drawn, so the
+  // view that is open has to be redrawn rather than waiting for a navigation.
+  onPremium(() => { renderPremiumChip(); redrawCurrent(); });
   btn.onclick = async () => {
     btn.disabled = true; btn.textContent = 'Connecting…';
     try { await wallet.connect(); }
@@ -1385,7 +1427,7 @@ async function renderActivity() {
       <p class="note">${multi.length.toLocaleString()} of these took more than one hop${cycles.length ? `, and ${cycles.length.toLocaleString()} ended in the token they started from &mdash; an arbitrage cycle rather than somebody swapping` : ''}.</p>
       <div class="tablewrap"><table><thead><tr>
         <th>Route</th><th class="r">Hops</th><th class="r">Times</th><th class="r">Value in</th><th>Traded by</th><th class="r">Last</th>
-      </tr></thead><tbody>${routes.slice(0, 40).map(r => `
+      </tr></thead><tbody>${routes.slice(0, cap('routes')).map(r => `
         <tr>
           <td>${r.cycle ? '<span class="badge warn">arb</span> ' : ''}<span class="route">${r.path.map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
           <td class="r num dim">${r.hops}</td>
@@ -1397,7 +1439,7 @@ async function renderActivity() {
     </div>
     <div class="tablewrap"><table><thead><tr>
       <th>When</th><th>Pool</th><th>Trader</th><th class="r">In</th><th class="r">Out</th><th class="r">Value</th>
-    </tr></thead><tbody>${swaps.slice(0, 150).map(s => {
+    </tr></thead><tbody>${swaps.slice(0, cap('swaps')).map(s => {
       const inA = s.amountA > 0;
       return `<tr><td class="num dim">${ago(s.ts)}</td>
         <td>${s.pool ? `<span class="pair">${pairName(s.pool)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>

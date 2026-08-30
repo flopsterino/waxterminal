@@ -6,18 +6,37 @@
     "favicon": "◩"
   },
   "links": [
-    { "label": "Alcor", "href": "https://wax.alcor.exchange" },
-    { "label": "TacoSwap", "href": "https://swap.tacocrypto.io" }
+    {
+      "label": "Alcor",
+      "href": "https://wax.alcor.exchange"
+    },
+    {
+      "label": "TacoSwap",
+      "href": "https://swap.tacocrypto.io"
+    }
   ],
   "content": {
     "defaultView": "overview",
-    "featuredPools": ["alcor:314", "alcor:0", "taco:TACWAX"],
+    "featuredPools": [
+      "alcor:314",
+      "alcor:0",
+      "taco:TACWAX"
+    ],
     "minTvlUsd": 100
   },
   "commercial": {
     "feeAccount": "",
     "compoundFeeBps": 75,
-    "premiumEnabled": false
+    "premium": {
+      "enabled": false,
+      "label": "Premium",
+      "token": {
+        "symbol": "HOLE",
+        "contract": "hole.cheese",
+        "min": 1000
+      },
+      "collection": null
+    }
   },
   "features": {
     "pools": true,
