@@ -10,7 +10,7 @@
 // same kind of fact as a bubble map edge: worth seeing, yours to interpret.
 // =============================================================================
 
-import { hyperion } from './chain.js';
+import { hyperion, rpc } from './chain.js';
 
 const LIGHT = 'https://wax.light-api.net/api';
 
@@ -34,11 +34,11 @@ export async function hasCode(account) {
   if (codeCache.has(account)) return codeCache.get(account);
   let is = false;
   try {
-    const { rpc } = await import('./chain.js');
-    const d = await fetch('https://wax.greymass.com/v1/chain/get_account', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ account_name: account }), signal: AbortSignal.timeout(12000),
-    }).then(r => r.json());
+    // Through the rotation, not at one host. A token page asks this of up to
+    // fifty holders at once, and fifty parallel POSTs at a single node is the
+    // shape that earns a 420 — which then reads as "this token has no
+    // contracts in its holder list", the opposite of the truth.
+    const d = await rpc('get_account', { account_name: account });
     is = !!(d.last_code_update && d.last_code_update !== '1970-01-01T00:00:00.000');
   } catch {}
   codeCache.set(account, is);
@@ -277,11 +277,7 @@ async function taxTablesOf(contract) {
   if (abiTables.has(contract)) return abiTables.get(contract);
   let names = [];
   try {
-    const r = await fetch('https://wax.greymass.com/v1/chain/get_abi', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ account_name: contract }), signal: AbortSignal.timeout(15000),
-    });
-    const d = await r.json();
+    const d = await rpc('get_abi', { account_name: contract });
     const all = (d.abi?.tables || []).map(t => t.name);
     names = TAX_TABLES.filter(t => all.includes(t));
   } catch {}

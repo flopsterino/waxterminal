@@ -175,6 +175,11 @@ export async function hyperion(path, tries = 4) {
 
 export async function chainInfo() { return post('get_info', {}); }
 
+// The same rotation, hedging and benching for anything else the app needs off a
+// node. Modules that reached for a hardcoded host got none of it: a token page
+// asking one host fifty times in parallel is exactly the shape that earns a 420.
+export const rpc = (endpoint, body, opts) => post(endpoint, body, opts);
+
 // What a wallet actually holds of one token. The compound flow reads this
 // BETWEEN its two transactions instead of predicting swap output, which is the
 // difference between a deposit that lands and one that reverts on a rounding
