@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, asset } from './tx.js';
@@ -100,6 +100,30 @@ function invertCandles(candles) {
 // Decimals follow the magnitude: two on a price near a dollar is a flat line,
 // six on a price near four thousand is noise.
 const precisionFor = v => Math.max(2, Math.min(8, Math.ceil(-Math.log10(Math.abs(v) || 1)) + 4));
+
+// Every time series offers the same steps, from one control, so they cannot
+// drift apart: the WAX chart on the front page had no selector at all and was
+// frozen at fifteen minutes, the token's volume chart offered windows (24h/3d/
+// 7d) where its neighbour offered candle sizes, and the two price charts each
+// wired their own copy.
+const CHART_INTERVALS = [
+  { s: 300, label: '5m' }, { s: 900, label: '15m' }, { s: 3600, label: '1h' },
+  { s: 14400, label: '4h' }, { s: 86400, label: '24h' },
+];
+
+function intervalChips(scope, active = 3600, { skip = [] } = {}) {
+  return CHART_INTERVALS.filter(i => !skip.includes(i.s))
+    .map(i => `<button class="chip" data-ivfor="${esc(scope)}" data-iv="${i.s}" aria-pressed="${i.s === active}">${i.label}</button>`)
+    .join('');
+}
+
+function wireIntervals(scope, onPick) {
+  const sel = `[data-ivfor="${scope}"]`;
+  document.querySelectorAll(sel).forEach(b => b.onclick = () => {
+    document.querySelectorAll(sel).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    onPick(Number(b.dataset.iv));
+  });
+}
 
 const trxUrl = id => `https://waxblock.io/transaction/${id}`;
 const blockUrl = n => `https://waxblock.io/block/${n}`;
@@ -394,7 +418,10 @@ function renderOverview() {
     </div>
     <div class="section"><h3>Market</h3>
       <div class="grid g2">
-        <div class="card"><h3>WAX price <span class="dim">— from Alcor pool #314 state changes</span></h3><div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div></div>
+        <div class="card"><h3>WAX price <span class="dim">— from Alcor pool #314 state changes</span>
+          <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
+          <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
+          <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
         <div class="card"><h3>Alcor fee tiers <span class="dim">— by real pooled value</span></h3><div id="ovFee"></div></div>
       </div>
     </div>
@@ -483,13 +510,31 @@ function renderOverview() {
 
   if (SNAPSHOT_ONLY) {
     $('#ovWax').innerHTML = '<div class="chart-empty">Snapshot mode — chain history not fetched.</div>';
-  } else poolDeltas('314', { pages: 2 }).then(rows => {
-    const el = $('#ovWax');
-    if (!rows.length) { el.innerHTML = '<div class="chart-empty">No state changes in the window the history node keeps.</div>'; return; }
-    const candles = toCandles(rows, { bucketSec: 900 });
-    candleChart(el, candles, { height: 260, precision: 6 })
-      .catch(() => { el.innerHTML = '<div class="chart-empty">Chart library unavailable.</div>'; });
-  }).catch(() => { $('#ovWax').innerHTML = '<div class="chart-empty">History unavailable right now.</div>'; });
+  } else {
+    // Was frozen at fifteen minutes over two pages of history — about a day —
+    // so the front page's only price chart could not be zoomed out at all.
+    const waxPool = state.pools.find(p => p.dex === 'alcor' && String(p.id) === '314');
+    let waxIv = 3600, waxBusy = false;
+    const drawWax = async () => {
+      const el = $('#ovWax');
+      if (!el || !waxPool || waxBusy) return;
+      waxBusy = true;
+      try {
+        const rows = await chartDeltas(waxPool, waxIv, {
+          onProgress: d => { el.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} days of WAX…</span></div>`; },
+        });
+        if (!rows.length) { el.innerHTML = '<div class="chart-empty">No state changes in the window the history node keeps.</div>'; return; }
+        await candleChart(el, toCandles(rows, { bucketSec: waxIv }), { height: 260, precision: precisionFor(rows.at(-1)?.price) })
+          .catch(() => { el.innerHTML = '<div class="chart-empty">Chart library unavailable.</div>'; });
+        const note = $('#ovWaxNote');
+        const span = (Date.now() - rows[0].ts) / 86400000;
+        if (note) note.textContent = `${rows.length.toLocaleString()} state changes, reaching back ${span < 1 ? Math.round(span * 24) + ' hours' : span.toFixed(1) + ' days'}. A longer candle loads a longer window.`;
+      } catch { const e2 = $('#ovWax'); if (e2) e2.innerHTML = '<div class="chart-empty">History unavailable right now.</div>'; }
+      finally { waxBusy = false; }
+    };
+    drawWax();
+    wireIntervals('ovWax', v => { waxIv = v; drawWax(); });
+  }
 
   loadHistory().then(rows => {
     const el = $('#ovHist');
@@ -2676,22 +2721,14 @@ async function openToken(id) {
       <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" id="tokFlip" title="Show the price the other way round">&#8646;</button>
-          <button class="chip" data-tiv="300" aria-pressed="false">5m</button>
-          <button class="chip" data-tiv="900" aria-pressed="false">15m</button>
-          <button class="chip" data-tiv="3600" aria-pressed="true">1h</button>
-          <button class="chip" data-tiv="14400" aria-pressed="false">4h</button>
-          <button class="chip" data-tiv="86400" aria-pressed="false">24h</button>
+          ${intervalChips('tokPrice')}
         </span></h3>
         <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Replaying the pool…</span></div></div></div>
     </div>` : ''}
 
     ${tradePools.length ? `<div class="section"><h3>Trading</h3>
       <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; each trade sized from the pool it moved</span>
-        <span style="margin-left:auto;display:flex;gap:4px">
-          <button class="chip" data-tvol="24" aria-pressed="true">24h</button>
-          <button class="chip" data-tvol="72" aria-pressed="false">3d</button>
-          <button class="chip" data-tvol="168" aria-pressed="false">7d</button>
-        </span></h3>
+        <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('tokVol', 3600, { skip: [300] })}</span></h3>
         <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
         <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
       <div class="grid g2">
@@ -2893,10 +2930,7 @@ async function openToken(id) {
       } finally { busy = false; }
     };
     draw();
-    document.querySelectorAll('[data-tiv]').forEach(b => b.onclick = () => {
-      document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-      iv = Number(b.dataset.tiv); draw();
-    });
+    wireIntervals('tokPrice', v => { iv = v; draw(); });
     const flip = $('#tokFlip');
     if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
   }
@@ -2968,10 +3002,12 @@ async function openToken(id) {
         : Date.now();
 
       let volChart = null;
-      const drawVol = hours => {
+      // The bucket is what you pick; the window follows it. Sixty buckets is
+      // enough to see a shape and few enough that each one is still a bar
+      // rather than a hair — 15 hours at fifteen minutes, sixty days at a day.
+      const drawVol = bucketSec => {
         const box = $('#tokVolChart'); if (!box) return;
-        const since = Date.now() - hours * 3600 * 1000;
-        const bucketSec = hours <= 24 ? 3600 : hours <= 72 ? 4 * 3600 : 24 * 3600;
+        const since = Date.now() - bucketSec * 60 * 1000;
         const win = all.filter(s => s.ts >= since);
         const buckets = new Map();
         for (const s of win) {
@@ -3011,6 +3047,8 @@ async function openToken(id) {
         const scope = tradePools.length > use.length
           ? `the ${use.length} busiest of its ${tradePools.length} pools, on ${venuesRead}`
           : `${use.length} pool${use.length === 1 ? '' : 's'} on ${venuesRead}`;
+        const shown = bucketSec >= 86400 ? `${Math.round(bucketSec * 60 / 86400)} days`
+          : `${Math.round(bucketSec * 60 / 3600)} hours`;
         // This figure and the "traded 24h" stat above it are two different
         // measurements and will not match. That one is each venue's own
         // published number; this one is counted here, once per trade, at the
@@ -3019,18 +3057,15 @@ async function openToken(id) {
         // 205.79 from logswap over the same three hours — so the method is
         // sound, and the venues simply count something else.
         if (note) note.innerHTML = win.length
-          ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} across ${scope}`
+          ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} in the last ${shown}, across ${scope}`
             + (biggest?.usd ? `, the largest ${usd(biggest.usd)}` : '')
             + `. ${oldest > since ? `The history node reaches back to ${ago(new Date(oldest).toISOString())} on the shallowest of them, so anything older is missing rather than absent.` : 'The window is fully covered.'}`
             + ` Counted here from the pools themselves, once per trade &mdash; the headline figure above is what the venues publish, which is computed differently and usually larger.`
           : `Nothing traded in ${scope} in that window. Read back to ${ago(new Date(oldest).toISOString())}.`;
       };
 
-      drawVol(24);
-      document.querySelectorAll('[data-tvol]').forEach(b => b.onclick = () => {
-        document.querySelectorAll('[data-tvol]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-        drawVol(Number(b.dataset.tvol));
-      });
+      drawVol(3600);
+      wireIntervals('tokVol', drawVol);
 
       // A measured figure beats a snapshot that can be an hour old — but it
       // only covers the pools that were replayed, so it never overwrites the
@@ -3339,11 +3374,7 @@ async function openPool(key) {
       <div class="card"><h3><span id="poolPair">Price</span> <span class="dim">— candles built from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" id="poolFlip" title="Show the price the other way round">&#8646;</button>
-          <button class="chip" data-iv="300" aria-pressed="false">5m</button>
-          <button class="chip" data-iv="900" aria-pressed="false">15m</button>
-          <button class="chip" data-iv="3600" aria-pressed="true">1h</button>
-          <button class="chip" data-iv="14400" aria-pressed="false">4h</button>
-          <button class="chip" data-iv="86400" aria-pressed="false">24h</button>
+          ${intervalChips('poolPrice')}
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>
@@ -3389,10 +3420,7 @@ async function openPool(key) {
       } finally { busy = false; }
     };
     draw();
-    document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
-      document.querySelectorAll('[data-iv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-      iv = Number(b.dataset.iv); draw();
-    });
+    wireIntervals('poolPrice', v => { iv = v; draw(); });
     const flip = $('#poolFlip');
     if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
 
