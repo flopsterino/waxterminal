@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache,
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom } from './tx.js';
-import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap, columns } from './charts.js';
+import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap, columns, sparkline } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
@@ -1475,8 +1475,19 @@ async function renderActivity() {
 async function openToken(id) {
   const rows = tokRows || tokenTable();
   const t = rows.find(x => x.id === id);
-  if (!t) return;
   show('token', encodeURIComponent(id));
+  // A shared link can name a token this terminal has never seen — one whose
+  // pools all emptied, or one that never had any. Landing on a silently blank
+  // page is worse than being told which token was asked for and why it is not
+  // here, so say it rather than returning into nothing.
+  if (!t) {
+    const [sym, contract] = id.split('@');
+    $('#tokenDetail').innerHTML = `<div class="card"><h3>${esc(sym || id)}</h3>
+      <p class="sub" style="margin:8px 0 0">Nothing on ${esc(contract || 'that contract')} holds liquidity on Alcor, TacoSwap, Defibox or A-DEX right now,
+      so there is no price, no depth and no trade history to show. A token appears here as soon as one pool holds it.</p>
+      <p class="sub" style="margin:8px 0 0"><a href="https://waxblock.io/tokens/${esc(contract || '')}/${esc(sym || '')}" target="_blank" rel="noopener">Look it up on waxblock &nearr;</a></p></div>`;
+    return;
+  }
 
   const d = state.depth.get(id);
   const meta = tokenMeta(id);
@@ -1484,7 +1495,13 @@ async function openToken(id) {
     .sort((a, b) => (b.tvl || 0) - (a.tvl || 0));
   // Trades are read back out of Alcor's pool table, which is the only venue
   // whose history a browser can replay without an indexer.
-  const alcorPools = pools.filter(p => p.dex === 'alcor' && p.sqrtX64);
+  //
+  // Ordered by volume, not by size. CHEESE's largest pool by pooled value is
+  // CHEESE/WAXWBTC, where nothing trades; its price and its trades both live in
+  // CHEESE/WAXCASH. A chart drawn on the biggest pool is a chart of a pool, not
+  // of the token.
+  const alcorPools = pools.filter(p => p.dex === 'alcor' && p.sqrtX64)
+    .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvl || 0) - (a.tvl || 0));
   const deepest = alcorPools[0] || null;
   const farms = farmGroups().filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
@@ -1567,7 +1584,11 @@ async function openToken(id) {
         <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
       </div>
-    </div>` : ''}
+    </div>` : `<div class="section"><h3>Trading</h3>
+      <div class="card"><p class="sub" style="margin:0">${esc(t.symbol)} has no Alcor pool, so there is no price chart and no trade history here.
+      Trades are reconstructed from Alcor's own pool table, which is the only venue whose past a browser can replay without an indexer;
+      ${venues.map(esc).join(' and ')} publish${venues.length === 1 ? 'es' : ''} the current state but not the path it took.</p></div>
+    </div>`}
 
     <div class="section"><h3>Ownership</h3>
       <div class="grid g2">
@@ -1609,23 +1630,32 @@ async function openToken(id) {
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
 
   // ---- where it trades -----------------------------------------------------
-  // Two pools on the same pair are common on Alcor — they differ by fee tier,
-  // and a list that shows the pair alone prints the same row twice.
-  $('#tokPools').appendChild(bars(pools.slice(0, 8).map(p => ({
-    label: `${p.symA}/${p.symB}`, value: p.tvl || 0,
-    note: `${p.dex} &middot; ${(p.feeBps / 100).toFixed(2)}% fee &middot; ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no recorded volume'}`,
-  })), { fmt: usd }));
+  // A table rather than bars: two pools on the same pair are common on Alcor and
+  // differ only by fee tier, so a bar labelled with the pair alone draws the
+  // same row twice — and neither of them is clickable.
+  $('#tokPools').innerHTML = `<div class="tablewrap" style="max-height:320px;border:0"><table style="font-size:12.5px">
+    <thead><tr><th>Pool</th><th>Venue</th><th class="r">Fee</th><th class="r">Pooled</th><th class="r">24h</th></tr></thead>
+    <tbody>${pools.slice(0, cap('pools')).map(p => `
+      <tr data-pool="${esc(p.dex)}:${esc(String(p.id))}" style="cursor:pointer">
+        <td>${esc(p.symA)}/${esc(p.symB)}</td>
+        <td class="dim">${esc(p.dex)}</td>
+        <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
+        <td class="r num">${usd(p.tvl)}</td>
+        <td class="r num ${p.vol24 > 0 ? '' : 'dim'}">${p.vol24 > 0 ? usd(p.vol24) : '—'}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+  $('#tokPools').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 
   if (farms.length) {
     $('#tokFarms').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-      <thead><tr><th>Pool</th><th>Pays</th><th class="r">Per day</th><th class="r">Staked</th><th class="r">APR</th><th class="r">Runway</th></tr></thead>
+      <thead><tr><th>Pool</th><th>Pays</th><th class="r">Per day</th><th class="r">Staked</th><th class="r">APR</th><th>Trend</th><th class="r">Runway</th></tr></thead>
       <tbody>${farms.slice(0, cap('farms')).sort((a, b) => (b.rewardRealDay || 0) - (a.rewardRealDay || 0)).map(g => `
         <tr data-fpool="${esc(g.key)}" style="cursor:pointer">
           <td>${g.pool ? `${esc(g.pool.symA)}/${esc(g.pool.symB)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
-          <td>${g.rewards.map(r => esc(r.symbol)).slice(0, 4).join(', ')}</td>
+          <td>${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 4).map(esc).join(', ')}</td>
           <td class="r num">${usd(g.rewardRealDay)}</td>
           <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
           <td class="r num">${g.aprReal != null ? pct(g.aprReal) : '<span class="dim">—</span>'}</td>
+          <td data-apr="${esc(g.key)}"><span class="dim">…</span></td>
           <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>`;
     $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.fpool));
@@ -1763,8 +1793,11 @@ async function openToken(id) {
       // far smaller error than double-counting every route.
       const byBlock = new Map();
       for (const l of legs) {
-        if (!byBlock.has(l.block)) byBlock.set(l.block, []);
-        byBlock.get(l.block).push(l);
+        // A missing block number must not collapse every leg into one row, so
+        // it falls back to a key that is unique per leg instead.
+        const key = l.block ?? `t${l.ts}:${l.pool.id}`;
+        if (!byBlock.has(key)) byBlock.set(key, []);
+        byBlock.get(key).push(l);
       }
       const all = [...byBlock.values()].map(g => {
         const biggest = g.reduce((m, l) => (l.amount > m.amount ? l : m), g[0]);
@@ -1809,11 +1842,17 @@ async function openToken(id) {
         const moved = win.reduce((a, s) => a + (s.usd || 0), 0);
         const biggest = win.reduce((m, s) => (s.usd || 0) > (m?.usd || 0) ? s : m, null);
         const note = $('#tokVolNote');
+        // Which pools were read is part of the number. Replaying all 74 of a
+        // token's pools would be 74 sets of history calls from the reader's own
+        // connection, so the busiest ones are replayed and the rest is said out
+        // loud rather than folded into a total that looks complete.
+        const scope = `${use.length} of ${alcorPools.length} Alcor pool${alcorPools.length === 1 ? '' : 's'}`
+          + (alcorPools.length > use.length ? ' &mdash; the busiest' : '');
         if (note) note.innerHTML = win.length
-          ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} across ${use.length} Alcor pool${use.length === 1 ? '' : 's'}`
+          ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} across ${scope}`
             + (biggest?.usd ? `, the largest ${usd(biggest.usd)}` : '')
             + `. ${oldest > since ? `The history node only reaches back to ${ago(new Date(oldest).toISOString())}, so anything older is missing rather than absent.` : 'The window is fully covered.'}`
-          : `Nothing traded here in that window. Read back to ${ago(new Date(oldest).toISOString())}.`;
+          : `Nothing traded in ${scope} in that window. Read back to ${ago(new Date(oldest).toISOString())}.`;
       };
 
       drawVol(24);
@@ -1827,7 +1866,10 @@ async function openToken(id) {
       const v24 = all.filter(s => s.ts >= Date.now() - 86400000).reduce((a, s) => a + (s.usd || 0), 0);
       if (!(t.vol24 > 0) && v24 > 0) {
         const e = $('#tokVol'); if (e) e.textContent = usd(v24);
-        const s = $('#tokVolSub'); if (s) s.textContent = 'on Alcor, measured just now';
+        const s = $('#tokVolSub');
+        if (s) s.textContent = alcorPools.length > use.length
+          ? `measured now, on Alcor's ${use.length} busiest pools`
+          : 'measured now, on Alcor';
       }
 
       const tape = $('#tokTape');
@@ -1949,7 +1991,31 @@ async function openToken(id) {
   }).catch(() => { const b = $('#tokLps'); if (b) b.innerHTML = '<div class="chart-empty">Positions unavailable.</div>'; });
 
   // ---- the long record -----------------------------------------------------
-  loadHistory().then(hist => {
+  // One read: the token's own series and the APR trend on each of its farms are
+  // two questions of the same file.
+  const histP = loadHistory();
+
+  histP.then(hist => {
+    if (!farms.length) return;
+    // farms rows: [key, rewardUsdDay, stakedUsd, apr, rewardRealDay, stakedReal, aprReal]
+    const trend = new Map();
+    for (const r of hist) {
+      for (const f of (r.farms || [])) {
+        if (!trend.has(f[0])) trend.set(f[0], []);
+        trend.get(f[0]).push({ at: r.at, apr: f[6] ?? f[3] ?? null });
+      }
+    }
+    document.querySelectorAll('td[data-apr]').forEach(td => {
+      const pts = perDay(trend.get(td.dataset.apr) || [], r => r.at).map(r => r.apr);
+      td.innerHTML = '';
+      td.appendChild(sparkline(pts, { color: 'var(--c3)' }));
+      td.title = pts.length >= 3
+        ? `${pts.length} days recorded, ${pts.at(-1)?.toFixed(1)}% now against ${pts[0]?.toFixed(1)}% at the start`
+        : 'A trend needs three days recorded; the snapshot job has not reached that yet';
+    });
+  }).catch(() => {});
+
+  histP.then(hist => {
     const box = $('#tokHist'); if (!box) return;
     const series = perDay(tokenSeries(hist, id), r => r.at);
     if (series.length < 3) {

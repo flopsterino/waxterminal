@@ -207,6 +207,30 @@ export function donut(items, { size = 150, thickness = 22, top = 5, fmt = v => v
 // ------------------------------------------------------------------ bars ----
 // Ranked comparison. One measure, so one colour: hue here would encode nothing.
 // Data-ends are rounded and anchored to the baseline.
+// ------------------------------------------------------------- sparkline ----
+// A shape, in a table cell. No axes and no labels on purpose: the number beside
+// it is the value, and all this has to answer is whether that number has been
+// climbing, falling or sitting still. Two points are not a trend, so it draws
+// nothing until there are three.
+export function sparkline(values, { width = 74, height = 20, color = 'var(--c1)' } = {}) {
+  const wrap = document.createElement('span');
+  const ys = values.filter(Number.isFinite);
+  if (ys.length < 3) { wrap.className = 'dim'; wrap.textContent = '—'; return wrap; }
+  const lo = Math.min(...ys), hi = Math.max(...ys);
+  const span = (hi - lo) || Math.abs(hi) || 1;
+  const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'trend' });
+  svg.style.cssText = `width:${width}px;height:${height}px;display:inline-block;vertical-align:middle;overflow:visible`;
+  const X = i => (i / (ys.length - 1)) * width;
+  const Y = v => height - 2 - ((v - lo) / span) * (height - 4);
+  svg.appendChild(el('path', {
+    d: ys.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(''),
+    fill: 'none', stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+  }));
+  svg.appendChild(el('circle', { cx: X(ys.length - 1), cy: Y(ys.at(-1)), r: 2, fill: color }));
+  wrap.appendChild(svg);
+  return wrap;
+}
+
 export function bars(items, { fmt = v => v, color = 'var(--c1)', max = null } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'bars';
