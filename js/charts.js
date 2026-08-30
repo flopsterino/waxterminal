@@ -244,6 +244,13 @@ export function bars(items, { fmt = v => v, color = 'var(--c1)', max = null } = 
       <span class="vl mono">${fmt(it.value)}</span>`;
     row.addEventListener('pointermove', e => showTip(`<b>${it.label}</b><span>${fmt(it.value)}${it.note ? ' · ' + it.note : ''}</span>`, e.clientX, e.clientY));
     row.addEventListener('pointerleave', hideTip);
+    // A ranked list of tokens and pools is a list of things to go and look at.
+    // These rows were inert, so clicking the biggest token on the front page
+    // did nothing at all and looked like a page that had failed to load.
+    if (typeof it.go === 'function') {
+      row.classList.add('clickable');
+      row.addEventListener('click', () => { hideTip(); it.go(); });
+    }
     wrap.appendChild(row);
   }
   return wrap;

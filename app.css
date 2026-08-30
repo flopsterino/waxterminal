@@ -473,3 +473,9 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 
 /* An export button sits in a toolbar of chips, so it must not shout. */
 .btn.csv { font-size: 12px; padding: 5px 10px; }
+
+/* A ranked row you can open. Without this the only sign a bar is clickable is
+   that it happens to react, which nobody discovers. */
+.bars .bar.clickable { cursor: pointer; border-radius: 6px; margin: -3px -6px; padding: 3px 6px; }
+.bars .bar.clickable:hover { background: var(--surface-2); }
+.bars .bar.clickable:hover .lb { color: var(--ink); }

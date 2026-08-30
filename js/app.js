@@ -340,7 +340,8 @@ function renderOverview() {
     bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
       label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
       value: g.aprAt,
-      note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}`,
+      note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', ')}`,
+      go: () => openPool(g.key),
     })), { fmt: v => v.toFixed(0) + '%', color: 'var(--c3)' }));
     const n = document.createElement('p');
     n.className = 'sub'; n.style.marginTop = '10px';
@@ -353,16 +354,17 @@ function renderOverview() {
   $('#ovTop').appendChild(bars(top.map(p => {
     const c = state.depth.get(p.tokenA)?.topPartner, d2 = state.depth.get(p.tokenB)?.topPartner;
     return { label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0,
-      note: `${(p.feeBps / 100).toFixed(2)}% fee · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}` };
+      note: `${(p.feeBps / 100).toFixed(2)}% fee · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}`,
+      go: () => openPool(`${p.dex}:${p.id}`) };
   }), { fmt: usd }));
 
   const toks = tokenTable().filter(t => t.depth1 >= 5);
   const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
   const byTvl = [...toks].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
   $('#ovTokVol').appendChild(byVol.length
-    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools · ${usd(t.depth1)} tradeable` })), { fmt: usd, color: 'var(--c2)' })
+    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools · ${usd(t.depth1)} tradeable`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c2)' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Volume arrives with the next daily snapshot.' }));
-  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%` })), { fmt: usd, color: 'var(--c1)' }));
+  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c1)' }));
 
   const byDex = new Map();
   const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
@@ -381,6 +383,7 @@ function renderOverview() {
         label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
         value: g.rewardRealDay,
         note: `${usd(g.rewardUsdDay)} at face value · ${g.tokenCount} token${g.tokenCount === 1 ? '' : 's'}`,
+        go: () => openPool(g.key),
       })), { fmt: usd, color: 'var(--c2)' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm pays a reward with real liquidity behind it.' }));
   if (runaway) {
