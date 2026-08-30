@@ -80,6 +80,33 @@ const $ = s => document.querySelector(s);
 
 let CFG = null;
 
+// theme.json promised three things it did not deliver: a tagline, footer links
+// and per-surface feature flags. A config key that nothing reads is worse than
+// no key — the partner rebranding this sets it, sees nothing change, and stops
+// trusting the rest of the file.
+function applyTheme(cfg) {
+  const tag = $('#ovTagline');
+  if (tag && cfg.identity?.tagline) tag.textContent = cfg.identity.tagline;
+
+  const links = $('#brandLinks');
+  if (links && Array.isArray(cfg.links) && cfg.links.length) {
+    links.innerHTML = cfg.links
+      .filter(l => l?.href && l?.label && /^https?:\/\//.test(l.href))
+      .map(l => `<a href="${esc(l.href)}" target="_blank" rel="noopener">${esc(l.label)}</a>`)
+      .join(' &middot; ');
+  }
+
+  // A hidden surface has to be unreachable, not merely untabbed: the hash
+  // router would happily open a view whose tab was removed.
+  const off = Object.entries(cfg.features || {}).filter(([, on]) => on === false).map(([k]) => k);
+  for (const view of off) {
+    document.querySelector(`#tabs button[data-view="${view}"]`)?.remove();
+    document.getElementById(`view-${view}`)?.remove();
+  }
+  hiddenViews = new Set(off);
+}
+let hiddenViews = new Set();
+
 // ----------------------------------------------------------------- boot -----
 async function boot() {
   try {
@@ -88,6 +115,7 @@ async function boot() {
     $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
     if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
     document.title = CFG.identity?.name ?? 'WAX Terminal';
+    applyTheme(CFG);
   } catch { CFG = { content: {}, features: {} }; }
 
   const saved = localStorage.getItem('waxterm-theme');
@@ -236,6 +264,8 @@ function redrawCurrent() {
 }
 
 function show(v, arg = null) {
+  // A view the partner turned off is not a view.
+  if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
   if (v !== 'pool' && v !== 'token') lastView = v;
   hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
@@ -2355,6 +2385,12 @@ async function openToken(id) {
     h.total = h.balance + (h.lp || 0);
   }));
   top.sort((a, b) => b.total - a.total);
+  // Share of supply is computed on the wallet balance alone, never on balance
+  // plus LP. A token sitting in a pool is already inside swap.alcor's balance,
+  // so adding a provider's share of it on top counts the same coins twice —
+  // which is how "these 14 hold 100.1% of supply" reached the page. Ranking
+  // still uses the total, because what an account controls is the better
+  // order; only the arithmetic has to stay on one side of the line.
   const share = b => supply > 0 ? (b / supply * 100) : null;
   $('#tokHolders').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
     <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
@@ -2363,13 +2399,13 @@ async function openToken(id) {
       <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
       <td class="r num">${qty(h.balance)}</td>
       <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
-      <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
+      <td class="r num ${share(h.balance) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `These ${top.length} hold ${(top.reduce((a, h) => a + h.total, 0) / supply * 100).toFixed(1)}% of supply between them${holderTotal ? `, out of ${holderTotal.toLocaleString()} accounts holding any` : ''}. ` : ''}Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
+    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `These ${top.length} hold ${(top.reduce((a, h) => a + h.balance, 0) / supply * 100).toFixed(1)}% of supply between them${holderTotal ? `, out of ${holderTotal.toLocaleString()} accounts holding any` : ''}. The share column counts wallet balances only &mdash; what sits in a pool is already inside that DEX&rsquo;s own row, so adding it again would count the same coins twice. ` : ''}Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
 
   if (supply > 0) {
     const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
-    const slices = top.filter(h => !h.contractRole).slice(0, 5).map(h => ({ label: h.account, value: h.total }));
+    const slices = top.filter(h => !h.contractRole).slice(0, 5).map(h => ({ label: h.account, value: h.balance }));
     const named = slices.reduce((a, x) => a + x.value, 0);
     if (inContracts > 0) slices.unshift({ label: 'held by contracts', value: inContracts });
     const rest = supply - named - inContracts;
@@ -2380,7 +2416,10 @@ async function openToken(id) {
 
   try {
     const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });
-    const nodes = top.map(h => ({ id: h.account, value: h.total, contract: !!h.contractRole, share: supply > 0 ? h.total / supply : null }));
+    // Wallet balances, for the same reason the share column uses them: pooled
+    // tokens live in the DEX's own balance, and a bubble sized by balance+LP
+    // next to a DEX bubble sized by balance draws the same coins twice.
+    const nodes = top.map(h => ({ id: h.account, value: h.balance, contract: !!h.contractRole, share: supply > 0 ? h.balance / supply : null }));
     const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
     const box = $('#tokBubbles');
     box.innerHTML = '';
