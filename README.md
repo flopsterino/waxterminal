@@ -44,7 +44,7 @@ Two files. Nothing else needs touching.
 - **My liquidity** — every position a wallet holds across both DEXes, in range or not, with uncollected fees.
 - **Compound** — the full harvest for each position and the exact transaction that redeposits it.
 - **Overview** — the dashboard: where liquidity sits, who pays the most, where APRs actually fall, WAX candles, and the multi-year TVL series.
-- **Activity** — the live swap feed: who traded what, through which pool, for how much.
+- **Activity** — the live swap feed across all four venues: who traded what, through which pool, for how much, and the multi-hop routes those swaps add up to.
 - **Token** — one page per token: price, supply, what is burned and what can still be minted, the transfer tax and whether a DEX actually pays it, every holder with what they hold inside pools, a bubble map of who moves it to whom, the liquidity providers, every pool it trades in, the farms touching it, transfer traffic, and its whole trade history.
 
 Charts are hand-drawn SVG for categorical work (donut, bars, distribution) and
@@ -237,7 +237,8 @@ exact action that created them.
 
 ## Not built yet
 
-- Alerts and CSV export.
+- Alerts. CSV export is on pools, tokens, farms, a token's trade tape and the
+  activity feed's routes and raw swaps.
 - Per-token history starts the day the snapshot job first records it. The chart
   says so rather than drawing two points across a year of axis.
 

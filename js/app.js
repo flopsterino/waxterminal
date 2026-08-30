@@ -72,6 +72,7 @@ const swapUrl = p => p.dex === 'alcor'
   : venueUrl[p.dex]?.(p) || '#';
 const farmUrl = p => p.dex === 'alcor' ? 'https://wax.alcor.exchange/positions' : 'https://swap.tacocrypto.io/farms';
 
+const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
 const $ = s => document.querySelector(s);
@@ -367,7 +368,6 @@ function renderOverview() {
   $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c1)' }));
 
   const byDex = new Map();
-  const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
   for (const p of pools) { const n = venueName[p.dex] || p.dex; byDex.set(n, (byDex.get(n) || 0) + (p.tvlReal || 0)); }
   $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
 
@@ -1483,7 +1483,7 @@ async function renderActivity() {
 
   // Past the history node's ceiling the summed feed understates badly, so the
   // headline falls back to the venue's own aggregate and says so.
-  const alcor24 = actWindow >= 1440
+  const venueTotal24 = actWindow >= 1440
     ? state.pools.reduce((a, p) => a + (p.vol24 || 0), 0) || null
     : null;
   const priced = swaps.filter(s => s.volumeUsd != null);
@@ -1503,6 +1503,15 @@ async function renderActivity() {
     t.usd += s.volumeReal ?? 0; t.n++;
     traders.set(s.trader, t);
   }
+  // Which venues the window actually reached. Alcor is most of WAX, but a feed
+  // that says "every trade" while reading one venue is not a feed of every
+  // trade — and the cross-venue routes are the interesting ones, since they
+  // only exist because two venues disagreed on a price.
+  const byVenue = new Map();
+  for (const x of swaps) { const d = x.pool?.dex || 'unknown'; byVenue.set(d, (byVenue.get(d) || 0) + 1); }
+  const venueLine = [...byVenue].sort((a, b) => b[1] - a[1])
+    .map(([d, n]) => `${n.toLocaleString()} on ${venueName[d] || d}`).join(' · ');
+
   const routes = tradeRoutes(swaps).sort((a, b) => b.n - a.n);
   const cycles = routes.filter(r => r.cycle);
   const multi = routes.filter(r => r.hops > 1);
@@ -1515,10 +1524,10 @@ async function renderActivity() {
           : '');
 
   out.innerHTML = `<div class="stats">
-      <div class="stat"><span class="v">${swaps.truncated && alcor24 ? usd(alcor24) : usd(vol)}</span><span class="k">volume, last ${actWindow >= 60 ? (actWindow / 60) + 'h' : actWindow + ' min'}</span><span class="sub">${
-        swaps.truncated && alcor24 ? "Alcor's own 24h figure" : swaps.truncated ? 'from a partial window' : usd(volNominal) + ' at face value'}</span></div>
+      <div class="stat"><span class="v">${swaps.truncated && venueTotal24 ? usd(venueTotal24) : usd(vol)}</span><span class="k">volume, last ${actWindow >= 60 ? (actWindow / 60) + 'h' : actWindow + ' min'}</span><span class="sub">${
+        swaps.truncated && venueTotal24 ? "each venue's own 24h figure" : swaps.truncated ? 'from a partial window' : usd(volNominal) + ' at face value'}</span></div>
       <div class="stat"><span class="v">${swaps.length.toLocaleString()}</span><span class="k">swaps</span><span class="sub">${(swaps.length / actWindow).toFixed(0)} per minute</span></div>
-      <div class="stat"><span class="v">${byPool.size}</span><span class="k">pools touched</span></div>
+      <div class="stat"><span class="v">${byPool.size}</span><span class="k">pools touched</span><span class="sub">${venueLine}</span></div>
       <div class="stat"><span class="v">${traders.size}</span><span class="k">unique traders</span></div>
       <div class="stat"><span class="v">${routes.length.toLocaleString()}</span><span class="k">distinct routes</span><span class="sub">${cycles.length} of them arbitrage cycles</span></div>
     </div>
@@ -1529,6 +1538,7 @@ async function renderActivity() {
     <div class="card" style="margin-bottom:12px">
       <h3>Routes traded <span class="dim">&mdash; swaps sharing a transaction are one trade, in order</span></h3>
       <p class="note">${multi.length.toLocaleString()} of these took more than one hop${cycles.length ? `, and ${cycles.length.toLocaleString()} ended in the token they started from &mdash; an arbitrage cycle rather than somebody swapping` : ''}.</p>
+      <div id="actRouteCsv" style="margin-bottom:8px"></div>
       <div class="tablewrap"><table><thead><tr>
         <th>Route</th><th class="r">Hops</th><th class="r">Times</th><th class="r">Value in</th><th>Traded by</th><th class="r">Last</th>
       </tr></thead><tbody>${routes.slice(0, cap('routes')).map(r => `
@@ -1546,22 +1556,48 @@ async function renderActivity() {
     </tr></thead><tbody>${swaps.slice(0, cap('swaps')).map(s => {
       const inA = s.amountA > 0;
       return `<tr><td class="num dim">${ago(s.ts)}</td>
-        <td>${s.pool ? `<span class="pair">${pairName(s.pool)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
+        <td${s.pool ? ` class="clickable" data-pool="${esc(s.pool.dex)}:${esc(String(s.pool.id))}"` : ''}>${s.pool ? `<span class="pair">${pairName(s.pool)}</span> <span class="venue ${esc(s.pool.dex)}">${esc(venueName[s.pool.dex] || s.pool.dex)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
         <td class="mono">${esc(s.trader)}</td>
         <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${esc(inA ? s.symA : s.symB)}</span></td>
         <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${esc(inA ? s.symB : s.symA)}</span></td>
         <td class="r num">${usd(s.volumeReal ?? s.volumeUsd)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 
+  out.querySelectorAll('td[data-pool]').forEach(td => td.onclick = () => openPool(td.dataset.pool));
+
+  // Both shapes of the same window: the routes as reconstructed, and the raw
+  // swaps they were built from, so a reader can check the reconstruction rather
+  // than take it on trust.
+  $('#actRouteCsv')?.append(
+    csvButton(`Export ${routes.length.toLocaleString()} routes`, 'wax-routes', () => routes, [
+      { h: 'route', v: r => r.path.join(' > ') },
+      { h: 'hops', v: r => r.hops },
+      { h: 'pools', v: r => r.pools.join(' ') },
+      { h: 'arbitrage_cycle', v: r => (r.cycle ? 'yes' : 'no') },
+      { h: 'times', v: r => r.n },
+      { h: 'value_in_usd', v: r => (r.priced ? r.usd : null) },
+      { h: 'traders', v: r => r.top.length },
+      { h: 'top_trader', v: r => r.top[0]?.[0] },
+      { h: 'last_seen', v: r => r.last },
+      { h: 'sample_trx', v: r => r.sample },
+    ]),
+    csvButton(`Export ${swaps.length.toLocaleString()} swaps`, 'wax-swaps', () => swaps, [
+      { h: 'time', v: x => x.ts },
+      { h: 'venue', v: x => x.pool?.dex },
+      { h: 'pool_id', v: x => x.poolId },
+      { h: 'pair', v: x => (x.pool ? `${x.pool.symA}/${x.pool.symB}` : '') },
+      { h: 'trader', v: x => x.trader },
+      { h: 'amount_a', v: x => x.amountA }, { h: 'symbol_a', v: x => x.symA },
+      { h: 'amount_b', v: x => x.amountB }, { h: 'symbol_b', v: x => x.symB },
+      { h: 'value_realisable_usd', v: x => x.volumeReal },
+      { h: 'value_face_usd', v: x => x.volumeUsd },
+      { h: 'trx', v: x => x.trx },
+    ]));
   $('#actDonut').appendChild(donut([...byPool].map(([label, value]) => ({ label, value })), { fmt: usd }));
   $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
     .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
 }
 
-// --------------------------------------------------------- TOKEN DETAIL -----
-// Everything about one token in one place: what it is worth, how much exists,
-// how much is gone, where it trades, who owns it and which of those owners are
-// connected. The pieces were scattered across three views and a tooltip.
 // ---------------------------------------------------------- TOKEN DETAIL ----
 // Everything the chain will say about one token, on one page.
 //

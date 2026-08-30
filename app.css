@@ -365,6 +365,8 @@ td.rank { color: var(--muted); font-family: var(--font-data); font-size: 11px; w
 }
 .venue.alcor { color: var(--info); border-color: color-mix(in oklch, var(--info) 45%, transparent); }
 .venue.taco  { color: var(--c4);  border-color: color-mix(in oklch, var(--c4) 45%, transparent); }
+.venue.defibox { color: var(--c5); border-color: color-mix(in oklch, var(--c5) 45%, transparent); }
+.venue.adex  { color: var(--c6);  border-color: color-mix(in oklch, var(--c6) 45%, transparent); }
 #farmTable .apr { font-size: 15px; }
 .rew.more { padding: 2px 8px; color: var(--muted); }
 .rew b { font-weight: 600; color: var(--ink); }

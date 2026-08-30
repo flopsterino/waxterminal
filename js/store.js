@@ -791,12 +791,83 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
       dir: ta.amount > 0 ? 'buyB' : 'buyA',
     });
   }
+  // The other three venues publish their own swap log, and those are small
+  // enough to read whole: an hour of WAX is thousands of Alcor swaps against a
+  // few hundred on TacoSwap and a couple of dozen on Defibox. Leaving them out
+  // made "every trade on WAX" mean "every trade on Alcor", and hid the routes
+  // that cross from one venue to another — which are exactly the interesting
+  // ones, since they only exist because the two disagreed on a price.
+  const others = await otherVenueSwaps(after, byId).catch(() => []);
+  out.push(...others);
+  out.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+
   out.windowMinutes = minutes;
   out.truncated = truncated;
   out.capped = capped;
   out.repeats = repeats;
-  out.reportedTotal = first.total?.value ?? out.length;
+  out.reportedTotal = (first.total?.value ?? out.length) + others.length;
+  out.venueCounts = { alcor: out.length - others.length, other: others.length };
   return out;
+}
+
+// Where each venue logs a swap, and how to read one. The shapes differ enough
+// that a single parser would be mostly branches: Taco names the trader `maker`
+// and the others `owner`, A-DEX wraps its amounts in {quantity, contract}, and
+// only Alcor emits signed deltas rather than an in/out pair.
+const SWAP_LOGS = [
+  { dex: 'taco', account: TACO, action: 'exchangelog', pool: x => x.id, who: x => x.maker, in: x => x.quantity_in, out: x => x.quantity_out },
+  { dex: 'defibox', account: BOX, action: 'swaplog', pool: x => x.pair_id, who: x => x.owner, in: x => x.quantity_in, out: x => x.quantity_out },
+  { dex: 'adex', account: ADEX, action: 'swaplog', pool: x => x.pool_id, who: x => x.owner, in: x => x.quantity_in?.quantity, out: x => x.quantity_out?.quantity },
+];
+
+async function otherVenueSwaps(after, byId) {
+  const sets = await Promise.all(SWAP_LOGS.map(async src => {
+    const rows = [];
+    for (let page = 0; page < 3; page++) {
+      let d;
+      try {
+        d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
+          'act.account': src.account, 'act.name': src.action, after,
+          limit: '1000', skip: String(page * 1000), sort: 'desc',
+        })}`);
+      } catch { break; }
+      const got = d.actions || [];
+      rows.push(...got);
+      if (got.length < 1000) break;
+    }
+    const out = [];
+    const seen = new Set();
+    for (const a of rows) {
+      const gs = a.global_sequence ?? a.receipts?.[0]?.global_sequence;
+      if (gs != null) { if (seen.has(gs)) continue; seen.add(gs); }
+      const x = a.act.data;
+      const pool = byId.get(`${src.dex}:${src.pool(x)}`);
+      if (!pool) continue;
+      const qi = src.in(x), qo = src.out(x);
+      if (!qi || !qo) continue;
+      const ai = parseAsset(qi), ao = parseAsset(qo);
+      // Signed the way Alcor signs it: what the pool gained is positive.
+      const inIsA = ai.symbol === pool.symA;
+      const amountA = inIsA ? ai.amount : -ao.amount;
+      const amountB = inIsA ? -ao.amount : ai.amount;
+      const dA = state.depth.get(pool.tokenA), dB = state.depth.get(pool.tokenB);
+      const usdA = pool.priceUsdA != null ? Math.abs(amountA) * pool.priceUsdA : null;
+      const usdB = pool.priceUsdB != null ? Math.abs(amountB) * pool.priceUsdB : null;
+      const preferA = (dA?.exit ?? 0) >= (dB?.exit ?? 0);
+      const nominal = preferA ? (usdA ?? usdB) : (usdB ?? usdA);
+      const ratio = Math.max(dA?.ratio ?? 0, dB?.ratio ?? 0);
+      out.push({
+        ts: a.timestamp, trx: a.trx_id, seq: Number(gs) || 0, pool, poolId: String(src.pool(x)),
+        trader: src.who(x), symA: pool.symA, symB: pool.symB,
+        amountA, amountB,
+        volumeUsd: nominal ?? null,
+        volumeReal: nominal != null ? nominal * ratio : null,
+        dir: amountA > 0 ? 'buyB' : 'buyA',
+      });
+    }
+    return out;
+  }));
+  return sets.flat();
 }
 
 // A multi-hop trade is one intent, not several. Swaps that share a transaction
