@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -15,6 +15,7 @@ import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
+import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
 import { balanceOf } from './chain.js';
 import { csvButton } from './csv.js';
@@ -241,10 +242,7 @@ async function boot() {
   $('#tabs').addEventListener('click', e => {
     const b = e.target.closest('button[data-view]'); if (!b) return;
     show(b.dataset.view);
-    if (b.dataset.view === 'wallet' && wallet.account() && !$('#walletInput').value.trim()) {
-      $('#walletInput').value = wallet.account();
-      lookupWallet(wallet.account());
-    }
+    if (b.dataset.view === 'wallet') autoWallet();
   });
   const paintUnit = () => {
     const b = $('#unitToggle');
@@ -408,9 +406,7 @@ function routeFromHash() {
   if (view === 'pool' && arg) { openPool(decodeURIComponent(arg)); return true; }
   if (view === 'token' && arg) { openToken(decodeURIComponent(arg)); return true; }
   if (view === 'account' && arg) { openAccount(decodeURIComponent(arg)); return true; }
-  if (view === 'wallet' && !arg && wallet.account()) {
-    show('wallet'); $('#walletInput').value = wallet.account(); lookupWallet(wallet.account()); return true;
-  }
+  if (view === 'wallet' && !arg && wallet.account()) { show('wallet'); autoWallet(); return true; }
   if (view === 'wallet' && arg) {
     const acct = decodeURIComponent(arg);
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
@@ -1463,13 +1459,19 @@ async function computeVisibleApr() {
 function wireWallet() {
   // Connected already means the question has an answer, so asking it again is
   // a form standing between someone and their own wallet.
-  const auto = () => {
+  // Connected already means the question has an answer, so asking it again is a
+  // form standing between someone and their own wallet. The search box stays —
+  // looking at another account is a real thing to want — it just is not the
+  // toll gate.
+  //
+  // The first version gated on the input being empty, which never happened:
+  // restoring a session pre-fills it with your own name, so the field showed
+  // the account and then refused to look it up. Gate on what has actually been
+  // rendered instead.
+  wallet.onSession(() => {
     const a = wallet.account();
-    if (!a || $('#walletInput').value.trim()) return;
-    $('#walletInput').value = a;
-    lookupWallet(a);
-  };
-  wallet.onSession(() => { if (lastView === 'wallet') auto(); });
+    if (a && lastView === 'wallet') autoWallet();
+  });
   $('#walletGo').onclick = () => lookupWallet($('#walletInput').value.trim());
   $('#walletInput').onkeydown = e => { if (e.key === 'Enter') lookupWallet(e.target.value.trim()); };
   // No demo button. It held a stranger's account name, and pointing thousands
@@ -1627,6 +1629,50 @@ async function renderWalletResources(account) {
       } catch (e) { box.innerHTML = txError(e); }
     };
   };
+
+  // ---- open orders ---------------------------------------------------------
+  // The order-book tables are scoped per market with no owner index, so this
+  // asks only about the markets whose token this account actually holds. A
+  // sweep of all 970 would be 970 reads to find, usually, none.
+  (async () => {
+    const box = $('#walletOrders');
+    if (!box) return;
+    try {
+      const [all, info] = await Promise.all([obMarkets(), accountInfo(account)]);
+      const held = new Set(info.balances.map(b => b.id));
+      const mine = all.filter(m => held.has(m.quote.id) || held.has(m.base.id)).slice(0, 60);
+      const orders = await ordersOf(account, mine.map(m => m.id));
+      if (!orders.length) { box.innerHTML = ''; return; }
+      const byId = new Map(all.map(m => [m.id, m]));
+      box.innerHTML = `<div class="section"><h3>Open orders <span class="dim">&mdash; resting on Alcor's book until filled or cancelled</span></h3>
+        <div class="card"><div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+          <thead><tr><th></th><th>Market</th><th class="r">Price</th><th class="r">Size</th><th class="r">Placed</th><th></th></tr></thead>
+          <tbody>${orders.map(o => {
+            const m = byId.get(o.marketId);
+            return `<tr>
+              <td class="${o.side === 'buy' ? 'pos' : 'neg'}">${o.side}</td>
+              <td>${m ? esc(m.quote.symbol) + '/' + esc(m.base.symbol) : '#' + o.marketId}</td>
+              <td class="r num">${qty(o.price)}</td>
+              <td class="r num">${qty(o.quote)}${m ? ' <span class="sub">' + esc(m.quote.symbol) + '</span>' : ''}</td>
+              <td class="r num dim">${ago(new Date(o.at).toISOString())}</td>
+              <td class="r"><button class="chip" data-cancel="${o.marketId}|${o.id}|${o.side}">cancel</button></td>
+            </tr>`;
+          }).join('')}</tbody></table></div>
+          <div id="obCancelOut" style="margin-top:10px"></div>
+          <p class="sub" style="margin:10px 0 0">${orders.length} open. What you sent is held by the book until the order fills or you cancel it, and cancelling returns it.</p>
+        </div></div>`;
+      box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+        const [marketId, orderId, side] = b.dataset.cancel.split('|');
+        const out2 = $('#obCancelOut');
+        out2.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+        try {
+          const tx = await wallet.transact(buildCancelOrder({ marketId, orderId, side, me: account }).actions);
+          out2.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Cancelled.</b> What you sent is back in your wallet.
+            <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+        } catch (e) { out2.innerHTML = txError(e); }
+      });
+    } catch { box.innerHTML = ''; }
+  })();
 
   // ---- voting --------------------------------------------------------------
   const va = $('#voteAuto');
@@ -1851,8 +1897,21 @@ function reviewSend(account, rows) {
   };
 }
 
+// Which account the wallet view is currently showing, so entering it again
+// does not re-sweep positions that are already on screen.
+let walletShown = null;
+
+function autoWallet() {
+  const a = wallet.account();
+  if (!a || walletShown === a) return false;
+  $('#walletInput').value = a;
+  lookupWallet(a);
+  return true;
+}
+
 async function lookupWallet(account) {
   if (!account) return;
+  walletShown = account;
   // Each section answers its own question and loads on its own schedule; the
   // position sweep is the slowest of them and should not hold up a balance.
   const feeAccount = CFG?.commercial?.feeAccount || '';
@@ -2927,6 +2986,119 @@ async function openAccount(name) {
   }).catch(() => { const b = $('#aSwaps'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>'; });
 }
 
+// ---------------------------------------------------------- ORDER BOOK -----
+// The half of Alcor this terminal was ignoring. Showing only AMM pools and
+// calling that "the market" leaves out every resting bid and every seller
+// waiting above the pool price — which on a thin token is most of it.
+//
+// A limit order is a transfer whose memo names what you want back, so placing
+// one is a button here rather than a memo to assemble by hand.
+async function renderOrderBook(boxId, tokenId, symbol) {
+  const box = $(boxId);
+  if (!box) return;
+  const WAX = 'WAX@eosio.token';
+  if (tokenId === WAX) { box.closest('.section')?.remove(); return; }
+
+  let market, b;
+  try {
+    market = await marketFor(WAX, tokenId);
+    if (!market) { box.innerHTML = `<div class="chart-empty">No order book for ${esc(symbol)} — it trades in pools only.</div>`; return; }
+    b = await book(market.id);
+  } catch { box.innerHTML = '<div class="chart-empty">Order book unavailable.</div>'; return; }
+
+  if (!b.bid.length && !b.ask.length) {
+    box.innerHTML = `<div class="chart-empty">The ${esc(symbol)}/WAX book exists but is empty — nobody has an order resting.</div>`;
+    return;
+  }
+
+  // Depth is cumulative from the best price outward, which is what "how much
+  // can I fill" actually asks. A bar per level makes the wall visible.
+  const cum = rows => { let t = 0; return rows.map(o => ({ ...o, cum: (t += o.quote) })); };
+  const bids = cum(b.bid.slice(0, 12)), asks = cum(b.ask.slice(0, 12));
+  const most = Math.max(bids.at(-1)?.cum || 0, asks.at(-1)?.cum || 0, 1);
+  const side = (rows, cls) => rows.map(o => `
+    <tr class="obrow">
+      <td class="obbar"><span class="${cls}" style="width:${(o.cum / most * 100).toFixed(1)}%"></span></td>
+      <td class="r num ${cls === 'obbid' ? 'pos' : 'neg'}">${qty(o.price)}</td>
+      <td class="r num">${qty(o.quote)}</td>
+      <td class="mono dim">${acctLink(o.account)}</td>
+    </tr>`).join('');
+
+  box.innerHTML = `
+    <div class="stats" style="margin:0 0 12px">
+      <div class="stat"><span class="v">${b.best.bid != null ? qty(b.best.bid) : '—'}</span><span class="k">best bid</span><span class="sub">WAX per ${esc(symbol)}</span></div>
+      <div class="stat"><span class="v">${b.best.ask != null ? qty(b.best.ask) : '—'}</span><span class="k">best ask</span><span class="sub">${b.spread != null ? (b.spread * 100).toFixed(2) + '% spread' : 'one side only'}</span></div>
+      <div class="stat"><span class="v">${(b.bid.length + b.ask.length).toLocaleString()}</span><span class="k">resting orders</span><span class="sub">${b.bid.length} bids, ${b.ask.length} asks</span></div>
+    </div>
+    <div class="grid g2">
+      <div><h4 class="obhead pos">Bids &mdash; buyers waiting</h4>
+        <div class="tablewrap" style="max-height:300px;border:0"><table style="font-size:12px">
+          <thead><tr><th></th><th class="r">Price</th><th class="r">${esc(symbol)}</th><th>Who</th></tr></thead>
+          <tbody>${side(bids, 'obbid') || '<tr><td colspan="4" class="dim">nobody bidding</td></tr>'}</tbody></table></div></div>
+      <div><h4 class="obhead neg">Asks &mdash; sellers waiting</h4>
+        <div class="tablewrap" style="max-height:300px;border:0"><table style="font-size:12px">
+          <thead><tr><th></th><th class="r">Price</th><th class="r">${esc(symbol)}</th><th>Who</th></tr></thead>
+          <tbody>${side(asks, 'obask') || '<tr><td colspan="4" class="dim">nobody selling</td></tr>'}</tbody></table></div></div>
+    </div>
+
+    <div class="card" style="margin-top:12px;background:var(--surface-2)"><h3>Place an order</h3>
+      <div class="toolbar" style="margin:0">
+        <button class="chip" id="obBuy" aria-pressed="true">Buy ${esc(symbol)}</button>
+        <button class="chip" id="obSell">Sell ${esc(symbol)}</button>
+      </div>
+      <div class="filters" style="display:grid;gap:8px;margin:10px 0 0">
+        <label>Amount of ${esc(symbol)}<input id="obAmt" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+        <label>Price in WAX each<input id="obPrice" type="number" step="any" min="0" placeholder="${b.best.bid != null ? qty(b.best.bid) : '0'}" inputmode="decimal"></label>
+      </div>
+      <p class="sub" id="obNote" style="margin:9px 0 0"></p>
+      <div id="obOut" style="margin-top:10px"></div>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obGo">Review</button></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">An order rests until someone takes it or you cancel it, and it fills at your price rather than at whatever the pool happens to be.
+    That is the trade against swapping: you choose the price, and you wait. Market #${market.id}${market.feeBps ? `, ${(market.feeBps / 100).toFixed(2)}% fee` : ', no fee'}.</p>`;
+
+  let buying = true;
+  const tok = state.tokens.get(tokenId) || { symbol, contract: tokenId.split('@')[1], decimals: 8 };
+  const waxTok = state.tokens.get(WAX) || { symbol: 'WAX', contract: 'eosio.token', decimals: 8 };
+  const note = $('#obNote');
+  const paint = () => {
+    const amt = Number($('#obAmt').value) || 0, px = Number($('#obPrice').value) || 0;
+    const total = amt * px;
+    note.innerHTML = !(amt > 0 && px > 0)
+      ? `Best bid ${b.best.bid != null ? qty(b.best.bid) : '—'}, best ask ${b.best.ask != null ? qty(b.best.ask) : '—'} WAX. Buying below the best ask, or selling above the best bid, means waiting.`
+      : buying
+        ? `Offer <b>${qty(total)} WAX</b> for <b>${qty(amt)} ${esc(symbol)}</b>${b.best.ask != null && px >= b.best.ask ? ' — at or above the best ask, so it should fill immediately' : ' — rests until someone sells into it'}.`
+        : `Offer <b>${qty(amt)} ${esc(symbol)}</b> for <b>${qty(total)} WAX</b>${b.best.bid != null && px <= b.best.bid ? ' — at or below the best bid, so it should fill immediately' : ' — rests until someone buys it'}.`;
+  };
+  paint();
+  $('#obAmt').oninput = paint; $('#obPrice').oninput = paint;
+  $('#obBuy').onclick = () => { buying = true; $('#obBuy').setAttribute('aria-pressed', 'true'); $('#obSell').setAttribute('aria-pressed', 'false'); paint(); };
+  $('#obSell').onclick = () => { buying = false; $('#obSell').setAttribute('aria-pressed', 'true'); $('#obBuy').setAttribute('aria-pressed', 'false'); paint(); };
+
+  $('#obGo').onclick = async () => {
+    const out = $('#obOut');
+    const amt = Number($('#obAmt').value) || 0, px = Number($('#obPrice').value) || 0;
+    if (!(amt > 0) || !(px > 0)) { out.innerHTML = '<div class="err">Enter an amount and a price.</div>'; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const total = amt * px;
+    const built = buying
+      ? buildLimitOrder({ give: { ...waxTok, amount: total }, want: { ...tok, amount: amt }, me: wallet.account() })
+      : buildLimitOrder({ give: { ...tok, amount: amt }, want: { ...waxTok, amount: total }, me: wallet.account() });
+    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      ${buying ? `Send <b>${qty(total)} WAX</b> and ask for <b>${qty(amt)} ${esc(symbol)}</b>` : `Send <b>${qty(amt)} ${esc(symbol)}</b> and ask for <b>${qty(total)} WAX</b>`}, at ${qty(px)} WAX each.
+      <br><span class="dim">The order rests on chain until it fills or you cancel it. What you send leaves your wallet now and comes back as the other token, or as itself if you cancel.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obSign">Sign and place</button></div></div>`;
+    $('#obSign').onclick = async () => {
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const tx = await wallet.transact(built.actions);
+        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Placed.</b> It rests until filled or cancelled — your open orders are on My wallet.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) { out.innerHTML = txError(e); }
+    };
+  };
+}
+
 // ---------------------------------------------------------- TOKEN DETAIL ----
 // Everything the chain will say about one token, on one page.
 //
@@ -3062,6 +3234,10 @@ async function openToken(id) {
       Trades are reconstructed from each venue's own table rather than from a trade index, which is the only way to do it from a browser &mdash; and it needs a table to read.</p></div>
     </div>`}
 
+    <div class="section"><h3>Order book <span class="dim">&mdash; limit orders resting against ${esc(t.symbol)}/WAX, which the pools do not show</span></h3>
+      <div class="card"><div id="tokBook"><div class="loading"><span class="spinner"></span><span>Reading the book…</span></div></div></div>
+    </div>
+
     <div class="section"><h3>Ownership</h3>
       <div class="grid g2">
         <div class="card"><h3>Largest holders <span class="dim">&mdash; wallet plus what they hold inside pools</span></h3>
@@ -3102,6 +3278,7 @@ async function openToken(id) {
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
   wirePromote();
+  renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
 
   // ---- where it trades -----------------------------------------------------

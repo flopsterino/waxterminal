@@ -581,3 +581,11 @@ body { overflow-x: hidden; }
 .meterfill.warm { background: var(--accent); }
 .meterfill.hot { background: var(--bad); }
 .meter .sub { margin-top: 4px; }
+
+/* An order book: a depth bar behind each level, so the wall is visible rather
+   than something you infer by reading a column of numbers. */
+.obhead { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; margin: 0 0 6px; }
+.obrow .obbar { position: relative; width: 34%; padding: 0; }
+.obrow .obbar span { display: block; height: 14px; border-radius: 2px; opacity: .28; }
+.obbid { background: var(--good); }
+.obask { background: var(--bad); }

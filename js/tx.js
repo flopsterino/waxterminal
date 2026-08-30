@@ -550,3 +550,42 @@ export function buildVote({ proxy = '', producers = [], me = account(), auth = n
     }],
   };
 }
+
+// ------------------------------------------------------------ order book ----
+// A limit order on alcordexmain is a transfer whose memo names what you want
+// back — there is no place-order action to get wrong. Send what you are giving,
+// say what you want, and the price is whatever ratio those two numbers make.
+//
+//   1.5 WAX      memo "299.9994 ZOTIC@exzoticfarms"   a bid
+//   0.15 INDEX   memo "0.322725 WAX@eosio.token"      an ask
+const ORDERBOOK = 'alcordexmain';
+
+export function buildLimitOrder({ give, want, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  if (!(give.amount > 0) || !(want.amount > 0)) return { actions: [], price: null };
+  return {
+    actions: [{
+      account: give.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: ORDERBOOK,
+        quantity: asset(give.amount, give.symbol, give.decimals),
+        // Rounded DOWN like every other amount here: asking for a fraction more
+        // than the decimals allow is how an order is rejected outright.
+        memo: `${asset(want.amount, want.symbol, want.decimals)}@${want.contract}`,
+      },
+    }],
+    price: want.amount / give.amount,
+  };
+}
+
+// Cancelling needs the market as well as the order — order ids are only unique
+// within their own book.
+export function buildCancelOrder({ marketId, orderId, side, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  return {
+    actions: [{
+      account: ORDERBOOK, name: side === 'buy' ? 'cancelbuy' : 'cancelsell', authorization: auth,
+      data: { executor: me, market_id: Number(marketId), order_id: Number(orderId) },
+    }],
+  };
+}
