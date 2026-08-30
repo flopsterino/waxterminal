@@ -730,16 +730,27 @@ function renderTokens() {
   });
 
   lastRendered.tokens = rows;
+  // A pool has two sides, and each side credits the pool's volume to its token.
+  // That is right per token — WAX's 24h includes every pool WAX is in — and
+  // wrong the moment you add the column up, because every trade is then counted
+  // once for each end of it. Measured at exactly 2.00x. The same goes for the
+  // pool count: a pool holding two shown tokens is still one pool.
+  //
+  // Pooled value is not affected: each side is credited half, so the column
+  // already sums to the whole once.
+  const shown = new Set(rows.map(t => t.id));
+  let vol = 0, poolsBehind = 0;
+  for (const p of state.pools) {
+    if (!shown.has(p.tokenA) && !shown.has(p.tokenB)) continue;
+    poolsBehind++;
+    vol += p.vol24 || 0;
+  }
   const tvl = rows.reduce((s, t) => s + t.tvl, 0);
-  const vol = rows.reduce((s, t) => s + t.vol24, 0);
   $('#tokStats').innerHTML = `
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
-    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">across all four venues</span></div>
-    <div class="stat"><span class="v">${rows.reduce((s, t) => s + t.pools, 0).toLocaleString()}</span><span class="k">pools holding them</span></div>`;
-  $('#tokCount').innerHTML = rows.length > 300
-    ? `showing top 300 of ${rows.length.toLocaleString()}`
-    : `${rows.length.toLocaleString()} tokens`;
+    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">each trade counted once, across all four venues</span></div>
+    <div class="stat"><span class="v">${poolsBehind.toLocaleString()}</span><span class="k">pools holding them</span></div>`;
 
   const cols = [
     { k: 'rank', label: '' },
