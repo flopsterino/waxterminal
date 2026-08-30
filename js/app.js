@@ -1393,21 +1393,31 @@ function wireConnect() {
   }
 }
 
-// Run one position's compound. Two transactions by design: the swap output is
-// only knowable after it executes, so we harvest, read what actually landed,
-// and deposit that. Each step is signed by the user; nothing runs unattended.
+// Run one position's compound.
+//
+// Three transactions, not two — and the page used to promise two. Claiming and
+// converting cannot share a signature, because the amount to convert is not
+// known until the claim has executed and the wallet has been read; converting
+// and redepositing cannot share one either, because the deposit is sized from
+// what the swap actually returned. A user told to expect two prompts and handed
+// three has every reason to stop and wonder what the third one is.
+//
+// The convert step is skipped outright when the harvest already arrives in the
+// two tokens the position needs, which is common on a single-token farm, so it
+// is drawn as skipped rather than quietly vanishing.
 async function runOne(box, entry, feeBps, feeAccount) {
   const { pos, harvest, plan } = entry;
   const steps = [
     { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
-    { t: 'Swap and redeposit', d: 'Measure exactly what arrived, convert only that into the ratio your band needs, and add it back.'
+    { t: 'Convert', d: 'Sell only what was just harvested into the two tokens this position holds. Sized from the measured claim, never from your balance.' },
+    { t: 'Redeposit', d: 'Add exactly what arrived back into your range.'
         + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on what was harvested goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
   ];
   const render = (i, msg, err) => {
     box.innerHTML = `<div class="steps">${steps.map((s, n) => `
-      <div class="step ${n < i ? 'done' : n === i ? 'active' : ''}">
-        <span class="n">${n < i ? '&check;' : n + 1}</span>
-        <div><h4>${s.t}</h4><p>${n === i && msg ? esc(msg) : s.d}</p></div>
+      <div class="step ${s.skipped ? 'done' : n < i ? 'done' : n === i ? 'active' : ''}">
+        <span class="n">${s.skipped || n < i ? '&check;' : n + 1}</span>
+        <div><h4>${s.t}</h4><p>${s.skipped ? esc(s.skipped) : n === i && msg ? esc(msg) : s.d}</p></div>
       </div>`).join('')}</div>
       ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}`;
   };
@@ -1434,10 +1444,13 @@ async function runOne(box, entry, feeBps, feeAccount) {
     const sw = buildSwaps({ pool: pos.pool, plan, harvested });
     const skipped = sw.swaps.filter(x => x.skipped);
     if (sw.actions.length) {
-      render(1, 'Waiting for your wallet — swapping what you claimed…');
+      render(1, 'Waiting for your wallet — converting what you claimed…');
       await wallet.transact(sw.actions);
       await new Promise(r => setTimeout(r, 2500));
+    } else {
+      steps[1].skipped = 'Nothing to convert — the harvest already arrived in the two tokens this position holds.';
     }
+    render(2, 'Sizing the deposit from what actually landed…');
     // What the plan said the harvest is worth, in token terms — the cap the
     // redeposit checks itself against.
     const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
@@ -1446,6 +1459,7 @@ async function runOne(box, entry, feeBps, feeAccount) {
       b: pxB > 0 ? (plan.netUsd * plan.ratio.shareB) / pxB : 0,
     };
     const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected });
+    render(2, 'Waiting for your wallet — putting it back…');
     const r2 = await wallet.transact(dep.actions);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
@@ -1483,15 +1497,12 @@ async function runCompound(account) {
     return;
   }
 
-  // No fee account configured means no fee is charged, so the plan must not
-  // deduct one — it was quietly under-reporting every result by 0.75% and
-  // listing a transfer that would never be in the transaction.
-  // No fee. It was the last action in the second transaction, so dropping it
-  // costs nothing and removes a step, an approval line and a deduction from
-  // every projection.
-  // The fee is the partner's to set, and it is off until they name an account
-  // to receive it — an empty recipient must never mean "charge it anyway and
-  // send it somewhere". buildRedeposit enforces the same pair.
+  // The fee is the partner's to set, and it stays off until they name an account
+  // to receive it: an empty recipient must never mean "charge it anyway and send
+  // it somewhere". buildRedeposit enforces the same pair, so the plan cannot
+  // deduct a fee the transaction will not contain — it was quietly
+  // under-reporting every result by 0.75% and listing a transfer that would
+  // never be signed.
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
   // Positions are independent, so read them in small parallel batches. Serial
@@ -1563,7 +1574,7 @@ async function runCompound(account) {
   html += '</div>';
 
   html += `<div class="card" style="margin-top:14px"><h3>How this executes</h3>
-    <p style="font-size:13px;color:var(--ink-2);margin:0 0 8px;max-width:74ch">Each position takes two signatures. The first collects fees, claims every farm reward and swaps what is not already the right token. Then we read what actually arrived in your wallet, and the second puts exactly that back — never anything you already held.</p>
+    <p style="font-size:13px;color:var(--ink-2);margin:0 0 8px;max-width:74ch">Each position takes up to three signatures, and they cannot be fewer: the first collects your fees and farm rewards, and only once that has executed can your wallet be read to see what actually arrived. The second converts exactly that &mdash; skipped when the harvest already came in the two tokens this position holds &mdash; and the third puts back what the conversion returned. Nothing you already held is ever touched.</p>
     <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">There is no compounding contract and no delegated permission. Nothing can move your funds without a signature you give at that moment — which also means a position in ten farms is ten claims in one transaction, not ten separate approvals.</p>
   </div>`;
 
