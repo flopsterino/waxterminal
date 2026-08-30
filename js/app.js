@@ -1813,7 +1813,13 @@ async function openToken(id) {
             : net > 0 ? 'sold' : 'bought',
         };
       }).sort((a, b) => b.ts - a.ts);
-      const oldest = all.length ? all.at(-1).ts : Date.now();
+      // How far back the page can honestly speak for is the *shallowest* pool,
+      // not the deepest. One pool reaching forty-five days while another reaches
+      // three does not make the token covered for forty-five: before the newest
+      // of those two starting points, the picture has a hole in it.
+      const oldest = sets.filter(x => x.swaps.length).length
+        ? Math.max(...sets.filter(x => x.swaps.length).map(x => x.swaps[0].ts))
+        : Date.now();
 
       const drawVol = hours => {
         const box = $('#tokVolChart'); if (!box) return;

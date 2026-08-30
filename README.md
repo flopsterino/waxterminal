@@ -98,6 +98,18 @@ construction, so doubling one priced leg is exact for Taco. Concentrated
 liquidity carries no such guarantee, so a half-priced Alcor pool reports only the
 leg it can prove and marks itself with `*`.
 
+**The live sweep must put back what the chain does not carry.** `loadCore`
+builds fresh pool objects and assigns them over whatever painted first, so
+anything derived rather than read is destroyed unless it is re-applied. Volume
+is the obvious one — a pool row carries reserves, not the last 24 hours — and
+for a long time it silently vanished a few seconds after the page painted:
+tokens, most-traded, turnover and every 24h column went to a dash while the real
+figure sat in `data/volume.json` on disk. Restoring it brings the total to
+$30,512 against Alcor's own $30,514. The same applies to a pool's creation date
+and to TacoSwap, Defibox and A-DEX volume, which those venues do not publish at
+all and only the daily job counts. If you add a field the daily job computes,
+add it to the restoration in `loadCore` in the same commit.
+
 **Public RPC bites.** Greymass answers `403` without a User-Agent and `420`
 under load. `chain.js` rotates hosts and benches a hurt one.
 
