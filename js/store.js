@@ -702,6 +702,14 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
     );
     for (const got of rest) { actions.push(...got); onProgress?.(actions.length, total); }
   }
+  // Pages go out in parallel against a live feed, and `skip` counts from the
+  // top of a descending sort, so a swap landing mid-fetch shifts every later
+  // page down by one and the tail of one page reappears as the head of the
+  // next. Measured at 0 over 12 pages in a quiet market, but a burst is exactly
+  // when this view matters. Dedupe on global_sequence, which is unique per
+  // action. NOT on trx_id: 314 of 1,000 Alcor logswaps share a transaction
+  // because a multi-hop route is several real swaps, and collapsing those
+  // would delete volume rather than protect it.
   // Hyperion caps total.value at 10,000, so hitting exactly that means the
   // window is larger than it will tell us — a 24h feed summed from it reported
   // $1,633 against Alcor's own $30,514 for the same day.
@@ -709,7 +717,13 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
   const truncated = capped || (first.total?.value ?? 0) > actions.length;
   const byId = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
   const out = [];
+  const seen = new Set();
+  let repeats = 0;
   for (const a of actions) {
+    if (a.global_sequence != null) {
+      if (seen.has(a.global_sequence)) { repeats++; continue; }
+      seen.add(a.global_sequence);
+    }
     const x = a.act.data;
     if (poolId != null && String(x.poolId) !== String(poolId)) continue;
     const pool = byId.get(`alcor:${x.poolId}`);
@@ -737,6 +751,7 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
   out.windowMinutes = minutes;
   out.truncated = truncated;
   out.capped = capped;
+  out.repeats = repeats;
   out.reportedTotal = first.total?.value ?? out.length;
   return out;
 }

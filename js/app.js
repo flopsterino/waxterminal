@@ -1129,7 +1129,8 @@ async function runOne(box, entry, feeBps, feeAccount) {
   const { pos, harvest, plan } = entry;
   const steps = [
     { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
-    { t: 'Swap and redeposit', d: 'Measure exactly what arrived, convert only that into the ratio your band needs, and add it back.' },
+    { t: 'Swap and redeposit', d: 'Measure exactly what arrived, convert only that into the ratio your band needs, and add it back.'
+        + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on what was harvested goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
   ];
   const render = (i, msg, err) => {
     box.innerHTML = `<div class="steps">${steps.map((s, n) => `
@@ -1217,7 +1218,11 @@ async function runCompound(account) {
   // No fee. It was the last action in the second transaction, so dropping it
   // costs nothing and removes a step, an approval line and a deduction from
   // every projection.
-  const feeBps = 0;
+  // The fee is the partner's to set, and it is off until they name an account
+  // to receive it — an empty recipient must never mean "charge it anyway and
+  // send it somewhere". buildRedeposit enforces the same pair.
+  const feeAccount = CFG?.commercial?.feeAccount || '';
+  const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
   // Positions are independent, so read them in small parallel batches. Serial
   // was correct and far too slow: a 13-position wallet took minutes.
   const plans = [];
@@ -1302,7 +1307,7 @@ async function runCompound(account) {
     const entry = plans.find(x => String(x.pos.posId) === b.dataset.run);
     if (!entry) return;
     b.disabled = true;
-    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), entry, feeBps, CFG?.commercial?.feeAccount || '');
+    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), entry, feeBps, feeAccount);
     b.disabled = false;
   });
 }
