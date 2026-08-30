@@ -1731,8 +1731,13 @@ async function openToken(id) {
   // question of the same rows, and this page runs on the reader's own IP —
   // fetching the deepest pool twice is a cost paid by whoever opened it.
   const use = tradePools.slice(0, cap('tokenPools'));
+  // Three pages, not six. A quiet pool returns everything it has either way —
+  // paging stops as soon as a page comes back short — and a busy one gives
+  // 3,000 states, which is weeks of history against a chart that offers seven
+  // days. Six pages doubled the download for nothing, and this page is paid for
+  // by whoever opened it.
   const deltasP = use.length
-    ? Promise.all(use.map(p => venueDeltas(p, { pages: 6 })
+    ? Promise.all(use.map(p => venueDeltas(p, { pages: 3 })
         .then(rws => ({ pool: p, rows: rws }))
         .catch(() => ({ pool: p, rows: [] }))))
     : Promise.resolve([]);
