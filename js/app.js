@@ -744,9 +744,7 @@ function promoteBox(kind, id, name) {
         <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}">Promote &mdash; <span id="promoCost">${qty(7 * t.perDay)} ${esc(t.token)}</span></button>
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
-      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day, on the front page. Slots are ordered by total spend, so paying more puts you higher, and paying again extends rather than replaces.
-      Nobody is turned away for being late &mdash; a slot below the top few is still a slot.
-      A promoted row is labelled as paid and changes no ranking, filter or total anywhere here: you are buying a place on the page, not a place in the numbers.</p>
+      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day on the front page. Ordered by spend; paying again extends it.</p>
     </div></div>`;
 }
 
@@ -812,10 +810,7 @@ async function renderPromoted() {
       <td class="r num dim">#${r.pr.rank}</td>
       <td class="r num dim">${days(r.pr.until - Date.now())}d left</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">These slots were bought, and that is the only reason they are here &mdash; ordered by what was spent, and nothing else on this page ranks, filters or totals differently because of it.
-    Each was paid for on chain: ${rows.map(r => acctLink(r.pr.from)).join(', ')} sent ${esc(t.token)} to <span class="mono">${esc(t.account)}</span>, and the payment buys a day per ${qty(t.perDay)} ${esc(t.token)} from the moment it lands.
-    ${t.account === 'eosio.null' ? `It is burned on arrival, so a promotion costs supply rather than paying anyone.` : ''}
-    Every pool, token and farm page has a Promote button; ${qty(t.perDay)} ${esc(t.token)} buys a day.${live.length > rows.length ? ` ${live.length - rows.length} more ${live.length - rows.length === 1 ? 'is' : 'are'} paid up and waiting below the top ${rows.length} — nobody is turned away, they are just outbid for now.` : ''}</p>`;
+    <p class="sub" style="margin:10px 0 0">Paid slots, ordered by spend. Nothing else on this page ranks differently because of it.${live.length > rows.length ? ` ${live.length - rows.length} more waiting below.` : ''}</p>`;
 
   box.querySelectorAll('tr[data-promo]').forEach(tr => {
     const [kind, id] = tr.dataset.promo.split('|');
@@ -873,8 +868,7 @@ function renderWatchlist(groups) {
           : `<span class="dim">unchanged since ${ago(new Date(d.at).toISOString())}</span>`}</td>
       </tr>`;
     }).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">${watchCount()} followed. Held in this browser only &mdash; no account, nothing uploaded, and a static site has nothing awake to send you an alert.
-    The comparison is against what each of these was worth the last time this page showed it to you.</p>`;
+    <p class="sub" style="margin:10px 0 0">${watchCount()} followed, in this browser only. Compared against what each was worth when you last looked.</p>`;
 
   box.querySelectorAll('tr[data-watch]').forEach(tr => {
     const [kind, id] = tr.dataset.watch.split('|');
@@ -1536,7 +1530,7 @@ async function renderWalletResources(account) {
         ${meter('CPU', useFraction(r.cpu), `${micros(r.cpu.available)} left &mdash; about ${cpuTransactions(r.cpu.available).toLocaleString()} more transactions, from ${qty(r.staked.cpu)} WAX staked`)}
         ${meter('NET', useFraction(r.net), `${bytes(r.net.available)} left, from ${qty(r.staked.net)} WAX staked`)}
         ${meter('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)} free of ${bytes(r.ram.max)} &mdash; RAM is bought, not staked, and holds your token rows`)}
-        <p class="sub" style="margin:10px 0 0">CPU refills over a day. Running out is the usual reason an account suddenly cannot do anything, and it is the cheapest problem here to fix.</p>
+        <p class="sub" style="margin:10px 0 0">CPU refills over a day.</p>
       </div>
 
       <div class="card"><h3>Power up with CHEESE <span class="dim">&mdash; burned, not paid to anyone</span></h3>
@@ -1555,15 +1549,15 @@ async function renderWalletResources(account) {
           <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
           <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
         </div>
-        <p class="sub" style="margin:9px 0 0">You have ${qty(r.staked.cpu)} WAX in CPU and ${qty(r.staked.net)} in NET. Unstaking lowers what you can transact with, and the WAX is neither staked nor spendable for three days.</p>
+        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET. Locked for three days after unstaking.</p>
         <div id="unOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn ghost" id="unGo">Review</button></div>
       </div>
 
       <div class="card"><h3>Voting <span class="dim">&mdash; a stake that does not vote earns nothing</span></h3>
         ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
-          <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? `through the proxy ${acctLink(r.voter.proxy)}` : `for ${r.voter.producers.length} producers directly`}${r.voter.weight > 0 ? '' : ', but the weight has decayed to nothing &mdash; claiming re-casts it'}.</p>`
-        : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting.</b> Staked WAX earns a reward only while it votes, so this stake is earning nothing at all.</p>`}
+          <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? acctLink(r.voter.proxy) : `${r.voter.producers.length} producers`}${r.voter.weight > 0 ? '' : ' &mdash; weight decayed to nothing'}.</p>`
+        : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting</b> &mdash; this stake earns nothing.</p>`}
         <div class="toolbar" style="margin:0">
           <button class="chip" id="voteProxyBtn" aria-pressed="true">Use a proxy</button>
           <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" style="max-width:200px" spellcheck="false">
@@ -1572,7 +1566,7 @@ async function renderWalletResources(account) {
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
           <span class="sub">Re-cast this vote automatically whenever I claim or compound, so the weight never decays</span></label>
         <div id="voteOut" style="margin-top:10px"></div>
-        <p class="sub" style="margin:10px 0 0">A proxy votes on your behalf and you can change or drop it whenever you like. Voting for producers directly works too &mdash; this terminal does not pick either for you.</p>
+        <p class="sub" style="margin:10px 0 0">Change or drop it whenever you like.</p>
       </div>
 
       <div class="card"><h3>Refund queue</h3>
@@ -1582,7 +1576,7 @@ async function renderWalletResources(account) {
           </div>
           <div id="rfOut"></div>
           <div class="toolbar" style="margin:0"><button class="btn" id="rfGo"${ready ? '' : ' disabled'}>Collect refund</button></div>`
-        : `<p class="sub" style="margin:0">Nothing unstaking. Anything you take out of CPU or NET waits here for three days, and this is where it appears &mdash; it usually lands on its own, and this page can nudge it if it does not.</p>`}
+        : `<p class="sub" style="margin:0">Nothing unstaking. Anything you take out waits here for three days.</p>`}
       </div>
     </div>
   </div>`;
@@ -1670,7 +1664,7 @@ async function renderWalletResources(account) {
             </tr>`;
           }).join('')}</tbody></table></div>
           <div id="obCancelOut" style="margin-top:10px"></div>
-          <p class="sub" style="margin:10px 0 0">${orders.length} open. What you sent is held by the book until the order fills or you cancel it, and cancelling returns it.</p>
+          <p class="sub" style="margin:10px 0 0">${orders.length} open &middot; cancelling returns what you sent.</p>
         </div></div>`;
       box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
         const [marketId, orderId, side] = b.dataset.cancel.split('|');
@@ -1757,13 +1751,12 @@ async function renderWalletStake(account, feeBps, feeAccount) {
     <div class="card">
       ${!info.voting ? `<p class="sub" style="margin:0 0 10px">This stake is not voting, so it earns nothing. Voting for producers or a proxy starts the reward &mdash; this terminal will not pick one for you, because who you vote for is not a thing to have chosen on your behalf.</p>` : ''}
       ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. The contract allows one claim a day.</p>` : ''}
-      ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The reward accrues whether or not it is collected, but the vote weight that earns it decays &mdash; which is why the claim re-casts your existing ${info.proxy ? 'proxy' : 'producers'} in the same transaction.</p>` : ''}
+      ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The claim re-casts your vote too, so the weight stops decaying.</p>` : ''}
       <div id="stakeSteps"></div>
       <div class="toolbar" style="margin:0">
         <button class="btn" id="stakeGo"${ready ? '' : ' disabled'}>Claim and restake</button>
       </div>
-      <p class="sub" style="margin:10px 0 0">Two signatures: one claims, then your balance is read to see exactly what arrived, and the second stakes that back${feeBps > 0 && feeAccount ? `, less a ${(feeBps / 100).toFixed(2)}% fee to ${acctLink(feeAccount)}` : ''}.
-      ${!info.voting ? `The claim also casts your vote to <span class="mono">${esc(CFG?.commercial?.stakeProxy || 'a proxy')}</span>, because a stake that does not vote earns nothing at all &mdash; you can change it any time from any wallet.` : ''}</p>
+      <p class="sub" style="margin:10px 0 0">Two signatures${feeBps > 0 && feeAccount ? `, ${(feeBps / 100).toFixed(2)}% fee` : ''}.${!info.voting ? ` Also votes ${acctLink(CFG?.commercial?.stakeProxy || 'a proxy')} &mdash; without a vote it earns nothing.` : ''}</p>
     </div>
   </div>`;
 
@@ -1796,9 +1789,7 @@ async function renderPepperClaims(account) {
         </tr>`).join('')}</tbody></table></div>
       <div id="pepSteps"></div>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pepGo">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">This contract accrues one period at a time and only pays out what has been collected, so a claim is a run of collects followed by a withdraw.
-      Up to forty periods per pool per transaction &mdash; a longer absence takes more than one go, and the button says how much is left.
-      No fee: this is a claim, not a compound.</p>
+      <p class="sub" style="margin:10px 0 0">Up to 40 periods per pool per go. If more are owed, run it again.</p>
     </div></div>`;
 
   $('#pepGo').onclick = async () => {
@@ -1849,9 +1840,7 @@ async function renderWalletFarms(account) {
         </tr>`).join('')}</tbody></table></div>
       <div id="wdSteps"></div>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="wdClaim">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting across ${live.length} farm${live.length === 1 ? '' : 's'}. ` : ''}Amounts are the balance the contract has recorded plus what has accrued since, at the farm's hourly rate &mdash; an estimate on the second half, and the claim pays whatever it actually pays.
-      This is a claim, not a compound, so there is no fee. The NFTs themselves are not touched and are not managed here &mdash;
-      <a href="https://cheesehubwax.github.io/cheesehub/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> is where you stake them, create a farm, or do anything else WaxDAO.</p>
+      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting. ` : ''}Estimated &mdash; the claim pays what it pays. <a href="https://cheesehubwax.github.io/cheesehub/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> to stake or create a farm.</p>
     </div>
   </div>`;
 
@@ -1882,14 +1871,22 @@ async function renderWalletBalances(account) {
   const v = valueBalances(info.balances, state.prices, state.depth);
   const priced = v.rows.filter(r => r.usd != null);
 
+  // A pie of what the wallet is, before the list of what is in it. "82% WAX"
+  // is a fact about a portfolio that a column of dollar figures makes you
+  // work out for yourself.
+  const slices = priced.filter(r => r.usd > 0).map(r => ({ label: r.symbol, value: r.usd }));
+
   out.innerHTML = `<div class="section"><h3>Balances</h3>
     <div class="grid g2">
+      <div class="card"><h3>Split <span class="dim">&mdash; ${usd(v.priced)} across ${slices.length} priced token${slices.length === 1 ? '' : 's'}</span></h3>
+        <div id="balPie"></div></div>
       <div class="card"><h3>What you hold <span class="dim">&mdash; ${usd(v.realisable)} realisable of ${usd(v.priced)} at face value</span></h3>
         <div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px"><tbody>${
           priced.slice(0, 40).map(r => `<tr class="clickable" data-tokid="${esc(r.id)}">
             <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span></td>
             <td class="r num">${qty(r.amount)}</td>
             <td class="r num">${usd(r.usd)}</td>
+            <td class="r num dim">${v.priced > 0 ? (r.usd / v.priced * 100).toFixed(1) + '%' : '—'}</td>
             <td class="r num ${r.ratio < 0.5 ? 'dim' : ''}">${usd(r.real)}</td></tr>`).join('')}</tbody></table></div>
         <p class="sub" style="margin:9px 0 0">${priced.length} priced, ${v.unpriced} with no pool deep enough to quote, ${info.zeroed.toLocaleString()} sitting at zero. The last column is what a route to a bridged dollar could actually carry out.</p></div>
 
@@ -1903,19 +1900,24 @@ async function renderWalletBalances(account) {
         </div>
         <div id="sendOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0">
-          <button class="btn ghost" id="sendMax">Send everything</button>
           <button class="btn" id="sendGo">Review</button>
         </div>
-        <p class="sub" style="margin:10px 0 0">A transfer cannot be undone and an account name that does not exist will simply fail, which is the kinder of the two outcomes. The review step shows exactly what will be signed.</p>
       </div>
     </div>
   </div>`;
+
+  const pie = $('#balPie');
+  if (pie) {
+    if (!slices.length) pie.innerHTML = '<div class="chart-empty">Nothing here can be priced.</div>';
+    // Eight named slices and the tail folded into one: past that the colours
+    // stop being separable and a legend of thirty rows is not a chart.
+    else pie.appendChild(donut(slices, { size: 170, top: 8, fmt: v2 => `${usd(v2)} · ${(v2 / v.priced * 100).toFixed(1)}%` }));
+  }
 
   fillMarks($('#walletBalances'));
   out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
 
   const balOf = id => v.rows.find(r => r.id === id)?.amount ?? 0;
-  $('#sendMax').onclick = () => { $('#sendAmt').value = String(balOf($('#sendTok').value)); };
   $('#sendGo').onclick = () => reviewSend(account, v.rows);
 }
 
@@ -2159,7 +2161,7 @@ async function showCompound(btn, pos) {
         <ol style="margin:0;padding-left:20px;font-size:12.5px;line-height:1.75">
           ${b.actions.map(a => `<li><code class="mono">${esc(a.name)}</code> <span class="dim">${esc(a.note)}</span></li>`).join('')}
         </ol>
-        <p class="sub" style="margin:10px 0 0">Claim, convert, redeposit &mdash; three signatures, or two when there is nothing to convert. The splits exist because the amount to convert is only known once the claim has executed, and the deposit only once the conversion has. No contract holds your funds and no permission is delegated.</p>
+        <p class="sub" style="margin:10px 0 0">Claim, convert, redeposit &mdash; three signatures, two when nothing needs converting.</p>
       </div>
     </div>`;
 }
@@ -2526,7 +2528,7 @@ function renderAddLiquidity(box, pos, account) {
       <label>${esc(pool.symA)}<input id="addA" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
       <label>${esc(pool.symB)}<input id="addB" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
     </div>
-    <p class="sub" id="addNote" style="margin:9px 0 0">This band currently wants ${(ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} and ${(ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)} by value. Type either side and the other follows; the pool takes what it needs at the live ratio and anything left over stays in your Alcor balance, where you can withdraw it.</p>
+    <p class="sub" id="addNote" style="margin:9px 0 0">Wants ${(ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} / ${(ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)}. Type either side; the other follows.</p>
     <div id="addOut" style="margin-top:10px"></div>
     <div class="toolbar" style="margin:10px 0 0">
       <button class="btn ghost" data-close-lp>Cancel</button>
@@ -2742,8 +2744,8 @@ async function runCompound(account) {
   html += '</div>';
 
   html += `<div class="card" style="margin-top:14px"><h3>How this executes</h3>
-    <p style="font-size:13px;color:var(--ink-2);margin:0 0 8px;max-width:74ch">Each position takes up to three signatures, and they cannot be fewer: the first collects your fees and farm rewards, and only once that has executed can your wallet be read to see what actually arrived. The second converts exactly that &mdash; skipped when the harvest already came in the two tokens this position holds &mdash; and the third puts back what the conversion returned. Nothing you already held is ever touched.</p>
-    <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">There is no compounding contract and no delegated permission. Nothing can move your funds without a signature you give at that moment — which also means a position in ten farms is ten claims in one transaction, not ten separate approvals.</p>
+    <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">Claim, convert, redeposit &mdash; up to three signatures, and convert is skipped when nothing needs converting. Only the harvest is used; no contract holds your funds.</p>
+    
   </div>`;
 
   out.innerHTML = html;
@@ -3019,9 +3021,7 @@ async function openAccount(name) {
           <td class="r num">${usd(r.usd)}</td>
           <td class="r num ${r.ratio < 0.5 ? 'dim' : ''}" title="${(r.ratio * 100).toFixed(0)}% of the face value has a route to a bridged dollar">${usd(r.real)}</td>
         </tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${known.length.toLocaleString()} priced${unknown.length ? `, and ${unknown.length.toLocaleString()} with no pool deep enough to quote &mdash; ${unknown.slice(0, 6).map(r => esc(r.symbol)).join(', ')}${unknown.length > 6 ? '…' : ''}` : ''}.
-      ${info.zeroed ? `${info.zeroed.toLocaleString()} balances sit at exactly zero and are left out; most of those are unsolicited airdrops.` : ''}
-      Realisable is what a route to a bridged dollar could carry out, which on a thin token is a long way under the quoted price.</p>`;
+      <p class="sub" style="margin:9px 0 0">${known.length.toLocaleString()} priced &middot; ${v.unpriced} unpriceable &middot; ${info.zeroed.toLocaleString()} at zero</p>`;
     fillMarks($('#aHold'));
     box.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
   }).catch(e => {
@@ -3117,8 +3117,7 @@ async function renderOrderBook(boxId, tokenId, symbol) {
       <div id="obOut" style="margin-top:10px"></div>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obGo">Review</button></div>
     </div>
-    <p class="sub" style="margin:10px 0 0">An order rests until someone takes it or you cancel it, and it fills at your price rather than at whatever the pool happens to be.
-    That is the trade against swapping: you choose the price, and you wait. Market #${market.id}${market.feeBps ? `, ${(market.feeBps / 100).toFixed(2)}% fee` : ', no fee'}.</p>`;
+    <p class="sub" style="margin:10px 0 0">Market #${market.id}${market.feeBps ? ` &middot; ${(market.feeBps / 100).toFixed(2)}% fee` : ' &middot; no fee'} &middot; fills at your price, or waits.</p>`;
 
   let buying = true;
   const tok = state.tokens.get(tokenId) || { symbol, contract: tokenId.split('@')[1], decimals: 8 };
@@ -3293,8 +3292,7 @@ async function openToken(id) {
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
       </div>
     </div>` : `<div class="section"><h3>Trading</h3>
-      <div class="card"><p class="sub" style="margin:0">No pool holding ${esc(t.symbol)} keeps state a history node will replay, so there is no price chart and no trade history here.
-      Trades are reconstructed from each venue's own table rather than from a trade index, which is the only way to do it from a browser &mdash; and it needs a table to read.</p></div>
+      <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state, so there is no chart or trade history.</p></div>
     </div>`}
 
     <div class="section"><h3>Order book <span class="dim">&mdash; limit orders resting against ${esc(t.symbol)}/WAX, which the pools do not show</span></h3>
@@ -3324,8 +3322,8 @@ async function openToken(id) {
           <div id="tokLps"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>
         <div class="card"><h3>Where it trades</h3><div id="tokPools"></div>
           <p class="sub" style="margin:10px 0 0">${d?.topPartner
-            ? `${(d.topPartner.share * 100).toFixed(0)}% of the value standing opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
-              + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% of it comes from tokens issued by the same account, so its depth leans on one issuer.` : '')
+            ? `${(d.topPartner.share * 100).toFixed(0)}% of the value opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
+              + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% from one issuer.` : '')
             : ''}</p></div>
       </div>
     </div>
@@ -3649,10 +3647,7 @@ async function openToken(id) {
             <td class="r num">${qty(s.amount)}</td>
             <td class="r num">${s.usd != null ? usd(s.usd) : '<span class="dim">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div>
-          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades reconstructed, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown.
-          Sizes are what actually moved in the pool, so they are the trade rather than an estimate of it.
-          &ldquo;through&rdquo; means the route crossed two of ${esc(t.symbol)}&rsquo;s pools in one block and handed it straight on &mdash; arbitrage, not someone buying.
-          Who traded is beside this, read from the swap memos.</p>`;
+          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown. &ldquo;through&rdquo; = crossed two ${esc(t.symbol)} pools in one block.</p>`;
         // The whole reconstruction, not the shown slice: a reader who wants to
         // do their own arithmetic on it should get every trade this page read,
         // and a tape is exactly the shape a spreadsheet is for.
@@ -3703,8 +3698,7 @@ async function openToken(id) {
           <td class="num dim"><a href="${trxUrl(x.trx)}" target="_blank" rel="noopener">${ago(new Date(x.ts).toISOString())} &nearr;</a></td>
           <td class="mono">${acctLink(x.from)} <span class="dim">&rarr;</span> ${acctLink(x.to)}</td>
           <td class="r num">${qty(x.amount)}</td></tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${top.length ? `Most active sender${top.length === 1 ? '' : 's'}, the DEX contracts aside: ${top.map(([a, v]) => `${acctLink(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}.` : 'Every transfer in this window came from a DEX contract.'}
-      Transfers include claims, farm payouts and swaps, so this runs well ahead of trading volume on a token people actually use.</p>`;
+      <p class="sub" style="margin:9px 0 0">${top.length ? `Busiest senders: ${top.map(([a, v]) => `${acctLink(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}` : 'All transfers came from a DEX contract.'}</p>`;
   }).catch(() => { const b = $('#tokMoves'); if (b) b.innerHTML = '<div class="chart-empty">Transfer history unavailable.</div>'; });
 
   // ---- who trades it, and through what ------------------------------------
@@ -3751,9 +3745,7 @@ async function openToken(id) {
           <td>${top ? `<span class="route">${esc(top[0])}</span>${hops > 2 ? ' <span class="badge warn">multi-hop</span>' : ''}` : '<span class="dim">out only</span>'}</td>
         </tr>`;
       }).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${capNote(list.length, Math.min(list.length, cap('routes')), 'accounts', { filterable: false })} traded ${esc(t.symbol)} on Alcor ${complete ? 'in the last 24 hours' : `back to ${ago(new Date(covered).toISOString())}`}.
-      A route with several pools is one transaction crossing all of them; where it comes back to ${esc(t.symbol)} it is arbitrage rather than someone buying.
-      &ldquo;Out only&rdquo; means they received ${esc(t.symbol)} from a swap whose input was another token.</p>`;
+      <p class="sub" style="margin:9px 0 0">${capNote(list.length, Math.min(list.length, cap('routes')), 'accounts', { filterable: false })} ${complete ? 'in 24h' : `back to ${ago(new Date(covered).toISOString())}`}. &ldquo;Out only&rdquo; means they received ${esc(t.symbol)} rather than sent it.</p>`;
   }).catch(() => { const b = $('#tokTraders'); if (b) b.innerHTML = '<div class="chart-empty">Swap memos unavailable.</div>'; });
 
   // ---- liquidity providers -------------------------------------------------
@@ -3767,7 +3759,7 @@ async function openToken(id) {
         <td class="mono">${acctLink(l.account)}</td>
         <td class="r num">${qty(l.amount)}</td>
         <td class="r num dim">${(l.amount / tot * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it &mdash; the largest supplier often does not appear there at all.</p>`;
+      <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}.</p>`;
   }).catch(() => { const b = $('#tokLps'); if (b) b.innerHTML = '<div class="chart-empty">Positions unavailable.</div>'; });
 
   // ---- the long record -----------------------------------------------------
@@ -3864,7 +3856,7 @@ async function openToken(id) {
       <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
       <td class="r num ${share(h.balance) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `These ${top.length} hold ${(top.reduce((a, h) => a + h.balance, 0) / supply * 100).toFixed(1)}% of supply between them${holderTotal ? `, out of ${holderTotal.toLocaleString()} accounts holding any` : ''}. The share column counts wallet balances only &mdash; what sits in a pool is already inside that DEX&rsquo;s own row, so adding it again would count the same coins twice. ` : ''}Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
+    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `Top ${top.length} hold ${(top.reduce((a, h) => a + h.balance, 0) / supply * 100).toFixed(1)}% of supply${holderTotal ? ` of ${holderTotal.toLocaleString()} holders` : ''}. ` : ''}Share is wallet balance only &mdash; pooled tokens sit in the DEX's row.</p>`;
 
   if (supply > 0) {
     const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
@@ -4002,8 +3994,7 @@ async function openPool(key) {
             <td class="r num">${qty(Math.abs(x.amountB))}</td>
             <td class="r num">${v != null ? usd(v) : '<span class="dim">—</span>'}</td></tr>`;
         }).join('')}</tbody></table></div>
-        <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} trades read straight out of the pool row, back to ${ago(new Date(sw.at(-1).ts).toISOString())}.
-        Who made them is not in the row &mdash; a pool records the change, not the account that caused it. The token page reads that from the swap memos.</p>`;
+        <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} trades, back to ${ago(new Date(sw.at(-1).ts).toISOString())}. Traders are on the token page.</p>`;
     }).catch(e => { $('#poolSwaps').innerHTML = `<div class="empty">Feed unavailable: ${esc(e.message)}</div>`; });
   }
 }
