@@ -319,6 +319,10 @@ await writeFile(new URL('pools.json', OUT), JSON.stringify({
   counts: {
     alcor: state.pools.filter(p => p.dex === 'alcor').length,
     taco: state.pools.filter(p => p.dex === 'taco').length,
+    // Defibox and A-DEX were missing, so anything comparing "the other venues"
+    // against this was comparing three venues to one.
+    defibox: state.pools.filter(p => p.dex === 'defibox').length,
+    adex: state.pools.filter(p => p.dex === 'adex').length,
     farms: state.farms.length,
     solidTokens: state.solidTokens.size,
     pricedTokens: state.depth.size,
@@ -349,11 +353,21 @@ const farms = groups.filter(g => g.rewardUsdDay > 0.01)
 // 300 tokens at five numbers each is about 12 KB a run. The whole point of
 // keeping it this small is that it stays a file in a repo rather than becoming
 // a database someone has to host.
-const tokenRows = tokenTable()
-  .filter(t => (t.tvl || 0) >= 50 || (t.vol24 || 0) >= 50)
-  .sort((a, b) => (b.tvl || 0) - (a.tvl || 0))
-  .slice(0, TOP_TOKENS_IN_HISTORY)
-  .map(t => [t.id, round(t.tvl, 0), round(t.vol24, 0), round(t.price, 12), t.pools]);
+//
+// Wrapped, because this is the newest thing in the job and the job's real
+// product is pools.json: a first visit paints from it, and a snapshot that
+// throws on the way to an extra column would stop the whole file updating.
+// Losing a day of token history is a smaller loss than losing the day.
+let tokenRows = [];
+try {
+  tokenRows = tokenTable()
+    .filter(t => (t.tvl || 0) >= 50 || (t.vol24 || 0) >= 50)
+    .sort((a, b) => (b.tvl || 0) - (a.tvl || 0))
+    .slice(0, TOP_TOKENS_IN_HISTORY)
+    .map(t => [t.id, round(t.tvl, 0), round(t.vol24, 0), round(t.price, 12), t.pools]);
+} catch (e) {
+  console.log('token history skipped:', e.message);
+}
 
 // One file per month keeps any single file small and lets old months be pruned
 // or archived without rewriting history.

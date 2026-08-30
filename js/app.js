@@ -655,7 +655,7 @@ function wirePools() {
   $('#fLiq').onclick = e => { poolFilters.hideDust = !poolFilters.hideDust; e.target.setAttribute('aria-pressed', String(poolFilters.hideDust)); renderPools(); };
   $('#fThin').onclick = e => { poolFilters.hideThin = !poolFilters.hideThin; e.target.setAttribute('aria-pressed', String(poolFilters.hideThin)); renderPools(); };
   const panel = $('#poolFilters');
-  panel.innerHTML = rangeField('tvl', 'TVL', poolFilters, { unit: 'USD' })
+  panel.innerHTML = rangeField('tvl', 'Pooled value', poolFilters, { unit: 'USD' })
     + rangeField('fee', 'Fee tier', poolFilters, { unit: '%', step: '0.01' })
     + rangeField('depth', 'Route depth', poolFilters, { unit: 'USD' })
     + `<label>Has a farm<select data-f="farmed">
@@ -727,15 +727,20 @@ function renderPools() {
   const concVal = concentrated.reduce((s, p) => s + (p.tvl || 0), 0);
   // state.pools holds what the snapshot kept (anything above $100 or farmed).
   // Printing that under "Alcor pools" claimed 723 where the chain has 11,585.
-  const shownA = state.pools.filter(p => p.dex === 'alcor').length;
-  const shownT = state.pools.filter(p => p.dex !== 'alcor').length;
-  const alcor = state.counts?.alcor ?? shownA;
-  const taco = (state.counts?.taco ?? shownT);
+  // Counted per venue, not "Alcor and the rest". The rest was three venues
+  // summed against a total that only covered TacoSwap, which printed 9,704 of
+  // 8,252 — a subset larger than the set it came from.
+  const perVenue = new Map();
+  for (const p of state.pools) perVenue.set(p.dex, (perVenue.get(p.dex) || 0) + 1);
+  const shownA = perVenue.get('alcor') || 0;
+  const others = [...perVenue].filter(([d]) => d !== 'alcor').sort((a, b) => b[1] - a[1]);
+  const shownT = others.reduce((a, [, n]) => a + n, 0);
+  const alcorTotal = state.counts?.alcor ?? shownA;
   const priced = [...state.prices.values()].length;
   $('#poolStats').innerHTML = `
     <div class="stat"><span class="v">${usd(totalReal)}</span><span class="k">pooled value</span><span class="sub">${usd(total)} at face value &middot; ${usd(concVal)} of that in pools whose tokens mostly back each other</span></div>
-    <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools worth listing</span><span class="sub">of ${alcor.toLocaleString()} in existence</span></div>
-    <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">of ${taco.toLocaleString()}</span></div>
+    <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools</span><span class="sub">${alcorTotal > shownA ? `of ${alcorTotal.toLocaleString()} in existence` : 'every one on the chain'}</span></div>
+    <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">${others.map(([d, n]) => `${n.toLocaleString()} ${venueName[d] || d}`).join(' &middot; ')}</span></div>
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
     <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">deepest stable route</span></div>`;
 
@@ -1734,6 +1739,10 @@ async function openToken(id) {
 
   const priceStr = t.price == null ? '—'
     : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3));
+  // Everyone here holds WAX and prices things against it, so the dollar alone
+  // makes people do arithmetic they should not have to.
+  const inWax = (t.price != null && state.waxUsd > 0 && t.symbol !== 'WAX')
+    ? t.price / state.waxUsd : null;
 
   $('#tokenDetail').innerHTML = `
     <div class="tokhead">
@@ -1755,7 +1764,10 @@ async function openToken(id) {
         const src = pools.filter(p => p.change24 != null && p.vol24 > 0).sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0))[0];
         if (!src) return '<span class="sub">&nbsp;</span>';
         const ch = src.tokenB === id ? -src.change24 : src.change24;   // quoted on A
-        return `<span class="sub ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : ''}">${ch > 0 ? '+' : ''}${ch.toFixed(1)}% in 24h</span>`;
+        return `<span class="sub ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : ''}">${ch > 0 ? '+' : ''}${ch.toFixed(1)}% in 24h${inWax != null ? ` &middot; ${qty(inWax)} WAX` : ''}</span>`;
+      })()}${(() => {
+        const src = pools.filter(p => p.change24 != null && p.vol24 > 0).sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0))[0];
+        return (!src && inWax != null) ? `<span class="sub">${qty(inWax)} WAX</span>` : '';
       })()}</div>
       <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating &times; price</span></div>
       <div class="stat"><span class="v" id="tokCirc">—</span><span class="k">circulating</span><span class="sub" id="tokBurn">&nbsp;</span></div>
@@ -1945,9 +1957,11 @@ async function openToken(id) {
   });
 
   // ---- how many hold it at all --------------------------------------------
+  let holderTotal = null;
   holderCount(t.contract, t.symbol).then(n => {
     if (stale()) return;
     if (n == null) return;
+    holderTotal = n;
     const e = $('#tokHolderN'); if (e) e.textContent = n.toLocaleString();
     const f = $('#fHolders'); if (f) f.textContent = n.toLocaleString();
     const s = $('#tokHolderSub');
@@ -2345,7 +2359,7 @@ async function openToken(id) {
       <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
       <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
+    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `These ${top.length} hold ${(top.reduce((a, h) => a + h.total, 0) / supply * 100).toFixed(1)}% of supply between them${holderTotal ? `, out of ${holderTotal.toLocaleString()} accounts holding any` : ''}. ` : ''}Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
 
   if (supply > 0) {
     const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
