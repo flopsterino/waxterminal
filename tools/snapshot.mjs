@@ -244,6 +244,10 @@ const pools = state.pools
     da: p.decA, db: p.decB, f: p.feeBps,
     ra: round(p.reserveA, 8), rb: round(p.reserveB, 8),
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
+    // Tick spacing is the one pool field a range picker cannot work without,
+    // and it only ever existed on the live sweep — a page painted from the
+    // snapshot would compute ticks the contract rejects.
+    ts: p.tickSpacing ?? null,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
     bd: p.bornAt ?? null,

@@ -347,6 +347,7 @@ async function loadSnapshot() {
       dex: p.d, id: p.i, tokenA: p.ca, tokenB: p.cb, symA: p.a, symB: p.b,
       decA: p.da, decB: p.db, feeBps: p.f, reserveA: p.ra, reserveB: p.rb,
       liquidity: p.l, tick: p.t, sqrtX64: p.s, priceAB: p.p, tvl: p.v,
+      tickSpacing: p.ts ?? null,
       priceUsdA: p.pa, priceUsdB: p.pb, usdA: p.pa, usdB: p.pb,
       tvlPartial: (p.pa == null) !== (p.pb == null), active: true,
       routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
