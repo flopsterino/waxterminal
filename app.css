@@ -143,8 +143,14 @@ td.r, th.r { text-align: right; }
 /* ----------------------------------------------------------- positions --- */
 .poscard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; }
 .poscard.out { border-color: var(--bad); }
-.poscard .ph { display: flex; align-items: baseline; gap: 9px; margin-bottom: 4px; flex-wrap: wrap; }
-.poscard .pv { font-family: var(--font-data); font-size: 18px; font-weight: 600; }
+/* Centre-aligned, because a 26px pair mark on a baseline-aligned row hangs
+   below the text it belongs to. The value goes on its own line at the end so it
+   is not the thing that wraps first on a narrow card. */
+.poscard .ph { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; flex-wrap: wrap; }
+.poscard .ph .pairbig { font-size: 15px; }
+.poscard .pv { font-family: var(--font-data); font-size: 18px; font-weight: 600; margin-left: auto; }
+.poscard .kv dt, .poscard .kv dd { padding: 2px 0; }
+.poscard .kv dt + dd { border-bottom: 1px solid transparent; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12.5px; margin-top: 10px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-family: var(--font-data); text-align: right; }
@@ -619,3 +625,23 @@ body { overflow-x: hidden; }
 .switch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); }
 .switch[aria-checked="true"] .knob { transform: translateX(15px); background: var(--accent); }
 .switch:hover { border-color: var(--accent); }
+
+/* A call to action that is not a button hiding at the bottom of a card. Used
+   where there is money already earned and sitting idle — never as decoration,
+   or it stops meaning anything. */
+.cta {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  border-radius: var(--r-lg); padding: 13px 16px; margin-bottom: 14px;
+}
+.cta > div { flex: 1 1 260px; font-size: 13.5px; }
+.cta .sub { display: block; margin-top: 3px; }
+.cta .btn { flex: 0 0 auto; }
+
+/* A reward and what to do with it, as one unit. */
+.pick { display: inline-flex; align-items: center; gap: 6px; margin: 0 10px 8px 0; }
+.pick .pickmode {
+  background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r);
+  color: var(--ink-2); font: inherit; font-size: 11px; padding: 2px 4px; cursor: pointer;
+}
+.pick .pickmode:focus { outline: none; border-color: var(--accent); }

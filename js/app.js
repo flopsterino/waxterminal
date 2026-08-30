@@ -660,7 +660,11 @@ function fillMarks(root) {
   root.querySelectorAll('[data-pm]').forEach(el => {
     if (el.dataset.done) return;
     const [ta, sa, tb, sb] = el.dataset.pm.split('|');
-    el.appendChild(tb ? pairMark(ta, sa, tb, sb) : tokenMark(ta, sa));
+    // Cards have room for a bigger mark than a table row does, and on a card
+    // the pair is the first thing being identified rather than a repeat of the
+    // text beside it.
+    const size = el.closest('.poscard, .ph') ? 26 : 18;
+    el.appendChild(tb ? pairMark(ta, sa, tb, sb, { size }) : tokenMark(ta, sa, { size }));
     el.dataset.done = '1';
   });
 }
@@ -1864,6 +1868,30 @@ async function renderWalletFarms(account) {
 }
 
 // ---- balances, and sending them somewhere ----------------------------------
+// Positions arrive later than balances — the sweep is the slow half — so the
+// pie draws from what it has and redraws when they land.
+let walletPositionsFor = null;
+let redrawBalancePie = () => {};
+
+// What a position is worth, split back into the two tokens it holds. A pie of
+// "wallet only" and a pie of "everything I own" are different pictures, and on
+// an account with most of its value in pools the first one is misleading.
+function positionSlices(account) {
+  if (!walletPositionsFor || walletPositionsFor.account !== account) return [];
+  const out = new Map();
+  for (const p of walletPositionsFor.list) {
+    const pool = p.pool;
+    if (!pool) continue;
+    for (const [amt, id] of [[p.amountA, pool.tokenA], [p.amountB, pool.tokenB]]) {
+      const px = id === pool.tokenA ? pool.priceUsdA : pool.priceUsdB;
+      if (!(amt > 0) || px == null) continue;
+      const sym = (state.tokens.get(id)?.symbol) || id.split('@')[0];
+      out.set(sym, (out.get(sym) || 0) + amt * px);
+    }
+  }
+  return [...out].map(([label, value]) => ({ label, value }));
+}
+
 async function renderWalletBalances(account) {
   const out = $('#walletBalances');
   if (!out) return;
@@ -1881,17 +1909,20 @@ async function renderWalletBalances(account) {
 
   out.innerHTML = `<div class="section"><h3>Balances</h3>
     <div class="grid g2">
-      <div class="card"><h3>Split <span class="dim">&mdash; ${usd(v.priced)} across ${slices.length} priced token${slices.length === 1 ? '' : 's'}</span></h3>
+      <div class="card"><h3>Split <span id="pieSum" class="dim"></span>
+        <span style="margin-left:auto" class="switchwrap">
+          <span class="switchlabel">with LPs</span>
+          <button class="switch" id="pieLps" role="switch" aria-checked="false" aria-label="Include what is inside your liquidity positions"><span class="knob"></span></button>
+        </span></h3>
         <div id="balPie"></div></div>
-      <div class="card"><h3>What you hold <span class="dim">&mdash; ${usd(v.realisable)} realisable of ${usd(v.priced)} at face value</span></h3>
+      <div class="card"><h3>What you hold <span class="dim">&mdash; ${usd(v.priced)}</span></h3>
         <div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px"><tbody>${
           priced.slice(0, 40).map(r => `<tr class="clickable" data-tokid="${esc(r.id)}">
             <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span></td>
             <td class="r num">${qty(r.amount)}</td>
             <td class="r num">${usd(r.usd)}</td>
-            <td class="r num dim">${v.priced > 0 ? (r.usd / v.priced * 100).toFixed(1) + '%' : '—'}</td>
-            <td class="r num ${r.ratio < 0.5 ? 'dim' : ''}">${usd(r.real)}</td></tr>`).join('')}</tbody></table></div>
-        <p class="sub" style="margin:9px 0 0">${priced.length} priced, ${v.unpriced} with no pool deep enough to quote, ${info.zeroed.toLocaleString()} sitting at zero. The last column is what a route to a bridged dollar could actually carry out.</p></div>
+            <td class="r num dim">${v.priced > 0 ? (r.usd / v.priced * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <p class="sub" style="margin:9px 0 0">${priced.length} priced &middot; ${v.unpriced} unpriceable &middot; ${info.zeroed.toLocaleString()} at zero</p></div>
 
       <div class="card"><h3>Send</h3>
         <div class="filters" style="display:grid;gap:8px;margin:0">
@@ -1909,13 +1940,31 @@ async function renderWalletBalances(account) {
     </div>
   </div>`;
 
-  const pie = $('#balPie');
-  if (pie) {
-    if (!slices.length) pie.innerHTML = '<div class="chart-empty">Nothing here can be priced.</div>';
+  let withLps = false;
+  const drawPie = () => {
+    const pie = $('#balPie'), sum = $('#pieSum');
+    if (!pie) return;
+    // Wallet and position holdings of the same token are the same holding, so
+    // they are added rather than listed twice.
+    const merged = new Map(slices.map(x => [x.label, x.value]));
+    if (withLps) for (const x of positionSlices(account)) merged.set(x.label, (merged.get(x.label) || 0) + x.value);
+    const rows = [...merged].map(([label, value]) => ({ label, value })).filter(x => x.value > 0);
+    const total = rows.reduce((a, x) => a + x.value, 0);
+    pie.innerHTML = '';
+    if (sum) sum.textContent = `— ${usd(total)} across ${rows.length} token${rows.length === 1 ? '' : 's'}${withLps ? ', wallet and pools' : ' in your wallet'}`;
+    if (!rows.length) { pie.innerHTML = '<div class="chart-empty">Nothing here can be priced.</div>'; return; }
     // Eight named slices and the tail folded into one: past that the colours
     // stop being separable and a legend of thirty rows is not a chart.
-    else pie.appendChild(donut(slices, { size: 170, top: 8, fmt: v2 => `${usd(v2)} · ${(v2 / v.priced * 100).toFixed(1)}%` }));
-  }
+    pie.appendChild(donut(rows, { size: 170, top: 8, fmt: v2 => `${usd(v2)} · ${(v2 / total * 100).toFixed(1)}%` }));
+  };
+  drawPie();
+  redrawBalancePie = () => { if (walletShown === account) drawPie(); };
+  const pl = $('#pieLps');
+  if (pl) pl.onclick = () => {
+    withLps = !withLps;
+    pl.setAttribute('aria-checked', String(withLps));
+    drawPie();
+  };
 
   fillMarks($('#walletBalances'));
   out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
@@ -1998,6 +2047,10 @@ async function lookupWallet(account) {
     const alcor = await walletPositionsFast(account);
     const slow = await walletPositions(account, { onProgress: () => {}, skipAlcor: true }).catch(() => ({ alcor: [], taco: [], poolsChecked: 0 }));
     res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, poolsChecked: slow.poolsChecked };
+    // The pie can now offer to include what is inside the positions, which it
+    // could not while this was still sweeping.
+    walletPositionsFor = { account, list: [...res.alcor, ...res.taco] };
+    redrawBalancePie();
   } catch {
     try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
     catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
@@ -2051,6 +2104,19 @@ async function lookupWallet(account) {
       <div class="card"><h3>Fees waiting to be collected</h3><div id="walFees"></div></div>
     </div>`;
 
+  // Compounding is the thing this page exists to make easy, and it was a grey
+  // button at the bottom of each card. Fees waiting is the honest hook: it is
+  // money already earned and sitting where it earns nothing more.
+  const waiting = res.alcor.reduce((a, p) => a + (p.feesUsd || 0), 0);
+  const withFees = res.alcor.filter(p => p.feesUsd > 0).length;
+  if (withFees) {
+    html += `<div class="cta">
+      <div><b>${usd(waiting)} in fees is sitting uncollected</b> across ${withFees} position${withFees === 1 ? '' : 's'}
+        <span class="sub">Collected fees earn nothing until they are back in the pool. Farm rewards are on top of this.</span></div>
+      <button class="btn" id="goCompound">Compound them</button>
+    </div>`;
+  }
+
   html += '<div class="grid g2">';
   for (const p of res.alcor) {
     const share = p.pool.tvlReal > 0 ? p.valueUsd / p.pool.tvlReal : null;
@@ -2069,7 +2135,7 @@ async function lookupWallet(account) {
         ${p.depositedUsd > 0 ? `<dt>Profit</dt><dd class="${p.pnlUsd >= 0 ? 'pos' : 'neg'}">${p.pnlUsd >= 0 ? '+' : ''}${usd(p.pnlUsd)}</dd>` : ''}
         <dt>Needs topping up at</dt><dd>${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}</dd>
       </dl>
-      <button class="btn ghost" style="margin-top:10px;width:100%" data-compound="${esc(p.pool.id)}:${p.posId}">Plan compound</button>
+      <button class="btn${p.feesUsd > 0 ? '' : ' ghost'}" style="margin-top:10px;width:100%" data-compound="${esc(p.pool.id)}:${p.posId}">${p.feesUsd > 0 ? `Compound &mdash; ${usd(p.feesUsd)} waiting` : 'Compound'}</button>
       <div class="cplan" hidden></div></div>`;
   }
   for (const p of res.taco) {
@@ -2086,6 +2152,11 @@ async function lookupWallet(account) {
   }
   html += '</div>';
   out.innerHTML = html;
+  // Every position card carries a data-pm slot for its pair logos and nothing
+  // was ever filling them, so the whole list rendered as bare text.
+  fillMarks(out);
+  const gc = $('#goCompound');
+  if (gc) gc.onclick = () => { show('compound'); $('#compInput').value = account; runCompound(account); };
 
   // Charts after the markup exists.
   $('#walDonut')?.appendChild(donut(all.map(p => ({ label: `${p.pool.symA}/${p.pool.symB}`, value: p.valueUsd || 0 })), { fmt: usd, top: 6 }));
@@ -2702,7 +2773,7 @@ async function runCompound(account) {
 
   if (unpriceable) {
     html += `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      <b>${unpriceable} reward${unpriceable === 1 ? '' : 's'} could not be priced.</b> Those tokens have no pool deep enough to quote against, so they are excluded from the figures above rather than counted at a made-up value. They can still be claimed — they just cannot be valued or safely swapped.</div>`;
+      <b>${unpriceable} reward${unpriceable === 1 ? '' : 's'} could not be priced</b> &mdash; claimable, but not valued or swapped.</div>`;
   }
 
   html += '<div class="grid" style="gap:12px">';
@@ -2713,10 +2784,24 @@ async function runCompound(account) {
     // too small to be worth the conversion, should be leavable behind. Each
     // entry carries where it came from, so unticking one drops its claim action
     // as well as its share of the deposit.
-    const basketBits = harvest.basket.map((b, bi) =>
-      `<label class="pick" title="${esc(b.source)}"><input type="checkbox" data-pick="${pos.posId}" data-bi="${bi}" checked>
+    // Three things you can do with a reward, not two. A farm often pays a token
+    // the pool does not hold — unticking it used to mean "do not claim it",
+    // which is not what anyone meant by "I want to keep that one".
+    //
+    //   compound  claim it, convert it, put it back in the pool
+    //   keep      claim it into your wallet and leave it there
+    //   skip      do not claim it at all; it keeps accruing
+    const inPool = b => b.tokenId === pos.pool.tokenA || b.tokenId === pos.pool.tokenB;
+    const basketBits = harvest.basket.map((b, bi) => `
+      <span class="pick">
         <span class="badge">${esc(b.symbol)} ${b.priced ? usd(b.usd) : '?'}</span>
-        <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm ' + b.source)}</span></label>`).join(' ');
+        <select class="pickmode" data-pick="${pos.posId}" data-bi="${bi}">
+          <option value="compound" selected>compound</option>
+          <option value="keep">keep</option>
+          <option value="skip">skip</option>
+        </select>
+        <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm')}${inPool(b) ? '' : ' &middot; not in this pool'}</span>
+      </span>`).join(' ');
     html += `<div class="card">
       <div class="ph" style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
         <span class="pair">${pairName(pos.pool)}</span>
@@ -2727,6 +2812,7 @@ async function runCompound(account) {
       </div>
       ${harvest.basket.length ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
+        <p class="sub" style="margin:-2px 0 8px">compound = back into the pool &middot; keep = into your wallet &middot; skip = leave it accruing</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
           <div><span class="dim">Already the right token</span><br><span class="mono">${[...new Set(plan.alreadyRight.map(b => b.symbol))].map(esc).join(', ') || '—'}</span></div>
@@ -2752,6 +2838,7 @@ async function runCompound(account) {
   </div>`;
 
   out.innerHTML = html;
+  fillMarks(out);
 
   // Adding and removing are the two things Alcor's own positions page is for,
   // and until now this page could only compound — which is the one operation
@@ -2786,16 +2873,19 @@ async function runCompound(account) {
     // Re-plan against what is actually ticked. Planning against the full basket
     // and then claiming a subset would size the deposit for money that never
     // arrived.
-    const picked = new Set([...out.querySelectorAll(`[data-pick="${b.dataset.run}"]:checked`)].map(c => Number(c.dataset.bi)));
-    const basket = entry.harvest.basket.filter((_, i) => picked.has(i));
-    if (!basket.length) {
-      out.querySelector(`[data-runbox="${b.dataset.run}"]`).innerHTML = '<div class="err" style="margin-top:10px">Nothing selected to compound.</div>';
-      return;
-    }
-    const run = basket.length === entry.harvest.basket.length ? entry : {
+    // Everything not skipped is claimed; only the compound ones are planned for.
+    // The deposit is capped by what the plan says it is worth, so a kept reward
+    // is claimed and then simply left in the wallet rather than swept back in.
+    const modes = new Map([...out.querySelectorAll(`[data-pick="${b.dataset.run}"]`)].map(c => [Number(c.dataset.bi), c.value]));
+    const claimBasket = entry.harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') !== 'skip');
+    const planBasket = entry.harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') === 'compound');
+    const box = out.querySelector(`[data-runbox="${b.dataset.run}"]`);
+    if (!claimBasket.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to skip.</div>'; return; }
+    if (!planBasket.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing set to compound — use Collect if you only want to claim.</div>'; return; }
+    const run = claimBasket.length === entry.harvest.basket.length && planBasket.length === entry.harvest.basket.length ? entry : {
       pos: entry.pos,
-      harvest: { ...entry.harvest, basket },
-      plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket, feeBps, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
+      harvest: { ...entry.harvest, basket: claimBasket },
+      plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket: planBasket, feeBps, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
     };
     b.disabled = true;
     await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), run, feeBps, feeAccount);
@@ -3048,7 +3138,7 @@ async function openAccount(name) {
         <td><span class="route">${x.route.map(poolName).map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
         <td class="dim">${esc(venueName[({ 'swap.alcor': 'alcor', 'swap.taco': 'taco', 'swap.box': 'defibox', 'swap.adex': 'adex' })[x.venue]] || x.venue)}</td>
       </tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} swaps in the last week, newest first. Read from the transfers this account signed &mdash; the memo names every pool the route crossed. Each row opens the transaction on waxblock.</p>`;
+      <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} swaps this week. Rows open on waxblock.</p>`;
   }).catch(() => { const b = $('#aSwaps'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>'; });
 }
 
@@ -3184,8 +3274,7 @@ async function openToken(id) {
   if (!t) {
     const [sym, contract] = id.split('@');
     $('#tokenDetail').innerHTML = `<div class="card"><h3>${esc(sym || id)}</h3>
-      <p class="sub" style="margin:8px 0 0">Nothing on ${esc(contract || 'that contract')} holds liquidity on Alcor, TacoSwap, Defibox or A-DEX right now,
-      so there is no price, no depth and no trade history to show. A token appears here as soon as one pool holds it.</p>
+      <p class="sub" style="margin:8px 0 0">No pool on any venue holds it right now, so there is nothing to price or chart.</p>
       <p class="sub" style="margin:8px 0 0"><a href="https://waxblock.io/tokens/${esc(contract || '')}/${esc(sym || '')}" target="_blank" rel="noopener">Look it up on waxblock &nearr;</a></p></div>`;
     return;
   }
@@ -3390,7 +3479,7 @@ async function openToken(id) {
     if (!tax.bps) {
       // Absence of evidence. Some contracts hold the rate in code rather than
       // in a readable table, so this cannot promise there is none.
-      el.innerHTML = `<p class="sub" style="margin:0">Nothing found in this contract&rsquo;s tables. That is not a guarantee &mdash; a rate held in code rather than in a table is invisible from outside, so a swap that comes back short is still worth believing over this line.</p>`;
+      el.innerHTML = `<p class="sub" style="margin:0">None found in this contract&rsquo;s tables &mdash; not a guarantee, a rate held in code is invisible from outside.</p>`;
       return;
     }
     const burn = tax.parts.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0);
