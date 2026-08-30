@@ -369,8 +369,11 @@ async function loadSnapshot() {
   state.depth = new Map();
   state.solidTokens = new Set();
   for (const row of d.prices) {
-    const [id, , , , exit = 0, ratio = 0, solid = 0, nominal = 0, taxBps = 0, burnBps = 0] = row;
-    state.depth.set(id, { exit, ratio, solid: !!solid, nominal, realisable: nominal * ratio, taxBps, burnBps });
+    const [id, , , , exit = 0, ratio = 0, solid = 0, nominal = 0, taxBps = 0, burnBps = 0, venueTaxBps = 0] = row;
+    // taxBps is what the token charges in general; venueTaxBps is what a holder
+    // was actually observed paying to deposit into swap.alcor, which for 28 of
+    // the 40 taxed tokens is nothing at all.
+    state.depth.set(id, { exit, ratio, solid: !!solid, nominal, realisable: nominal * ratio, taxBps, burnBps, venueTaxBps });
     if (solid) state.solidTokens.add(id);
   }
   state.farms = (d.farms || []).map(f => ({
@@ -937,7 +940,7 @@ export function tokenTable() {
         price: state.prices.get(id)?.usd ?? null,
         tvl: 0, tvlNominal: 0, vol24: 0, pools: 0, venues: new Set(),
         exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0, depth1: 0, bornAt: null,
-        taxBps: d?.taxBps ?? 0, burnBps: d?.burnBps ?? 0,
+        taxBps: d?.taxBps ?? 0, burnBps: d?.burnBps ?? 0, venueTaxBps: d?.venueTaxBps ?? 0,
       };
       rows.set(id, r);
     }

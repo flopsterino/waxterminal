@@ -162,6 +162,13 @@ export function harvestedFrom(before, after) {
 // it is a forced deposit of everything they own in that token. The only safe
 // definition of "the rewards" is the difference the harvest made, so the
 // balances are read before and after and only the delta is redeposited.
+// What a holder was measured paying to move this token into swap.alcor. The
+// snapshot probes it from real deposits rather than reading the token's ABI,
+// because the tables mislead in both directions.
+function venueTaxOf(tokenId) {
+  return state.depth?.get(tokenId)?.venueTaxBps ?? 0;
+}
+
 export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = '', before, expected = null, me = account(), auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
@@ -204,6 +211,17 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
   const depA = Math.max(0, balA - feeA);
   const depB = Math.max(0, balB - feeB);
 
+  // addliquid spends from the internal balance, so it must ask for what ARRIVES
+  // there, not what left the wallet. A token that taxes the deposit delivers
+  // less and the whole compound reverts with the same "Insufficient balance"
+  // that an unfunded addliquid gives. Asking for slightly less never reverts —
+  // the shortfall simply stays in the internal balance and funds the next run —
+  // so discount by the rate a holder was measured paying. 28 of the 40 taxed
+  // tokens charge nothing here, and those keep a discount of zero.
+  const net = (amt, id) => amt * (1 - (venueTaxOf(id) / 10000));
+  const askA = net(depA, pool.tokenA);
+  const askB = net(depB, pool.tokenB);
+
   // addliquid does NOT spend from your wallet. It spends from a balance held
   // inside swap.alcor, which you fund by transferring in with memo "deposit"
   // first — every real addliquid on chain is preceded by two of these. Calling
@@ -222,8 +240,8 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
     account: ALCOR, name: 'addliquid', authorization: auth,
     data: {
       poolId: Number(pool.id), owner: me,
-      tokenADesired: asset(depA, ta.symbol, ta.decimals),
-      tokenBDesired: asset(depB, tb.symbol, tb.decimals),
+      tokenADesired: asset(askA, ta.symbol, ta.decimals),
+      tokenBDesired: asset(askB, tb.symbol, tb.decimals),
       tickLower: position.tickLower, tickUpper: position.tickUpper,
       // The pool takes whichever side binds and returns the rest, so a floor of
       // zero is correct here: there is nothing to protect against.
@@ -247,7 +265,8 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
   // Whatever the pool does not take stays in the internal balance and can be
   // pulled back with swap.alcor::withdraw. We cannot name the amount before the
   // deposit executes, so it is surfaced to the user rather than silently left.
-  return { actions, balA, balB, depA, depB, feeA, feeB, afterA, afterB, leftoverNote: true };
+  return { actions, balA, balB, depA, depB, askA, askB, feeA, feeB, afterA, afterB,
+    venueTaxA: venueTaxOf(pool.tokenA), venueTaxB: venueTaxOf(pool.tokenB), leftoverNote: true };
 }
 
 // Restaking is separate: a position staked in several incentives needs one

@@ -18,6 +18,7 @@ import { writeFile, appendFile, readFile, mkdir } from 'node:fs/promises';
 import { loadCore, state, farmGroups, groupStakedUsd } from '../js/store.js';
 import { hyperion } from '../js/chain.js';
 import { parseAsset } from '../js/math.js';
+import { probeToken } from './taxprobe.mjs';
 
 const OUT = new URL('../data/', import.meta.url);
 const TOP_POOLS_IN_HISTORY = 150;
@@ -186,6 +187,12 @@ try {
 // browser — and it belongs on every list, because a 5% tax silently eats a
 // multi-hop swap and turns a profitable compound into a loss.
 const { tokenTax } = await import('../js/holders.js');
+// A tax on the token is not a tax on the deposit. chadtoken.gm charges 5% and
+// names swap.alcor in a list it calls "ignored_senders", yet a real 16.1M CHAD
+// deposit from a plain holder paid nothing; buzzingarden's "exempted" table is
+// scoped by a hashed key that never mentions swap.alcor, and its tokens are
+// exempt too. Reading the ABI gets this wrong in both directions, so a second
+// pass asks the chain what holders actually paid.
 const taxByToken = new Map();
 {
   const wanted = new Map();
@@ -237,6 +244,35 @@ const pools = state.pools
 // recompute it from the snapshot — the calculation needs every pool, including
 // the thousands left out — and without it the Tokens view had nothing to filter
 // on and rendered empty.
+// Only the taxed tokens need this, and only those in a real pool — 40 lookups,
+// not 600. An unproven token stays 0: the compound then asks for what it sent,
+// which is what every exempt token wants, and a token that turns out to charge
+// shows up here on the next run.
+const venueTax = new Map();
+{
+  const taxedIds = [...taxByToken.keys()].filter(id => (taxByToken.get(id)?.bps ?? 0) > 0);
+  console.log(`probing ${taxedIds.length} taxed tokens for what a deposit really costs...`);
+  const BATCH = 6;
+  let charged = 0;
+  for (let i = 0; i < taxedIds.length; i += BATCH) {
+    const batch = taxedIds.slice(i, i + BATCH);
+    const rs = await Promise.all(batch.map(id => {
+      const [sym, contract] = id.split('@');
+      return probeToken(sym, contract).catch(() => ({ verdict: 'unknown' }));
+    }));
+    batch.forEach((id, n) => {
+      const r = rs[n];
+      if (r.verdict === 'taxed') {
+        // Charge what was observed, not what the table claims: DEAL's config
+        // says 4.00% and a real deposit paid 0.10%.
+        venueTax.set(id, Math.ceil((r.paidPct ?? 0) * 100));
+        charged++;
+      }
+    });
+  }
+  console.log(`  ${charged} of ${taxedIds.length} actually charge a holder depositing into swap.alcor`);
+}
+
 const prices = [...state.prices.entries()]
   .filter(([, v]) => v.usd > 0)
   .map(([id, v]) => {
@@ -249,6 +285,7 @@ const prices = [...state.prices.entries()]
       d ? round(d.nominal, 2) : 0,
       taxByToken.get(id)?.bps ?? 0,
       taxByToken.get(id)?.parts?.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0) ?? 0,
+      venueTax.get(id) ?? 0,
     ];
   });
 
