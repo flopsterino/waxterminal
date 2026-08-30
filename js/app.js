@@ -6,13 +6,16 @@
 import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps } from './account.js';
+import { stakeInfo, claimHistory, observedApr } from './stake.js';
+import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
+import { balanceOf } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, promotionMemo, activePromotions } from './promote.js';
@@ -1298,8 +1301,206 @@ function wireWallet() {
   $('#walletDemo')?.remove();
 }
 
+// ------------------------------------------------------- WALLET SECTIONS ----
+// Everything an account holds and everything it is owed.
+//
+// One rule runs through all of it: **claiming is free**. Collecting your own
+// money is not a service, and charging for it would make the fee feel like a
+// toll rather than a price. The fee exists for compounding, which is work the
+// terminal does on your behalf — several transactions, measured balances, sized
+// deposits — and it is only ever taken from what was just claimed.
+
+// ---- staked WAX ------------------------------------------------------------
+async function renderWalletStake(account, feeBps, feeAccount) {
+  const out = $('#walletStake');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your stake…</span></div>';
+
+  let info, history;
+  try { [info, history] = await Promise.all([stakeInfo(account), claimHistory(account)]); }
+  catch { out.innerHTML = ''; return; }
+
+  if (!info.exists || !(info.staked > 0)) { out.innerHTML = ''; return; }
+
+  const apr = observedApr(history, info.staked);
+  const last = history[0] || null;
+  const ready = info.claimableAt == null || Date.now() >= info.claimableAt;
+  const waxUsd = state.waxUsd || 0;
+  const waited = info.lastClaim ? Math.round((Date.now() - info.lastClaim) / 86400000) : null;
+
+  out.innerHTML = `<div class="section"><h3>Staked WAX <span class="dim">&mdash; the reward on CPU and NET, which does not arrive on its own</span></h3>
+    <div class="stats">
+      <div class="stat"><span class="v">${qty(info.staked)} WAX</span><span class="k">staked</span><span class="sub">${waxUsd ? usd(info.staked * waxUsd) : '&nbsp;'}</span></div>
+      <div class="stat"><span class="v ${info.voting ? 'pos' : 'neg'}">${info.voting ? 'earning' : 'not earning'}</span><span class="k">vote</span><span class="sub">${info.voting
+        ? (info.proxy ? `proxied to ${acctLink(info.proxy)}` : `${info.producers.length} producers`)
+        : 'a stake that does not vote earns nothing'}</span></div>
+      <div class="stat"><span class="v">${apr != null ? pct(apr) : '—'}</span><span class="k">observed rate</span><span class="sub">${apr != null ? 'from what was actually paid' : 'needs a week of claims to annualise'}</span></div>
+      <div class="stat"><span class="v">${last ? qty(last.amount) + ' WAX' : '—'}</span><span class="k">last claim paid</span><span class="sub">${last ? ago(new Date(last.ts).toISOString()) : 'never claimed'}</span></div>
+    </div>
+    <div class="card">
+      ${!info.voting ? `<p class="sub" style="margin:0 0 10px">This stake is not voting, so it earns nothing. Voting for producers or a proxy starts the reward &mdash; this terminal will not pick one for you, because who you vote for is not a thing to have chosen on your behalf.</p>` : ''}
+      ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. The contract allows one claim a day.</p>` : ''}
+      ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The reward accrues whether or not it is collected, but the vote weight that earns it decays &mdash; which is why the claim re-casts your existing ${info.proxy ? 'proxy' : 'producers'} in the same transaction.</p>` : ''}
+      <div id="stakeSteps"></div>
+      <div class="toolbar" style="margin:0">
+        <button class="btn ghost" id="stakeClaim"${info.voting && ready ? '' : ' disabled'}>Claim only &mdash; no fee</button>
+        <button class="btn" id="stakeGo"${info.voting && ready ? '' : ' disabled'}>Claim and restake</button>
+      </div>
+      <p class="sub" style="margin:10px 0 0">Claiming on its own costs nothing and leaves the WAX in your wallet. Restaking takes a second signature, because what arrived is only knowable once the claim has run${feeBps > 0 && feeAccount ? `, and a ${(feeBps / 100).toFixed(2)}% fee on what was claimed goes to ${acctLink(feeAccount)}` : ''}.</p>
+    </div>
+  </div>`;
+
+  $('#stakeClaim').onclick = () => runStake(account, info, 0, '', { claimOnly: true });
+  $('#stakeGo').onclick = () => runStake(account, info, feeBps, feeAccount, {});
+}
+
+// ---- WaxDAO farm rewards ---------------------------------------------------
+async function renderWalletFarms(account) {
+  const out = $('#walletFarms');
+  if (!out) return;
+  let stakes = [];
+  try { stakes = await waxdaoStakes(account); } catch { out.innerHTML = ''; return; }
+  const live = stakes.map(s => ({ s, now: claimableNow(s) })).filter(x => x.now.length);
+  if (!live.length) { out.innerHTML = ''; return; }
+
+  const valueOf = t => {
+    const px = state.prices.get(`${t.symbol}@${t.contract}`)?.usd;
+    return px != null ? t.amount * px : null;
+  };
+  const total = live.reduce((s, x) => s + x.now.reduce((a, t) => a + (valueOf(t) ?? 0), 0), 0);
+
+  out.innerHTML = `<div class="section"><h3>WaxDAO farms <span class="dim">&mdash; rewards on staked NFTs, which most people forget they are owed</span></h3>
+    <div class="card">
+      <div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+        <thead><tr><th></th><th>Farm</th><th class="r">Staked</th><th>Waiting for you</th><th class="r">Worth</th></tr></thead>
+        <tbody>${live.map(({ s, now }, i) => `<tr>
+          <td><input type="checkbox" class="wdpick" data-farm="${esc(s.farm)}" checked></td>
+          <td class="mono">${esc(s.farm)}</td>
+          <td class="r num dim">${s.assets} NFT${s.assets === 1 ? '' : 's'}</td>
+          <td>${now.map(t => `<span class="badge">${qty(t.amount)} ${esc(t.symbol)}</span>`).join(' ')}</td>
+          <td class="r num">${(() => { const v = now.reduce((a, t) => a + (valueOf(t) ?? 0), 0); return v > 0 ? usd(v) : '<span class="dim">unpriced</span>'; })()}</td>
+        </tr>`).join('')}</tbody></table></div>
+      <div id="wdSteps"></div>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="wdClaim">Claim selected &mdash; no fee</button></div>
+      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting across ${live.length} farm${live.length === 1 ? '' : 's'}. ` : ''}Amounts are the balance the contract has recorded plus what has accrued since, at the farm's hourly rate &mdash; an estimate on the second half, and the claim pays whatever it actually pays.
+      This is a claim, not a compound, so there is no fee. The NFTs themselves are not touched and are not managed here.</p>
+    </div>
+  </div>`;
+
+  $('#wdClaim').onclick = async () => {
+    const farms = [...document.querySelectorAll('.wdpick:checked')].map(c => c.dataset.farm);
+    const box = $('#wdSteps');
+    if (!farms.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected.</div>'; return; }
+    box.innerHTML = `<div class="loading" style="margin-top:10px"><span class="spinner"></span><span>Waiting for your wallet — claiming ${farms.length} farm${farms.length === 1 ? '' : 's'}…</span></div>`;
+    try {
+      const r = await wallet.transact(buildWaxdaoClaims({ account, farms }));
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft);margin-top:10px"><b>Claimed.</b> ${farms.length} farm${farms.length === 1 ? '' : 's'} paid out to your wallet.
+        <br><span class="mono" style="font-size:11px">${r.id.slice(0, 16)}…</span></div>`;
+    } catch (e) {
+      const m = String(e.message || e);
+      box.innerHTML = `<div class="err" style="margin-top:10px">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+    }
+  };
+}
+
+// ---- balances, and sending them somewhere ----------------------------------
+async function renderWalletBalances(account) {
+  const out = $('#walletBalances');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading balances…</span></div>';
+
+  let info;
+  try { info = await accountInfo(account); } catch { out.innerHTML = ''; return; }
+  const v = valueBalances(info.balances, state.prices, state.depth);
+  const priced = v.rows.filter(r => r.usd != null);
+
+  out.innerHTML = `<div class="section"><h3>Balances</h3>
+    <div class="grid g2">
+      <div class="card"><h3>What you hold <span class="dim">&mdash; ${usd(v.realisable)} realisable of ${usd(v.priced)} at face value</span></h3>
+        <div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px"><tbody>${
+          priced.slice(0, 40).map(r => `<tr class="clickable" data-tokid="${esc(r.id)}">
+            <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span></td>
+            <td class="r num">${qty(r.amount)}</td>
+            <td class="r num">${usd(r.usd)}</td>
+            <td class="r num ${r.ratio < 0.5 ? 'dim' : ''}">${usd(r.real)}</td></tr>`).join('')}</tbody></table></div>
+        <p class="sub" style="margin:9px 0 0">${priced.length} priced, ${v.unpriced} with no pool deep enough to quote, ${info.zeroed.toLocaleString()} sitting at zero. The last column is what a route to a bridged dollar could actually carry out.</p></div>
+
+      <div class="card"><h3>Send</h3>
+        <div class="filters" style="display:grid;gap:8px;margin:0">
+          <label>Token<select id="sendTok">${v.rows.filter(r => r.amount > 0).map(r =>
+            `<option value="${esc(r.id)}">${esc(r.symbol)} — ${qty(r.amount)} available</option>`).join('')}</select></label>
+          <label>To<input id="sendTo" placeholder="account name" autocomplete="off" spellcheck="false"></label>
+          <label>Amount<input id="sendAmt" type="number" step="any" min="0" placeholder="0.0000" inputmode="decimal"></label>
+          <label>Memo<input id="sendMemo" placeholder="optional — required by most exchanges" autocomplete="off"></label>
+        </div>
+        <div id="sendOut" style="margin-top:10px"></div>
+        <div class="toolbar" style="margin:10px 0 0">
+          <button class="btn ghost" id="sendMax">Send everything</button>
+          <button class="btn" id="sendGo">Review</button>
+        </div>
+        <p class="sub" style="margin:10px 0 0">A transfer cannot be undone and an account name that does not exist will simply fail, which is the kinder of the two outcomes. The review step shows exactly what will be signed.</p>
+      </div>
+    </div>
+  </div>`;
+
+  fillMarks($('#walletBalances'));
+  out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
+
+  const balOf = id => v.rows.find(r => r.id === id)?.amount ?? 0;
+  $('#sendMax').onclick = () => { $('#sendAmt').value = String(balOf($('#sendTok').value)); };
+  $('#sendGo').onclick = () => reviewSend(account, v.rows);
+}
+
+// Two clicks, on purpose. The first builds the transfer and shows it back in
+// words; the second signs it. Everything else in this terminal is reversible or
+// merely a read — this is the one control that moves someone else's money to
+// someone else.
+function reviewSend(account, rows) {
+  const box = $('#sendOut');
+  const id = $('#sendTok').value;
+  const to = $('#sendTo').value.trim().toLowerCase();
+  const amount = Number($('#sendAmt').value);
+  const memo = $('#sendMemo').value;
+  const row = rows.find(r => r.id === id);
+
+  if (!row) { box.innerHTML = '<div class="err">Pick a token.</div>'; return; }
+  if (!/^[a-z1-5.]{1,12}$/.test(to)) { box.innerHTML = '<div class="err">That is not a WAX account name. They are 1–12 characters of a–z, 1–5 and dots.</div>'; return; }
+  if (!(amount > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+  if (amount > row.amount) { box.innerHTML = `<div class="err">You hold ${qty(row.amount)} ${esc(row.symbol)}, which is less than that.</div>`; return; }
+
+  const worth = row.price != null ? usd(amount * row.price) : null;
+  box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+    Send <b>${qty(amount)} ${esc(row.symbol)}</b>${worth ? ` (${worth})` : ''} from <span class="mono">${esc(account)}</span> to <span class="mono">${esc(to)}</span>${memo ? ` with memo <span class="mono">${esc(memo)}</span>` : ', with no memo'}.
+    ${!memo ? '<br><span class="dim">Most exchanges and services need a memo to credit a deposit. Without one it can be lost.</span>' : ''}
+    <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="sendConfirm">Sign and send</button></div></div>`;
+
+  $('#sendConfirm').onclick = async () => {
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+    try {
+      const r = await wallet.transact([{
+        account: row.contract, name: 'transfer',
+        authorization: [{ actor: account, permission: 'active' }],
+        data: { from: account, to, quantity: asset(amount, row.symbol, row.decimals), memo },
+      }]);
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Sent.</b> ${qty(amount)} ${esc(row.symbol)} to ${esc(to)}.
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+    } catch (e) {
+      const m = String(e.message || e);
+      box.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing was sent.' : esc(m)}</div>`;
+    }
+  };
+}
+
 async function lookupWallet(account) {
   if (!account) return;
+  // Each section answers its own question and loads on its own schedule; the
+  // position sweep is the slowest of them and should not hold up a balance.
+  const feeAccount = CFG?.commercial?.feeAccount || '';
+  const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
+  renderWalletStake(account, feeBps, feeAccount).catch(() => {});
+  renderWalletFarms(account).catch(() => {});
+  renderWalletBalances(account).catch(() => {});
+
   const out = $('#walletOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span id="wmsg">Looking up…</span></div>';
   let res;
@@ -1601,6 +1802,69 @@ function wireCompound() {
   $('#compDemo')?.remove();
 }
 
+async function runStake(account, info, feeBps, feeAccount, { claimOnly = false } = {}) {
+  const box = $('#stakeSteps');
+  const btn = $('#stakeGo');
+  const steps = claimOnly
+    ? [{ t: 'Claim', d: `Re-cast your existing ${info.proxy ? `proxy (${info.proxy})` : 'producers'} to refresh the vote weight, then collect the reward into your wallet. No fee, nothing staked.` }]
+    : [
+      { t: 'Claim', d: `Re-cast your existing ${info.proxy ? `proxy (${info.proxy})` : 'producers'} to refresh the vote weight, then collect the reward. Nothing is staked or spent.` },
+      { t: 'Restake', d: 'Read what actually arrived and stake exactly that back into CPU and NET.' },
+    ];
+  const render = (i, msg, err) => {
+    box.innerHTML = `<div class="steps">${steps.map((s, n) => `
+      <div class="step ${n < i ? 'done' : n === i ? 'active' : ''}">
+        <span class="n">${n < i ? '&check;' : n + 1}</span>
+        <div><h4>${s.t}</h4><p>${n === i && msg ? esc(msg) : s.d}</p></div>
+      </div>`).join('')}</div>
+      ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}`;
+  };
+
+  btn.disabled = true;
+  try {
+    render(0, 'Reading your WAX balance…');
+    const before = await balanceOf(account, 'eosio.token', 'WAX');
+
+    render(0, 'Waiting for your wallet…');
+    const claim = buildVoteClaim({ account, proxy: info.proxy, producers: info.producers });
+    const r1 = await wallet.transact(claim.actions);
+
+    if (claimOnly) {
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+        <b>Claimed.</b> The reward is in your wallet. No fee was taken.
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(r1.id)}" target="_blank" rel="noopener">${r1.id.slice(0, 16)}… &nearr;</a></div>`;
+      return;
+    }
+
+    render(1, 'Measuring what arrived…');
+    await new Promise(r => setTimeout(r, 2500));
+    const after = await balanceOf(account, 'eosio.token', 'WAX');
+    const claimed = after - before;
+    if (!(claimed > 0)) throw new Error('The claim paid nothing. The reward may already have been collected today, or the vote may have decayed to zero.');
+
+    // Leave the CPU cost of the second transaction unstaked, or a wallet with
+    // no spare WAX cannot pay for the very transaction that stakes it.
+    const KEEP = 0.01;
+    const stakeable = Math.max(0, claimed - KEEP);
+    const back = buildStakeBack({
+      claimed: stakeable, cpuWeight: info.staked, netWeight: 0,
+      account, feeBps, feeAccount,
+    });
+    if (!back.actions.length) throw new Error('Nothing left to stake after the claim.');
+
+    render(1, 'Waiting for your wallet — staking it back…');
+    const r2 = await wallet.transact(back.actions);
+
+    box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+      <b>Compounded.</b> Claimed ${qty(claimed)} WAX and staked ${qty(back.staked)} of it back${back.fee > 0 ? `, ${qty(back.fee)} WAX fee` : ''}.
+      <br><span class="mono" style="font-size:11px">${r1.id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
+  } catch (e) {
+    const m = String(e.message || e);
+    render(0, null, /cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : m);
+    btn.disabled = false;
+  }
+}
+
 async function runCompound(account) {
   if (!account) return;
   show('compound', account);
@@ -1624,6 +1888,7 @@ async function runCompound(account) {
   // never be signed.
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
+
   // Positions are independent, so read them in small parallel batches. Serial
   // was correct and far too slow: a 13-position wallet took minutes.
   const plans = [];

@@ -107,10 +107,14 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-export async function getRows(code, scope, table, { limit = 1000, lower = null, upper = null } = {}) {
+export async function getRows(code, scope, table, { limit = 1000, lower = null, upper = null, indexPosition = null, keyType = null } = {}) {
   const body = { json: true, code, scope: String(scope), table, limit };
   if (lower !== null) body.lower_bound = String(lower);
   if (upper !== null) body.upper_bound = String(upper);
+  // A secondary index turns "find this user's rows" from a scan of every row in
+  // the table into one query. farms.waxdao keys its stakers by an integer id
+  // scoped to the contract, and index 3 is the user name.
+  if (indexPosition !== null) { body.index_position = indexPosition; body.key_type = keyType || 'name'; }
   return post('get_table_rows', body);
 }
 

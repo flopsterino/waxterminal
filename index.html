@@ -21,7 +21,7 @@
     <button role="tab" data-view="tokens"   aria-selected="false">Tokens</button>
     <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
     <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
-    <button role="tab" data-view="wallet"   aria-selected="false">My liquidity</button>
+    <button role="tab" data-view="wallet"   aria-selected="false">My wallet</button>
     <button role="tab" data-view="compound" aria-selected="false">Compound</button>
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   </nav>
@@ -106,12 +106,15 @@
 
   <!-- ----------------------------------------------------------- WALLET -->
   <section class="view" id="view-wallet">
-    <h2 class="vt">My liquidity</h2>
-    <p class="vs">Everything you hold across all four venues.</p>
+    <h2 class="vt">My wallet</h2>
+    <p class="vs">Everything this account holds and everything it is owed, in one place. Claiming is free; the fee is only for compounding, and only ever taken from what was just claimed.</p>
     <div class="walletbar">
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
     </div>
+    <div id="walletStake"></div>
+    <div id="walletFarms"></div>
+    <div id="walletBalances"></div>
     <div id="walletOut"></div>
   </section>
 
