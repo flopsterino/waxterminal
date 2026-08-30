@@ -435,6 +435,9 @@ tbody tr.faded:hover td { opacity: .85; }
 }
 @media (max-width: 480px) {
   .stats { grid-template-columns: 1fr 1fr; }
+  /* An odd last tile left an empty bordered box beside it, which reads as a
+     value that failed to load. Only two columns can strand one. */
+  .stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .filters { grid-template-columns: 1fr; }
   #farmTable td:nth-child(4) { max-width: 130px; }
 }
@@ -497,6 +500,6 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .bars .lb { display: block; white-space: normal; }
 .bars .lbsub { display: block; color: var(--muted); font-size: 10.5px; font-family: var(--font-data); margin-top: 1px; }
 
-/* An odd last stat tile left an empty bordered box beside it, which reads as a
-   value that failed to load. */
-.stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+/* Two stacked TradingView panes: the series and what it traded, sharing a card
+   so the eye reads them against the same dates. */
+.tvpair { display: flex; flex-direction: column; gap: 6px; }

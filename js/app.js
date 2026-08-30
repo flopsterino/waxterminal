@@ -7,8 +7,8 @@ import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache,
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
-import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap, columns, sparkline } from './charts.js';
-import { candleChart } from './tvchart.js';
+import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
+import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
@@ -476,9 +476,17 @@ function renderOverview() {
     const perDay = new Map();
     for (const r of rows) perDay.set(new Date(r.at).toISOString().slice(0, 10), r);
     rows = [...perDay.values()];
-    el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvlReal ?? r.tvl })), {
-      fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'TVL over time',
-    }));
+    // TradingView where it loads, hand-drawn SVG where it does not. The library
+    // comes from a CDN, and a blocked CDN should cost you zoom and a crosshair,
+    // not the chart.
+    lineSeriesChart(el, rows.map(r => ({ time: Math.floor(r.at / 1000), value: r.tvlReal ?? r.tvl })),
+      { height: 240, color: 'var(--c1)', fmt: usd })
+      .catch(() => {
+        el.innerHTML = '';
+        el.appendChild(areaChart(rows.map(r => ({ x: r.at, y: r.tvlReal ?? r.tvl })), {
+          fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'TVL over time',
+        }));
+      });
   }).catch(() => {});
 }
 
@@ -2212,6 +2220,7 @@ async function openToken(id) {
         ? Math.max(...sets.filter(x => x.swaps.length).map(x => x.swaps[0].ts))
         : Date.now();
 
+      let volChart = null;
       const drawVol = hours => {
         const box = $('#tokVolChart'); if (!box) return;
         const since = Date.now() - hours * 3600 * 1000;
@@ -2225,16 +2234,24 @@ async function openToken(id) {
           c.n++; if (s.usd != null) c.usd += s.usd;
         }
         const pts = [...buckets.values()].sort((a, b) => a.time - b.time)
-          .map(b => ({ x: b.time * 1000, y: b.usd, note: `${b.n} trade${b.n === 1 ? '' : 's'}` }));
+          .map(b => ({ time: b.time, value: b.usd }));
+        // The previous chart holds a resize observer, so it is torn down rather
+        // than orphaned by overwriting the container.
+        volChart?.destroy?.(); volChart = null;
         box.innerHTML = '';
         if (!pts.length) {
           box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades in this window.</div>`;
         } else {
-          box.appendChild(columns(pts, {
-            fmtY: usd,
-            fmtX: ts => new Date(ts).toISOString().slice(bucketSec >= 86400 ? 5 : 11, bucketSec >= 86400 ? 10 : 16),
-            label: 'volume per bucket', color: 'var(--c2)',
-          }));
+          histogramChart(box, pts, { color: 'var(--c2)', fmt: usd })
+            .then(h => { volChart = h; })
+            .catch(() => {
+              box.innerHTML = '';
+              box.appendChild(columns(pts.map(p => ({ x: p.time * 1000, y: p.value })), {
+                fmtY: usd,
+                fmtX: ts => new Date(ts).toISOString().slice(bucketSec >= 86400 ? 5 : 11, bucketSec >= 86400 ? 10 : 16),
+                label: 'volume per bucket', color: 'var(--c2)',
+              }));
+            });
         }
         const moved = win.reduce((a, s) => a + (s.usd || 0), 0);
         const biggest = win.reduce((m, s) => (s.usd || 0) > (m?.usd || 0) ? s : m, null);
@@ -2449,13 +2466,15 @@ async function openToken(id) {
         Tokens enter the record once they hold $50 in pools or trade $50 in a day.</div>`;
       return;
     }
-    box.innerHTML = '';
-    box.appendChild(areaChart(series.map(r => ({ x: r.at, y: r.tvl })), {
-      fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(0, 10), color: 'var(--c1)', label: 'pooled value over time',
-    }));
-    box.appendChild(columns(series.map(r => ({ x: r.at, y: r.vol })), {
-      fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(5, 10), color: 'var(--c2)', label: 'daily volume', height: 140,
-    }));
+    box.innerHTML = '<div class="tvpair"><div class="tvtop"></div><div class="tvbot"></div></div>';
+    const sec = ms => Math.floor(ms / 1000);
+    const top = box.querySelector('.tvtop'), bot = box.querySelector('.tvbot');
+    lineSeriesChart(top, series.map(r => ({ time: sec(r.at), value: r.tvl })), { height: 200, color: 'var(--c1)', fmt: usd })
+      .catch(() => top.appendChild(areaChart(series.map(r => ({ x: r.at, y: r.tvl })), {
+        fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(0, 10), color: 'var(--c1)', label: 'pooled value over time' })));
+    histogramChart(bot, series.map(r => ({ time: sec(r.at), value: r.vol })), { height: 130, color: 'var(--c2)', fmt: usd })
+      .catch(() => bot.appendChild(columns(series.map(r => ({ x: r.at, y: r.vol })), {
+        fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(5, 10), color: 'var(--c2)', label: 'daily volume', height: 130 })));
     const first = series[0], last = series.at(-1);
     const move = first.tvl > 0 ? (last.tvl / first.tvl - 1) * 100 : null;
     box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:9px 0 0">${series.length} days recorded.

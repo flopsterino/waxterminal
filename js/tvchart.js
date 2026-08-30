@@ -85,13 +85,34 @@ export async function candleChart(container, candles, { height = 320, precision 
   };
 }
 
+// Bucketed volume on a real time axis. Hand-drawn columns were honest about
+// the bucket being the unit but gave two x labels and no crosshair; this is a
+// time series, and a time series wants zoom and a readable value under the
+// cursor like the price chart above it.
+export async function histogramChart(container, points, { height = 170, color = null, fmt = null } = {}) {
+  const { createChart, HistogramSeries } = await load();
+  container.innerHTML = '';
+  container.style.height = height + 'px';
+  const chart = createChart(container, {
+    ...themeOptions(),
+    // Volume has a floor of zero and no meaningful sub-cent detail, so the
+    // price scale is formatted as money rather than as a quote.
+    localization: fmt ? { priceFormatter: fmt } : undefined,
+  });
+  const c = color || cssVar('--c2') || '#3987e5';
+  const s = chart.addSeries(HistogramSeries, { color: c, priceFormat: { type: 'volume' } });
+  s.setData(points.map(p => ({ time: p.time, value: p.value })));
+  chart.timeScale().fitContent();
+  return { chart, destroy: () => { try { chart.remove(); } catch {} }, retheme: () => chart.applyOptions(themeOptions()) };
+}
+
 // A single line, for series that have no open/high/low — an account balance, a
 // TVL history, an APR over time.
-export async function lineSeriesChart(container, points, { height = 240, color = null, precision = 4 } = {}) {
+export async function lineSeriesChart(container, points, { height = 240, color = null, precision = 4, fmt = null } = {}) {
   const { createChart, AreaSeries } = await load();
   container.innerHTML = '';
   container.style.height = height + 'px';
-  const chart = createChart(container, themeOptions());
+  const chart = createChart(container, { ...themeOptions(), localization: fmt ? { priceFormatter: fmt } : undefined });
   const c = color || cssVar('--c1') || '#3987e5';
   const s = chart.addSeries(AreaSeries, {
     lineColor: c, topColor: c + '44', bottomColor: c + '05', lineWidth: 2,
