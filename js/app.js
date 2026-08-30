@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, TRADE_VENUES } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, readBalances, harvestedFrom } from './tx.js';
@@ -1493,16 +1493,16 @@ async function openToken(id) {
   const meta = tokenMeta(id);
   const pools = state.pools.filter(p => (p.tokenA === id || p.tokenB === id) && p.tvl > 0)
     .sort((a, b) => (b.tvl || 0) - (a.tvl || 0));
-  // Trades are read back out of Alcor's pool table, which is the only venue
-  // whose history a browser can replay without an indexer.
+  // Trades are read back out of each venue's own state table. All four keep
+  // one, so all four can be replayed.
   //
   // Ordered by volume, not by size. CHEESE's largest pool by pooled value is
   // CHEESE/WAXWBTC, where nothing trades; its price and its trades both live in
-  // CHEESE/WAXCASH. A chart drawn on the biggest pool is a chart of a pool, not
-  // of the token.
-  const alcorPools = pools.filter(p => p.dex === 'alcor' && p.sqrtX64)
+  // CHEESE/WAX. A chart drawn on the biggest pool is a chart of a pool, not of
+  // the token.
+  const tradePools = pools.filter(p => TRADE_VENUES.has(p.dex) && (p.dex !== 'alcor' || p.sqrtX64))
     .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvl || 0) - (a.tvl || 0));
-  const deepest = alcorPools[0] || null;
+  const deepest = tradePools[0] || null;
   const farms = farmGroups().filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
 
@@ -1569,8 +1569,8 @@ async function openToken(id) {
         <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Replaying the pool…</span></div></div></div>
     </div>` : ''}
 
-    ${alcorPools.length ? `<div class="section"><h3>Trading</h3>
-      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; every Alcor trade in ${esc(t.symbol)}, sized from the pool it moved</span>
+    ${tradePools.length ? `<div class="section"><h3>Trading</h3>
+      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; every trade in ${esc(t.symbol)}, sized from the pool it moved</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" data-tvol="24" aria-pressed="true">24h</button>
           <button class="chip" data-tvol="72" aria-pressed="false">3d</button>
@@ -1585,9 +1585,8 @@ async function openToken(id) {
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
       </div>
     </div>` : `<div class="section"><h3>Trading</h3>
-      <div class="card"><p class="sub" style="margin:0">${esc(t.symbol)} has no Alcor pool, so there is no price chart and no trade history here.
-      Trades are reconstructed from Alcor's own pool table, which is the only venue whose past a browser can replay without an indexer;
-      ${venues.map(esc).join(' and ')} publish${venues.length === 1 ? 'es' : ''} the current state but not the path it took.</p></div>
+      <div class="card"><p class="sub" style="margin:0">No pool holding ${esc(t.symbol)} keeps state a history node will replay, so there is no price chart and no trade history here.
+      Trades are reconstructed from each venue's own table rather than from a trade index, which is the only way to do it from a browser &mdash; and it needs a table to read.</p></div>
     </div>`}
 
     <div class="section"><h3>Ownership</h3>
@@ -1731,9 +1730,9 @@ async function openToken(id) {
   // One read serves both the candles and the trade tape. They ask the same
   // question of the same rows, and this page runs on the reader's own IP —
   // fetching the deepest pool twice is a cost paid by whoever opened it.
-  const use = alcorPools.slice(0, cap('tokenPools'));
+  const use = tradePools.slice(0, cap('tokenPools'));
   const deltasP = use.length
-    ? Promise.all(use.map(p => poolDeltas(p.id, { pages: 6 })
+    ? Promise.all(use.map(p => venueDeltas(p, { pages: 6 })
         .then(rws => ({ pool: p, rows: rws }))
         .catch(() => ({ pool: p, rows: [] }))))
     : Promise.resolve([]);
@@ -1763,7 +1762,7 @@ async function openToken(id) {
   // way to make, since three pages of a live firehose is about twenty minutes.
   // Replaying each pool's own row is both cheaper and actually complete: the
   // deepest CHEESE/HOLE pool gives back forty-five days of trades in six calls.
-  if (alcorPools.length) {
+  if (tradePools.length) {
     deltasP.then(raw => {
       const sets = raw.map(({ pool, rows }) => ({ pool, swaps: swapsFromDeltas(rows) }));
       const legs = [];
@@ -1837,7 +1836,7 @@ async function openToken(id) {
           .map(b => ({ x: b.time * 1000, y: b.usd, note: `${b.n} trade${b.n === 1 ? '' : 's'}` }));
         box.innerHTML = '';
         if (!pts.length) {
-          box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades on Alcor in this window.</div>`;
+          box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades in this window.</div>`;
         } else {
           box.appendChild(columns(pts, {
             fmtY: usd,
@@ -1852,12 +1851,22 @@ async function openToken(id) {
         // token's pools would be 74 sets of history calls from the reader's own
         // connection, so the busiest ones are replayed and the rest is said out
         // loud rather than folded into a total that looks complete.
-        const scope = `${use.length} of ${alcorPools.length} Alcor pool${alcorPools.length === 1 ? '' : 's'}`
-          + (alcorPools.length > use.length ? ' &mdash; the busiest' : '');
+        const venuesRead = [...new Set(use.map(p => p.dex))].join(' and ');
+        const scope = tradePools.length > use.length
+          ? `the ${use.length} busiest of its ${tradePools.length} pools, on ${venuesRead}`
+          : `${use.length} pool${use.length === 1 ? '' : 's'} on ${venuesRead}`;
+        // This figure and the "traded 24h" stat above it are two different
+        // measurements and will not match. That one is each venue's own
+        // published number; this one is counted here, once per trade, at the
+        // value of what actually moved. Checked against the chain on pool 1252:
+        // eight trades and 206.33 CHEESE from the pool rows against seven and
+        // 205.79 from logswap over the same three hours — so the method is
+        // sound, and the venues simply count something else.
         if (note) note.innerHTML = win.length
           ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} across ${scope}`
             + (biggest?.usd ? `, the largest ${usd(biggest.usd)}` : '')
-            + `. ${oldest > since ? `The history node only reaches back to ${ago(new Date(oldest).toISOString())}, so anything older is missing rather than absent.` : 'The window is fully covered.'}`
+            + `. ${oldest > since ? `The history node reaches back to ${ago(new Date(oldest).toISOString())} on the shallowest of them, so anything older is missing rather than absent.` : 'The window is fully covered.'}`
+            + ` Counted here from the pools themselves, once per trade &mdash; the headline figure above is what the venues publish, which is computed differently and usually larger.`
           : `Nothing traded in ${scope} in that window. Read back to ${ago(new Date(oldest).toISOString())}.`;
       };
 
@@ -1867,15 +1876,16 @@ async function openToken(id) {
         drawVol(Number(b.dataset.tvol));
       });
 
-      // A measured 24h figure beats a snapshot that can be hours old — but only
-      // for Alcor, so it never overwrites an all-venue number that exists.
+      // A measured figure beats a snapshot that can be an hour old — but it
+      // only covers the pools that were replayed, so it never overwrites the
+      // all-venue number when there is one.
       const v24 = all.filter(s => s.ts >= Date.now() - 86400000).reduce((a, s) => a + (s.usd || 0), 0);
       if (!(t.vol24 > 0) && v24 > 0) {
         const e = $('#tokVol'); if (e) e.textContent = usd(v24);
         const s = $('#tokVolSub');
-        if (s) s.textContent = alcorPools.length > use.length
-          ? `measured now, on Alcor's ${use.length} busiest pools`
-          : 'measured now, on Alcor';
+        if (s) s.textContent = tradePools.length > use.length
+          ? `measured now, on its ${use.length} busiest pools`
+          : 'measured now, from the pools themselves';
       }
 
       const tape = $('#tokTape');
@@ -2150,8 +2160,12 @@ async function openPool(key) {
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>`;
 
-  if (dex === 'alcor') {
-    poolDeltas(p.id, { pages: 8 }).then(rows => {
+  // Every venue keeps a state table, so every venue gets a chart and a tape.
+  // This used to be Alcor-only, and a TacoSwap or Defibox pool showed two boxes
+  // saying the feature was not wired up yet.
+  {
+    const deltasP = venueDeltas(p, { pages: 8 });
+    deltasP.then(rows => {
       const box = $('#poolChart');
       if (!rows.length) { box.innerHTML = '<div class="empty">No state changes for this pool in the window the history node keeps.</div>'; return; }
       // Price precision follows the pair: six decimals on a token worth $4,000
@@ -2170,16 +2184,28 @@ async function openPool(key) {
       box.after(note);
     }).catch(e => { $('#poolChart').innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`; });
 
-    recentSwaps({ poolId: p.id, limit: 400 }).then(s => {
+    // The tape comes from the same rows, not from the swap feed. Filtering the
+    // chain-wide logswap firehose down to one pool finds almost nothing for a
+    // quiet pool and then reports that as "no swaps", which is a statement
+    // about the feed rather than about the pool.
+    deltasP.then(rows => {
       const box = $('#poolSwaps');
-      if (!s.length) { box.innerHTML = '<div class="empty">No swaps for this pool in the recent feed window.</div>'; return; }
-      box.innerHTML = `<div class="tablewrap" style="max-height:280px;border:0"><table><thead><tr><th>When</th><th>Trader</th><th class="r">Size</th><th class="r">Value</th></tr></thead><tbody>${
-        s.slice(0, 40).map(x => `<tr><td class="num dim">${ago(x.ts)}</td><td class="mono">${esc(x.trader)}</td>
-          <td class="r num">${qty(Math.abs(x.amountA))} ${esc(x.symA)}</td><td class="r num">${usd(x.volumeUsd)}</td></tr>`).join('')}</tbody></table></div>`;
+      const sw = swapsFromDeltas(rows).reverse();
+      if (!sw.length) { box.innerHTML = '<div class="empty">No trades in the window the history node keeps.</div>'; return; }
+      box.innerHTML = `<div class="tablewrap" style="max-height:280px;border:0"><table>
+        <thead><tr><th>When</th><th></th><th class="r">${esc(p.symA)}</th><th class="r">${esc(p.symB)}</th><th class="r">Value</th></tr></thead>
+        <tbody>${sw.slice(0, cap('tokenTape')).map(x => {
+          const v = p.priceUsdA != null ? Math.abs(x.amountA) * p.priceUsdA
+            : p.priceUsdB != null ? Math.abs(x.amountB) * p.priceUsdB : null;
+          return `<tr><td class="num dim">${ago(new Date(x.ts).toISOString())}</td>
+            <td class="${x.amountA > 0 ? 'neg' : 'pos'}">${x.amountA > 0 ? `sold ${esc(p.symA)}` : `bought ${esc(p.symA)}`}</td>
+            <td class="r num">${qty(Math.abs(x.amountA))}</td>
+            <td class="r num">${qty(Math.abs(x.amountB))}</td>
+            <td class="r num">${v != null ? usd(v) : '<span class="dim">—</span>'}</td></tr>`;
+        }).join('')}</tbody></table></div>
+        <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} trades read straight out of the pool row, back to ${ago(new Date(sw.at(-1).ts).toISOString())}.
+        Who made them is not in the row &mdash; a pool records the change, not the account that caused it. The token page reads that from the swap memos.</p>`;
     }).catch(e => { $('#poolSwaps').innerHTML = `<div class="empty">Feed unavailable: ${esc(e.message)}</div>`; });
-  } else {
-    $('#poolChart').innerHTML = '<div class="empty">TacoSwap history is not wired up yet — its state changes live in a different table shape.</div>';
-    $('#poolSwaps').innerHTML = '<div class="empty">TacoSwap uses <code class="mono">exchangelog</code>; not wired up yet.</div>';
   }
 }
 

@@ -213,14 +213,30 @@ Measured on CHEESE/HOLE: six calls, 1,485 states, **1,224 real trades reaching
 back forty-five days**. The same six calls also draw the candles, which is why
 the page fetches them once and hands the rows to both.
 
-The one thing this cannot give is who traded. A pool row records the change, not
-the account that caused it — that stays on the Activity page, which reads
-`logswap` and has the trader on every row.
+All four venues keep such a table, so all four are replayable — `DELTA_SOURCE`
+in `js/store.js` is the whole difference between them. TacoSwap keys its pairs
+by symbol code rather than by number ("CHEPXJ", not 1305) and `get_deltas` wants
+the number, which is the same uint64 seen differently: up to seven bytes, first
+character in the lowest. Concentrated liquidity means Alcor's price comes from
+`sqrtPriceX64` and not from the reserve ratio; for the constant-product venues
+the ratio *is* the price.
+
+Legs in the same block are one trade. A route crossing two of a token's own
+pools writes two rows, and listing them separately says the trade happened twice
+and doubles the volume with it — the same mistake as summing every hop of a
+multi-hop swap. They fold into one, worth its largest leg, and a route that
+nets out near zero is marked as passing through rather than buying or selling.
+
+The one thing this cannot give is who traded: a pool row records the change, not
+the account that caused it. The swap memo can. An Alcor swap arrives as a
+transfer to `swap.alcor` whose memo names every pool the route will cross, so
+the token page's transfer feed answers it without another fetch — after learning
+that a contract re-notifying a transfer produces a second row for the same
+movement, which doubles every count until you drop the rows that duplicate the
+exact action that created them.
 
 ## Not built yet
 
-- TacoSwap history and its `exchangelog` feed. Its pairs show TVL and price but
-  no trade tape: the delta trick above is written against Alcor's `pools` table.
 - Alerts and CSV export.
 - Per-token history starts the day the snapshot job first records it. The chart
   says so rather than drawing two points across a year of axis.

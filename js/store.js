@@ -851,32 +851,67 @@ export function tradeRoutes(swaps) {
 // layer, for free, with no indexer. `primary_key` filters server-side, so one
 // pool costs one query instead of pulling the whole table and discarding 99% of
 // it. Retention is the history node's, not ours.
-export async function poolDeltas(poolId, { limit = 1000, pages = 3 } = {}) {
+// TacoSwap keys its pairs by symbol code rather than by number — "LFGWAXA"
+// rather than 17 — and get_deltas wants the number. It is the same uint64 seen
+// a different way: up to seven bytes, first character in the lowest.
+const symbolCodeKey = code => {
+  let v = 0n;
+  for (let i = code.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(code.charCodeAt(i));
+  return v.toString();
+};
+
+// Where each venue keeps the state a swap rewrites, and which side of the row
+// this codebase calls A. These must match the normalise* functions above or
+// every trade comes out backwards.
+const DELTA_SOURCE = {
+  alcor:   { code: ALCOR, table: 'pools', key: p => String(p.id), a: r => r.tokenA.quantity, b: r => r.tokenB.quantity },
+  taco:    { code: TACO,  table: 'pairs', key: p => symbolCodeKey(String(p.id)), a: r => r.pool1.quantity, b: r => r.pool2.quantity },
+  defibox: { code: BOX,   table: 'pairs', key: p => String(p.id), a: r => r.reserve0, b: r => r.reserve1 },
+  adex:    { code: ADEX,  table: 'pools', key: p => String(p.id), a: r => r.base_token.quantity, b: r => r.quote_token.quantity },
+};
+
+// Which venues a trade history can be replayed for at all.
+export const TRADE_VENUES = new Set(Object.keys(DELTA_SOURCE));
+
+// One pool's past, on any of the four venues.
+//
+// All of them keep their state in a plain table, and Hyperion's get_deltas
+// replays a single row filtered server-side by primary key — one query per
+// pool instead of pulling the whole table and discarding 99% of it. Retention
+// is the history node's, not ours.
+export async function venueDeltas(pool, { limit = 1000, pages = 3 } = {}) {
+  const src = DELTA_SOURCE[pool.dex];
+  if (!src) return [];
+  const key = src.key(pool);
   const out = [];
   for (let page = 0; page < pages; page++) {
     const q = new URLSearchParams({
-      code: ALCOR, scope: ALCOR, table: 'pools',
-      primary_key: String(poolId), limit: String(limit), skip: String(page * limit), sort: 'desc',
+      code: src.code, scope: src.code, table: src.table,
+      primary_key: key, limit: String(limit), skip: String(page * limit), sort: 'desc',
     });
     let d;
     try { d = await hyperion(`/v2/history/get_deltas?${q}`); }
     catch (e) { if (!out.length) throw e; break; }
-    const got = (d.deltas || []).filter(x => String(x.primary_key) === String(poolId));
+    const got = (d.deltas || []).filter(x => String(x.primary_key) === key);
     out.push(...got);
     if (got.length < limit) break;
   }
   return out.map(x => {
-    const a = parseAsset(x.data.tokenA.quantity), b = parseAsset(x.data.tokenB.quantity);
+    const a = parseAsset(src.a(x.data)), b = parseAsset(src.b(x.data));
     let price = null;
-    try { price = priceFromX64(x.data.currSlot.sqrtPriceX64, a.decimals, b.decimals); } catch {}
+    if (pool.dex === 'alcor') {
+      // Concentrated liquidity: the reserve ratio is not the price.
+      try { price = priceFromX64(x.data.currSlot.sqrtPriceX64, a.decimals, b.decimals); } catch {}
+    } else if (a.amount > 0) price = b.amount / a.amount;
     return {
       ts: new Date(x.timestamp + (x.timestamp.endsWith('Z') ? '' : 'Z')).getTime(),
       block: x.block_num, reserveA: a.amount, reserveB: b.amount,
-      price, liquidity: Number(x.data.liquidity),
+      price, liquidity: Number(x.data.liquidity ?? x.data.liquidity_token ?? 0),
     };
   }).filter(r => r.price > 0).reverse();
 }
 
+export const poolDeltas = (poolId, opts) => venueDeltas({ dex: 'alcor', id: poolId }, opts);
 export const poolHistory = (poolId, opts) => poolDeltas(poolId, opts);
 
 // Trades read back out of the pool row.
