@@ -135,8 +135,9 @@ async function boot() {
     if (!marksReady) marks.then(() => paint());
     if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
     const alive = state.hosts.filter(h => h.ok).length;
-    $('#freshness').innerHTML = `${state.pools.length.toLocaleString()} pools &middot; ${state.farms.length.toLocaleString()} farms`
-      + (state.hosts.length ? ` &middot; ${alive}/${state.hosts.length} nodes` : '');
+    // A node roster and a raw pool count are things the author cares about.
+    // What a reader wants from a footer is how old the numbers are.
+    $('#freshness').textContent = state.loadedAt ? `Updated ${ago(new Date(state.loadedAt).toISOString())}` : '';
     if (loadError) {
       banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
         Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
@@ -624,6 +625,7 @@ function renderTokens() {
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol24', label: 'Volume 24h', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
+    { k: 'taxBps', label: 'Transfer tax', r: true, s: true },
     { k: 'backing', label: 'Backed by', s: false },
     { k: 'pools', label: 'Pools', r: true, s: true },
     { k: 'bornAt', label: 'First seen', r: true, s: true },
@@ -645,6 +647,9 @@ function renderTokens() {
       <td class="r num">${usd(t.tvl)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
+      <td class="r num ${t.taxBps > 0 ? 'neg' : 'dim'}" title="${t.taxBps > 0
+        ? `Every transfer of ${esc(t.symbol)} costs ${(t.taxBps / 100).toFixed(2)}%${t.burnBps > 0 ? `, of which ${(t.burnBps / 100).toFixed(2)}% is burned` : ''}. A route through it pays this at each hop.`
+        : 'No transfer tax found in this contract\'s tables.'}">${t.taxBps > 0 ? (t.taxBps / 100).toFixed(2) + '%' : '—'}</td>
       <td class="dim" style="font-size:11.5px">${(() => {
         const d = state.depth.get(t.id);
         if (!d?.topPartner) return '—';
@@ -655,7 +660,7 @@ function renderTokens() {
       })()}</td>
       <td class="r num dim">${t.pools}</td>
       <td class="r num dim">${age(t.bornAt)}</td>
-    </tr>`).join('') || '<tr><td colspan="7" class="empty">No tokens match.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="9" class="empty">No tokens match.</td></tr>';
   fillMarks($('#tokTable tbody'));
   $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
 }

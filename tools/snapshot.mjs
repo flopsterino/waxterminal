@@ -138,6 +138,37 @@ const [tacoVol, boxVol, adexVol] = await Promise.all([
 ]);
 const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
 
+// Transfer taxes, for every token that appears in a pool. Reading these needs a
+// table call per contract, which is why it happens here rather than in the
+// browser — and it belongs on every list, because a 5% tax silently eats a
+// multi-hop swap and turns a profitable compound into a loss.
+const { tokenTax } = await import('../js/holders.js');
+const taxByToken = new Map();
+{
+  const wanted = new Map();
+  for (const p of state.pools) {
+    if (!(p.tvl > 0)) continue;
+    for (const id of [p.tokenA, p.tokenB]) {
+      const [sym, contract] = [id.split('@')[0], id.split('@')[1]];
+      if (!wanted.has(id)) wanted.set(id, { sym, contract });
+    }
+  }
+  const entries = [...wanted.entries()];
+  console.log(`reading transfer taxes for ${entries.length} tokens...`);
+  const BATCH = 8;
+  let taxed = 0;
+  for (let i = 0; i < entries.length; i += BATCH) {
+    await Promise.all(entries.slice(i, i + BATCH).map(async ([id, { sym, contract }]) => {
+      try {
+        const t = await tokenTax(contract, sym);
+        if (t.bps > 0) { taxByToken.set(id, t); taxed++; }
+      } catch {}
+    }));
+    if (i % 400 === 0) console.log(`  ${Math.min(i + BATCH, entries.length)}/${entries.length}`);
+  }
+  console.log(`taxes: ${taxed} of ${entries.length} tokens charge one`);
+}
+
 // --- the fast-start snapshot ------------------------------------------------
 // Everything worth showing on first paint: pools with real TVL, plus every pool
 // that has a farm even if thin, because the farms page needs them.
@@ -173,6 +204,8 @@ const prices = [...state.prices.entries()]
       d ? round(d.ratio, 6) : 0,
       d?.solid ? 1 : 0,
       d ? round(d.nominal, 2) : 0,
+      taxByToken.get(id)?.bps ?? 0,
+      taxByToken.get(id)?.parts?.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0) ?? 0,
     ];
   });
 

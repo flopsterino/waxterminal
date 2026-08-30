@@ -265,7 +265,9 @@ export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
 // This matters beyond curiosity: a 3% transfer tax silently eats a swap route
 // and turns a profitable compound into a loss, which is exactly the class of
 // bug that is invisible until you are looking for it.
-const TAX_TABLES = ['txfeecfg', 'configs', 'config', 'taxcfg', 'fees', 'settings'];
+//   chadtoken.gm.txfees    sym "4,CHAD", fee_receivers: [{receiver, fee}] where
+//                          fee is a fraction rather than basis points
+const TAX_TABLES = ['txfeecfg', 'configs', 'txfees', 'config', 'taxcfg', 'fees', 'settings'];
 
 export async function tokenTax(contract, symbol) {
   const { getRows } = await import('./chain.js');
@@ -275,8 +277,18 @@ export async function tokenTax(contract, symbol) {
     if (!rows?.length) continue;
 
     for (const r of rows) {
-      // Per-symbol config (buzzingarden shape)
+      // Per-symbol config, addressed either by bare code or by "decimals,SYMBOL".
       if (r.code && String(r.code) !== symbol) continue;
+      if (r.sym && String(r.sym).split(',').pop() !== symbol) continue;
+
+      // fee_receivers carries fractions, not basis points: 0.04 is 4%.
+      if (Array.isArray(r.fee_receivers) && r.fee_receivers.length) {
+        const parts = r.fee_receivers
+          .map(f => ({ to: f.receiver, bps: Math.round((Number(f.fee) || 0) * 10000) }))
+          .filter(x => x.bps > 0);
+        const bps = parts.reduce((a, x) => a + x.bps, 0);
+        if (bps > 0) return { bps, source: `${contract}.${table}`, parts, tradeable: null };
+      }
 
       if (Array.isArray(r.tx_fees) && r.tx_fees.length) {
         const bps = r.tx_fees.reduce((a, f) => a + (Number(f.bps) || 0), 0);
