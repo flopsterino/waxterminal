@@ -702,7 +702,11 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
     );
     for (const got of rest) { actions.push(...got); onProgress?.(actions.length, total); }
   }
-  const truncated = (first.total?.value ?? 0) > actions.length;
+  // Hyperion caps total.value at 10,000, so hitting exactly that means the
+  // window is larger than it will tell us — a 24h feed summed from it reported
+  // $1,633 against Alcor's own $30,514 for the same day.
+  const capped = (first.total?.value ?? 0) >= 10000;
+  const truncated = capped || (first.total?.value ?? 0) > actions.length;
   const byId = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
   const out = [];
   for (const a of actions) {
@@ -732,6 +736,7 @@ export async function recentSwaps({ poolId = null, minutes = 15, maxPages = 6, o
   }
   out.windowMinutes = minutes;
   out.truncated = truncated;
+  out.capped = capped;
   out.reportedTotal = first.total?.value ?? out.length;
   return out;
 }

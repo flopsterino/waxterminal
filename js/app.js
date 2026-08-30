@@ -6,7 +6,7 @@
 import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildRedeposit, buildRestake, readBalances } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom } from './tx.js';
 import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -1128,8 +1128,8 @@ function wireConnect() {
 async function runOne(box, entry, feeBps, feeAccount) {
   const { pos, harvest, plan } = entry;
   const steps = [
-    { t: 'Harvest and rebalance', d: `Collect fees, claim ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), swap into the band's ratio.` },
-    { t: 'Redeposit', d: 'Read what actually landed, add it back to the same tick range.' },
+    { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
+    { t: 'Swap and redeposit', d: 'Measure exactly what arrived, convert only that into the ratio your band needs, and add it back.' },
   ];
   const render = (i, msg, err) => {
     box.innerHTML = `<div class="steps">${steps.map((s, n) => `
@@ -1142,18 +1142,30 @@ async function runOne(box, entry, feeBps, feeAccount) {
 
   try {
     render(0, 'Reading your balances…');
-    // Snapshot first: the redeposit must be able to tell the harvest apart from
-    // what was already in the wallet.
-    const before = await readBalances(pos.pool);
+    // Everything the claim could produce, measured first, so afterwards the
+    // difference is the harvest and nothing else.
+    const basketIds = [...new Set(harvest.basket.map(b => b.tokenId))];
+    const before = await readBalances(pos.pool, basketIds);
 
     render(0, 'Waiting for your wallet…');
-    const { actions, swaps } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
-    const skipped = swaps.filter(s => s.skipped);
+    const { actions } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
     if (!actions.length) throw new Error('Nothing claimable to harvest.');
     const r1 = await wallet.transact(actions);
 
-    render(1, 'Measuring what the harvest produced…');
+    render(1, 'Measuring what arrived…');
     await new Promise(r => setTimeout(r, 2500));
+    const after = await readBalances(pos.pool, basketIds);
+    const harvested = harvestedFrom(before, after);
+    if (!harvested.size) throw new Error('The claim produced nothing.');
+
+    // Swaps sized from the measured harvest, then the deposit, in one signature.
+    const sw = buildSwaps({ pool: pos.pool, plan, harvested });
+    const skipped = sw.swaps.filter(x => x.skipped);
+    if (sw.actions.length) {
+      render(1, 'Waiting for your wallet — swapping what you claimed…');
+      await wallet.transact(sw.actions);
+      await new Promise(r => setTimeout(r, 2500));
+    }
     // What the plan said the harvest is worth, in token terms — the cap the
     // redeposit checks itself against.
     const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
@@ -1311,10 +1323,18 @@ async function renderActivity() {
   const out = $('#activityOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the swap feed…</span></div>';
   let swaps;
-  try { swaps = await recentSwaps({ minutes: actWindow, onProgress: n => { const m = out.querySelector('span:last-child'); if (m) m.textContent = `Reading the swap feed… ${n.toLocaleString()} swaps`; } }); }
+  // Longer windows need more pages, but not without limit: 24 hours of Alcor is
+  // six figures of actions and the answer stops improving long before that.
+  const pagesFor = m => m <= 60 ? 6 : m <= 240 ? 12 : 20;
+  try { swaps = await recentSwaps({ minutes: actWindow, maxPages: pagesFor(actWindow), onProgress: n => { const m = out.querySelector('span:last-child'); if (m) m.textContent = `Reading the swap feed… ${n.toLocaleString()} swaps`; } }); }
   catch (e) { out.innerHTML = `<div class="err">Feed unavailable: ${esc(e.message)}</div>`; return; }
   activityLoaded = true;
 
+  // Past the history node's ceiling the summed feed understates badly, so the
+  // headline falls back to the venue's own aggregate and says so.
+  const alcor24 = actWindow >= 1440
+    ? state.pools.reduce((a, p) => a + (p.vol24 || 0), 0) || null
+    : null;
   const priced = swaps.filter(s => s.volumeUsd != null);
   const vol = priced.reduce((s, x) => s + (x.volumeReal ?? 0), 0);
   const volNominal = priced.reduce((s, x) => s + x.volumeUsd, 0);
@@ -1333,11 +1353,16 @@ async function renderActivity() {
     traders.set(s.trader, t);
   }
 
-  $('#actMeta').innerHTML = `${swaps.length.toLocaleString()} swaps over ${actWindow} min &middot; ${priced.length.toLocaleString()} priceable`
-    + (swaps.truncated ? ` &middot; <span class="neg">showing the most recent ${swaps.length.toLocaleString()} of ${swaps.reportedTotal.toLocaleString()}</span>` : '');
+  $('#actMeta').innerHTML = `${swaps.length.toLocaleString()} swaps over ${actWindow >= 60 ? (actWindow / 60) + ' hours' : actWindow + ' min'} &middot; ${priced.length.toLocaleString()} priceable`
+    + (swaps.capped
+        ? ` &middot; <span class="neg">the history node returns at most 10,000, so this is the most recent slice of the window</span>`
+        : swaps.truncated
+          ? ` &middot; <span class="neg">showing the most recent ${swaps.length.toLocaleString()} of ${swaps.reportedTotal.toLocaleString()}</span>`
+          : '');
 
   out.innerHTML = `<div class="stats">
-      <div class="stat"><span class="v">${usd(vol)}</span><span class="k">volume, last ${actWindow} min</span><span class="sub">${usd(volNominal)} counted at face value</span></div>
+      <div class="stat"><span class="v">${swaps.truncated && alcor24 ? usd(alcor24) : usd(vol)}</span><span class="k">volume, last ${actWindow >= 60 ? (actWindow / 60) + 'h' : actWindow + ' min'}</span><span class="sub">${
+        swaps.truncated && alcor24 ? "Alcor's own 24h figure" : swaps.truncated ? 'from a partial window' : usd(volNominal) + ' at face value'}</span></div>
       <div class="stat"><span class="v">${swaps.length.toLocaleString()}</span><span class="k">swaps</span><span class="sub">${(swaps.length / actWindow).toFixed(0)} per minute</span></div>
       <div class="stat"><span class="v">${byPool.size}</span><span class="k">pools touched</span></div>
       <div class="stat"><span class="v">${traders.size}</span><span class="k">unique traders</span></div>

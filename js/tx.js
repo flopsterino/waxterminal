@@ -91,6 +91,14 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
     });
   }
 
+  return { actions, swaps: [] };
+}
+
+// --------------------------------------------------------- transaction 2 ----
+// Swap what actually arrived into the ratio the band needs, then deposit it.
+export function buildSwaps({ pool, plan, harvested, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const actions = [];
   const swaps = [];
   for (const s of plan.swaps) {
     const from = tokenMeta(s.fromToken), to = tokenMeta(s.toToken);
@@ -99,8 +107,14 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
     const path = findPath(s.fromToken, s.toToken);
     if (!path || !path.length) { swaps.push({ ...s, skipped: 'no route' }); continue; }
 
-    const amountIn = s.usd / pFrom;
-    const expectedOut = s.usd / pTo;
+    // Sized against the measured harvest, never the estimate. `harvested` maps
+    // token id to what the claim actually produced; anything not in it cannot
+    // be swapped, because the holder did not receive it.
+    const available = harvested?.get(s.fromToken);
+    let amountIn = s.usd / pFrom;
+    if (available != null) amountIn = Math.min(amountIn, available);
+    if (!(amountIn > 0)) { swaps.push({ ...s, skipped: 'nothing harvested' }); continue; }
+    const expectedOut = amountIn * pFrom / pTo;
     const minOut = expectedOut * (1 - SLIPPAGE);
     if (!(amountIn > 0) || !(minOut > 0)) { swaps.push({ ...s, skipped: 'dust' }); continue; }
 
@@ -111,21 +125,34 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
     });
     swaps.push({ ...s, amountIn, minOut, path: path.map(p => p.id), hops: path.length });
   }
-
   return { actions, swaps };
 }
 
 // --------------------------------------------------------- transaction 2 ----
 // Read what actually landed, deposit it into the same band, pay the fee.
-// Read both sides before the harvest runs, so the redeposit can tell what the
-// harvest actually produced.
-export async function readBalances(pool, me = account()) {
-  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
-  const [a, b] = await Promise.all([
-    balanceOf(me, ta.contract, ta.symbol),
-    balanceOf(me, tb.contract, tb.symbol),
-  ]);
-  return { a, b };
+// Balances of every token the harvest could produce, read before it runs, so
+// afterwards the difference is exactly what was claimed — the two pool tokens
+// plus whatever the farms pay in.
+export async function readBalances(pool, tokenIds = [], me = account()) {
+  const ids = [...new Set([pool.tokenA, pool.tokenB, ...tokenIds])];
+  const out = new Map();
+  await Promise.all(ids.map(async id => {
+    const t = tokenMeta(id);
+    try { out.set(id, await balanceOf(me, t.contract, t.symbol)); } catch { out.set(id, 0); }
+  }));
+  return out;
+}
+
+// The difference the claim made, per token. A negative delta means something
+// else spent that token in between; it counts as nothing rather than as a guess.
+export function harvestedFrom(before, after) {
+  const out = new Map();
+  for (const [id, was] of before) {
+    const now = after.get(id) ?? 0;
+    const gained = now - was;
+    if (gained > 0) out.set(id, gained);
+  }
+  return out;
 }
 
 // Compound what the harvest produced — nothing else.
@@ -145,10 +172,13 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
   ]);
 
   if (!before) throw new Error('Cannot tell rewards from holdings: balances before the harvest are missing');
+  // `before` is a Map keyed by token id.
+  const beforeA = before.get ? (before.get(pool.tokenA) ?? 0) : before.a;
+  const beforeB = before.get ? (before.get(pool.tokenB) ?? 0) : before.b;
   // A negative delta means something else spent that token between the two
   // reads; compound nothing rather than guess.
-  let balA = Math.max(0, afterA - before.a);
-  let balB = Math.max(0, afterB - before.b);
+  let balA = Math.max(0, afterA - beforeA);
+  let balB = Math.max(0, afterB - beforeB);
   if (!(balA > 0) && !(balB > 0)) throw new Error('The harvest produced nothing to redeposit');
 
   // Belt and braces. The delta is the right answer, but if the "before" read
