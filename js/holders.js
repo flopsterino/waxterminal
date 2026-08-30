@@ -269,9 +269,30 @@ export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
 //                          fee is a fraction rather than basis points
 const TAX_TABLES = ['txfeecfg', 'configs', 'txfees', 'config', 'taxcfg', 'fees', 'settings'];
 
+// Which of the tax tables a contract actually has. One ABI call answers it, and
+// replaces up to seven table reads that mostly fail — the difference between a
+// two-minute daily job and a twelve-minute one.
+const abiTables = new Map();
+async function taxTablesOf(contract) {
+  if (abiTables.has(contract)) return abiTables.get(contract);
+  let names = [];
+  try {
+    const r = await fetch('https://wax.greymass.com/v1/chain/get_abi', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ account_name: contract }), signal: AbortSignal.timeout(15000),
+    });
+    const d = await r.json();
+    const all = (d.abi?.tables || []).map(t => t.name);
+    names = TAX_TABLES.filter(t => all.includes(t));
+  } catch {}
+  abiTables.set(contract, names);
+  return names;
+}
+
 export async function tokenTax(contract, symbol) {
   const { getRows } = await import('./chain.js');
-  for (const table of TAX_TABLES) {
+  const tables = await taxTablesOf(contract);
+  for (const table of tables) {
     let rows;
     try { rows = (await getRows(contract, contract, table, { limit: 60 })).rows; } catch { continue; }
     if (!rows?.length) continue;
