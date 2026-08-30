@@ -470,3 +470,6 @@ dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
   font-weight: 600; line-height: 1.6; word-break: break-word;
 }
 .route .dim { font-weight: 400; }
+
+/* An export button sits in a toolbar of chips, so it must not shout. */
+.btn.csv { font-size: 12px; padding: 5px 10px; }

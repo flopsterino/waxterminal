@@ -12,6 +12,7 @@ import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
+import { csvButton } from './csv.js';
 import { sqrtPriceFromX64 } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -269,6 +270,7 @@ function renderOverview() {
   const pools = state.pools.filter(p => p.tvl > 0);
   const groups = farmGroups();
   const nominal = pools.reduce((s, p) => s + p.tvl, 0);
+  const realisable = pools.reduce((s, p) => s + (p.tvlReal || 0), 0);
   const selfBackedVal = pools.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked)
     .reduce((s, p) => s + (p.tvl || 0), 0);
   const rewardsReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
@@ -292,7 +294,7 @@ function renderOverview() {
   const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(nominal)}</span><span class="k">total value locked</span><span class="sub">${(selfBackedVal / nominal * 100).toFixed(0)}% sits in tokens that mostly back each other</span></div>
+    <div class="stat"><span class="v">${usd(realisable)}</span><span class="k">pooled value</span><span class="sub">${usd(nominal)} at face value &middot; ${(selfBackedVal / nominal * 100).toFixed(0)}% of that in tokens that mostly back each other</span></div>
     <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
@@ -300,10 +302,14 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
-    <div class="section"><h3>Best farm returns</h3>
-      <div class="card"><h3>Best farm rates <span class="dim">— what they pay today</span>
+    <div class="section"><h3>Farms</h3>
+      <div class="card"><h3>Best rates <span class="dim">— what they pay today</span>
         <span class="hero">${bestApr.length} of ${groups.length} farms</span></h3>
         <div id="ovBest"></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Biggest daily payouts <span class="dim">— sustainable ones only</span></h3><div id="ovRew"></div></div>
+        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} farms</span></h3><div id="ovApr"></div></div>
+      </div>
     </div>
     <div class="section"><h3>Where the liquidity is</h3>
       <div class="grid g2">
@@ -315,12 +321,6 @@ function renderOverview() {
       <div class="grid g2">
         <div class="card"><h3>Most traded <span class="dim">— 24h volume</span></h3><div id="ovTokVol"></div></div>
         <div class="card"><h3>Most pooled <span class="dim">— value behind the token</span></h3><div id="ovTokTvl"></div></div>
-      </div>
-    </div>
-    <div class="section"><h3>Farms</h3>
-      <div class="grid g2">
-        <div class="card"><h3>Biggest daily payouts <span class="dim">— sustainable ones only</span></h3><div id="ovRew"></div></div>
-        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} farms</span></h3><div id="ovApr"></div></div>
       </div>
     </div>
     <div class="section"><h3>Market</h3>
@@ -348,11 +348,11 @@ function renderOverview() {
     bestBox.appendChild(n);
   }
 
-  const top = [...pools].sort((a, b) => (b.tvl || 0) - (a.tvl || 0)).slice(0, 8);
-  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvl || 0), 0)) + ' in the top 8';
+  const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
+  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
   $('#ovTop').appendChild(bars(top.map(p => {
     const c = state.depth.get(p.tokenA)?.topPartner, d2 = state.depth.get(p.tokenB)?.topPartner;
-    return { label: `${p.symA}/${p.symB}`, value: p.tvl || 0,
+    return { label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0,
       note: `${(p.feeBps / 100).toFixed(2)}% fee · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}` };
   }), { fmt: usd }));
 
@@ -366,7 +366,7 @@ function renderOverview() {
 
   const byDex = new Map();
   const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
-  for (const p of pools) { const n = venueName[p.dex] || p.dex; byDex.set(n, (byDex.get(n) || 0) + (p.tvl || 0)); }
+  for (const p of pools) { const n = venueName[p.dex] || p.dex; byDex.set(n, (byDex.get(n) || 0) + (p.tvlReal || 0)); }
   $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
 
   // A farm emitting more in a day than its pool is worth is not a payout, it is
@@ -402,7 +402,7 @@ function renderOverview() {
   for (const p of pools) {
     if (p.dex !== 'alcor') continue;
     const k = `${(p.feeBps / 100).toFixed(2)}%`;
-    byFee.set(k, (byFee.get(k) || 0) + (p.tvl || 0));
+    byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0));
   }
   $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
 
@@ -496,10 +496,75 @@ function wireFilterPanel(panel, store, onChange) {
 }
 
 // ---------------------------------------------------------------- POOLS -----
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvl', dir: -1,
+const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'tvlReal', dir: -1,
   tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
+// What each table last put on screen. An export has to be exactly what the
+// reader is looking at — same filters, same sort, same order — or the
+// spreadsheet and the page quietly disagree about what was there.
+const lastRendered = { pools: [], tokens: [], farms: [] };
+
+// Exported raw, never formatted. "$1.2k" is a thing to read; 1234.56 is a thing
+// to sum, and re-parsing a display string is how a column of money turns into a
+// column of text halfway down.
+const CSV_COLS = {
+  pools: [
+    { h: 'venue', v: p => p.dex }, { h: 'pool_id', v: p => p.id },
+    { h: 'pair', v: p => `${p.symA}/${p.symB}` },
+    { h: 'token_a', v: p => p.tokenA }, { h: 'token_b', v: p => p.tokenB },
+    { h: 'fee_pct', v: p => p.feeBps / 100 },
+    { h: 'value_realisable_usd', v: p => p.tvlReal }, { h: 'value_face_usd', v: p => p.tvl },
+    { h: 'volume_24h_usd', v: p => p.vol24 }, { h: 'volume_7d_usd', v: p => p.vol7d },
+    { h: 'change_24h_pct', v: p => p.change24 },
+    { h: 'trade_depth_1pct_usd', v: p => p.depth1 },
+    { h: 'price_b_per_a', v: p => p.priceAB },
+    { h: 'price_a_usd', v: p => p.priceUsdA }, { h: 'price_b_usd', v: p => p.priceUsdB },
+    { h: 'reserve_a', v: p => p.reserveA }, { h: 'reserve_b', v: p => p.reserveB },
+    { h: 'first_seen', v: p => (p.bornAt ? new Date(p.bornAt).toISOString() : null) },
+  ],
+  tokens: [
+    { h: 'token', v: t => t.id }, { h: 'symbol', v: t => t.symbol }, { h: 'contract', v: t => t.contract },
+    { h: 'price_usd', v: t => t.price },
+    { h: 'pooled_realisable_usd', v: t => t.tvl }, { h: 'pooled_face_usd', v: t => t.tvlNominal },
+    { h: 'volume_24h_usd', v: t => t.vol24 },
+    { h: 'trade_depth_1pct_usd', v: t => t.depth1 },
+    { h: 'exit_value_usd', v: t => t.exit }, { h: 'exit_ratio', v: t => t.ratio },
+    { h: 'transfer_tax_pct', v: t => t.taxBps / 100 },
+    { h: 'burned_on_transfer_pct', v: t => t.burnBps / 100 },
+    { h: 'tax_paid_to_dex_pct', v: t => t.venueTaxBps / 100 },
+    { h: 'pools', v: t => t.pools }, { h: 'venues', v: t => [...t.venues].join(' ') },
+    { h: 'first_seen', v: t => (t.bornAt ? new Date(t.bornAt).toISOString() : null) },
+  ],
+  farms: [
+    { h: 'venue', v: g => g.dex }, { h: 'pool_id', v: g => g.poolId },
+    { h: 'pair', v: g => (g.pool ? `${g.pool.symA}/${g.pool.symB}` : '') },
+    { h: 'fee_pct', v: g => (g.pool ? g.pool.feeBps / 100 : null) },
+    { h: 'pays', v: g => [...new Set(g.rewards.map(r => r.symbol))].join(' ') },
+    { h: 'incentives', v: g => g.farms.length },
+    { h: 'reward_per_day_usd', v: g => g.rewardUsdDay },
+    { h: 'reward_per_day_sellable_usd', v: g => g.rewardRealDay },
+    { h: 'staked_usd', v: g => g.stakedUsd }, { h: 'staked_sellable_usd', v: g => g.stakedReal },
+    { h: 'apr_pct', v: g => g.apr }, { h: 'apr_sellable_pct', v: g => g.aprReal },
+    { h: 'apr_at_your_size_pct', v: g => g.aprAt },
+    { h: 'your_share_of_pool', v: g => g.share },
+    { h: 'runway_days', v: g => (isFinite(g.runwayDays) ? g.runwayDays : null) },
+    { h: 'apr_status', v: g => g.aprStatus },
+  ],
+};
+
+// The export carries the same rows the table is showing, cap included. A free
+// tier that shows 400 pools but hands over 19,820 in a file would make the cap
+// a fiction; saying which of the two numbers you are getting keeps it honest.
+function wireCsv(toolbarSel, beforeSel, name, key) {
+  const bar = $(toolbarSel);
+  if (!bar || bar.querySelector('.csv')) return;
+  const b = csvButton('Export CSV', name, () => lastRendered[key].slice(0, cap(key)), CSV_COLS[key]);
+  b.title = `Downloads exactly what this table is showing — the same filters, the same sort, up to the ${cap(key).toLocaleString()} rows the view holds.`;
+  bar.insertBefore(b, $(beforeSel));
+}
+
 function wirePools() {
+  wireCsv('#view-pools .toolbar', '#poolCount', 'wax-pools', 'pools');
   $('#poolSearch').oninput = e => { poolFilters.q = e.target.value.trim().toLowerCase(); renderPools(); };
   const setDex = d => { poolFilters.dex = d; ['All', 'Alcor', 'Taco'].forEach(n => $(`#fDex${n}`).setAttribute('aria-pressed', String(d === n.toLowerCase() || (d === 'all' && n === 'All')))); renderPools(); };
   $('#fDexAll').onclick = () => setDex('all');
@@ -527,7 +592,7 @@ function filteredPools() {
     if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
     if (poolFilters.hideDust && !((p.tvl ?? 0) >= min)) return false;
     if (poolFilters.hideThin && p.thin) return false;
-    if (!inRange(p.tvl ?? -1, poolFilters.tvl)) return false;
+    if (!inRange(p.tvlReal ?? -1, poolFilters.tvl)) return false;
     if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
     if (!inRange(isFinite(p.routeDepth) ? p.routeDepth : Infinity, poolFilters.depth)) return false;
     if (poolFilters.farmed !== 'any') {
@@ -546,7 +611,7 @@ function filteredPools() {
 const POOL_COLS = [
   { k: 'rank', label: '', sortable: false },
   { k: 'pair', label: 'Pool', sortable: false },
-  { k: 'tvl', label: 'TVL', r: true, sortable: true },
+  { k: 'tvlReal', label: 'Pooled value', r: true, sortable: true },
   { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
   { k: 'vol7d', label: '7d', r: true, sortable: true },
   { k: 'turnover', label: 'Turnover', r: true, sortable: true },
@@ -558,6 +623,7 @@ const POOL_COLS = [
 
 function renderPools() {
   const rows = filteredPools();
+  lastRendered.pools = rows;
   rows.sort((a, b) => {
     const k = poolFilters.sort;
     const x = a[k], y = b[k];
@@ -568,7 +634,13 @@ function renderPools() {
     return (x - y) * poolFilters.dir;
   });
 
+  // Two numbers, and they are nine times apart on WAX, so the page has to say
+  // which one it is showing. Face value counts every token at its quoted price;
+  // realisable value counts only what a route to a bridged dollar could carry
+  // out. The realisable one leads everywhere, because it is the one that
+  // survives contact with a sell order.
   const total = rows.reduce((s, p) => s + (p.tvl || 0), 0);
+  const totalReal = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
   const concentrated = rows.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked);
   const concVal = concentrated.reduce((s, p) => s + (p.tvl || 0), 0);
   // state.pools holds what the snapshot kept (anything above $100 or farmed).
@@ -579,7 +651,7 @@ function renderPools() {
   const taco = (state.counts?.taco ?? shownT);
   const priced = [...state.prices.values()].length;
   $('#poolStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(total)}</span><span class="k">total value locked</span><span class="sub">${usd(concVal)} of it in pools whose tokens mostly back each other</span></div>
+    <div class="stat"><span class="v">${usd(totalReal)}</span><span class="k">pooled value</span><span class="sub">${usd(total)} at face value &middot; ${usd(concVal)} of that in pools whose tokens mostly back each other</span></div>
     <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools worth listing</span><span class="sub">of ${alcor.toLocaleString()} in existence</span></div>
     <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">of ${taco.toLocaleString()}</span></div>
     <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
@@ -607,7 +679,7 @@ function renderPools() {
       <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
         <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
         <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
-      <td class="r num">${usd(p.tvl)}</td>
+      <td class="r num" title="What this pool could actually pay out, priced through routes that reach a bridged dollar. ${usd(p.tvl)} at face value.">${usd(p.tvlReal)}<span class="nominal">${usd(p.tvl)} face</span></td>
       <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num dim">${p.vol7d > 0 ? usd(p.vol7d) : '—'}</td>
       <td class="r num" title="24h volume against pooled value — how hard the liquidity is working">${p.turnover > 0 ? p.turnover.toFixed(2) + '×' : '<span class="dim">—</span>'}</td>
@@ -627,6 +699,7 @@ const tokFilters = { q: '', solidOnly: true, sort: 'tvl', dir: -1 };
 let tokRows = null;
 
 function wireTokens() {
+  wireCsv('#view-tokens .toolbar', '#tokCount', 'wax-tokens', 'tokens');
   $('#tokSearch').oninput = e => { tokFilters.q = e.target.value.trim().toLowerCase(); renderTokens(); };
   $('#fTokSolid').onclick = e => {
     tokFilters.solidOnly = !tokFilters.solidOnly;
@@ -653,6 +726,7 @@ function renderTokens() {
     return (x - y) * tokFilters.dir;
   });
 
+  lastRendered.tokens = rows;
   const tvl = rows.reduce((s, t) => s + t.tvl, 0);
   const vol = rows.reduce((s, t) => s + t.vol24, 0);
   $('#tokStats').innerHTML = `
@@ -745,6 +819,7 @@ function poolShare(g, size) {
 }
 
 function wireFarms() {
+  wireCsv('#view-farms .toolbar', '#farmCount', 'wax-farms', 'farms');
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
@@ -834,6 +909,8 @@ function renderFarms() {
     if (yn) return -1;
     return (x - y) * farmFilters.dir;
   });
+
+  lastRendered.farms = rows;
 
   const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
   const enterableAll = rows.filter(g => !g.tooSmall && g.aprAt != null);
@@ -1647,7 +1724,7 @@ async function openToken(id) {
         <td>${esc(p.symA)}/${esc(p.symB)}</td>
         <td class="dim">${esc(p.dex)}</td>
         <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
-        <td class="r num">${usd(p.tvl)}</td>
+        <td class="r num" title="${usd(p.tvl)} at face value">${usd(p.tvlReal)}</td>
         <td class="r num ${p.vol24 > 0 ? '' : 'dim'}">${p.vol24 > 0 ? usd(p.vol24) : '—'}</td>
       </tr>`).join('')}</tbody></table></div>`;
   $('#tokPools').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
@@ -1922,6 +1999,18 @@ async function openToken(id) {
           Sizes are what actually moved in the pool, so they are the trade rather than an estimate of it.
           &ldquo;through&rdquo; means the route crossed two of ${esc(t.symbol)}&rsquo;s pools in one block and handed it straight on &mdash; arbitrage, not someone buying.
           Who traded is beside this, read from the swap memos.</p>`;
+        // The whole reconstruction, not the shown slice: a reader who wants to
+        // do their own arithmetic on it should get every trade this page found,
+        // and a tape is exactly the shape a spreadsheet is for.
+        tape.appendChild(csvButton(`Export ${all.length.toLocaleString()} trades`, `${t.symbol.toLowerCase()}-trades`, () => all, [
+          { h: 'time', v: x => new Date(x.ts).toISOString() },
+          { h: 'block', v: x => x.block },
+          { h: 'pools', v: x => x.pools.join(' + ') },
+          { h: 'direction', v: x => x.side },
+          { h: `amount_${t.symbol.toLowerCase()}`, v: x => x.amount },
+          { h: 'value_usd', v: x => x.usd },
+          { h: 'legs', v: x => x.legs.length },
+        ]));
       }
     }).catch(() => {
       const b = $('#tokVolChart'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
