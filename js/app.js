@@ -2008,6 +2008,13 @@ function renderNewPosition(account) {
 }
 
 // ------------------------------------------------------- ADD / REMOVE LP ----
+// Only one panel open at a time. Both use fixed element ids, so two open at
+// once would have the second one's Review button reading the first one's
+// inputs — which on a deposit form is not a cosmetic bug.
+function closeOtherLpPanels(keep) {
+  document.querySelectorAll('.lpbox').forEach(b => { if (b !== keep) b.innerHTML = ''; });
+}
+
 // The two operations Alcor's own positions page exists for, and the two this
 // terminal could not do — which is an odd gap in a page whose only other
 // feature, compounding, is those two run back to back.
@@ -2021,6 +2028,7 @@ function renderNewPosition(account) {
 // remainder simply sits in the internal balance. Typing one side and having the
 // other follow is the only version of this that does not waste money.
 function renderAddLiquidity(box, pos, account) {
+  closeOtherLpPanels(box);
   const pool = pos.pool;
   const ratio = pos.ratio || { shareA: 0.5, shareB: 0.5 };
   const pxA = pool.priceUsdA, pxB = pool.priceUsdB;
@@ -2082,6 +2090,7 @@ function renderAddLiquidity(box, pos, account) {
 // say where the tokens go and the neighbouring addliquid sends them somewhere
 // else entirely.
 function renderRemoveLiquidity(box, pos, account) {
+  closeOtherLpPanels(box);
   const pool = pos.pool;
   box.innerHTML = `<div class="card" style="margin-top:11px;background:var(--surface-2)">
     <h3>Take ${pairName(pool)} back out <span class="dim">&mdash; ${usd(pos.valueUsd)} in this position</span></h3>
