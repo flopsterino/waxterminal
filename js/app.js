@@ -1472,6 +1472,7 @@ async function renderActivity() {
 // and the trade feed — so a slow `stat` read held up work that never depended
 // on it. Each card now goes and gets its own answer, and says what it is doing
 // while it waits.
+let tokenGen = 0;
 async function openToken(id) {
   const rows = tokRows || tokenTable();
   const t = rows.find(x => x.id === id);
@@ -1488,6 +1489,13 @@ async function openToken(id) {
       <p class="sub" style="margin:8px 0 0"><a href="https://waxblock.io/tokens/${esc(contract || '')}/${esc(sym || '')}" target="_blank" rel="noopener">Look it up on waxblock &nearr;</a></p></div>`;
     return;
   }
+
+  // Opening a second token before the first has finished loading would let the
+  // first one's answers land in the second one's cards — every card here fills
+  // in on its own schedule and looks its element up by id, which the next token
+  // reuses. Each handler checks that it is still the page being looked at.
+  const gen = ++tokenGen;
+  const stale = () => gen !== tokenGen;
 
   const d = state.depth.get(id);
   const meta = tokenMeta(id);
@@ -1666,6 +1674,7 @@ async function openToken(id) {
 
   // ---- transfer tax --------------------------------------------------------
   tokenTax(t.contract, t.symbol).then(tax => {
+    if (stale()) return;
     const el = $('#tokTax');
     if (!el) return;
     const venueBps = t.venueTaxBps || 0;
@@ -1692,6 +1701,7 @@ async function openToken(id) {
   // rather than on this line.
   const statsP = tokenStats(t.contract, t.symbol).catch(() => null);
   statsP.then(stats => {
+    if (stale()) return;
     if (!stats) return;
     const set = (sel, html) => { const e = $(sel); if (e) e.innerHTML = html; };
     set('#fSupply', qty(stats.supply));
@@ -1716,6 +1726,7 @@ async function openToken(id) {
 
   // ---- how many hold it at all --------------------------------------------
   holderCount(t.contract, t.symbol).then(n => {
+    if (stale()) return;
     if (n == null) return;
     const e = $('#tokHolderN'); if (e) e.textContent = n.toLocaleString();
     const f = $('#fHolders'); if (f) f.textContent = n.toLocaleString();
@@ -1745,6 +1756,7 @@ async function openToken(id) {
   // ---- price chart ---------------------------------------------------------
   if (deepest) {
     deltasP.then(sets => {
+      if (stale()) return;
       const rws = sets.find(x => x.pool.id === deepest.id)?.rows || [];
       const box = $('#tokChart');
       if (!box) return;
@@ -1769,6 +1781,7 @@ async function openToken(id) {
   // deepest CHEESE/HOLE pool gives back forty-five days of trades in six calls.
   if (tradePools.length) {
     deltasP.then(raw => {
+      if (stale()) return;
       const sets = raw.map(({ pool, rows }) => ({ pool, swaps: swapsFromDeltas(rows) }));
       const legs = [];
       for (const { pool, swaps } of sets) {
@@ -1922,6 +1935,7 @@ async function openToken(id) {
   const movesP = transferActivity(t.contract, t.symbol, { hours: 24 });
 
   movesP.then(({ transfers, covered, complete }) => {
+    if (stale()) return;
     const box = $('#tokMoves'); if (!box) return;
     if (!transfers.length) { box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} transfers in the last 24 hours.</div>`; return; }
     const total = transfers.reduce((a, x) => a + x.amount, 0);
@@ -1956,6 +1970,7 @@ async function openToken(id) {
   // swap is a transfer to swap.alcor naming every pool the route will cross, so
   // the feed already fetched above answers it for free.
   movesP.then(({ transfers, covered, complete }) => {
+    if (stale()) return;
     const box = $('#tokTraders'); if (!box) return;
     // Indexed once. A linear scan per pool id, over twenty thousand pools and a
     // few hundred routes, is tens of millions of comparisons on the main thread.
@@ -2000,6 +2015,7 @@ async function openToken(id) {
 
   // ---- liquidity providers -------------------------------------------------
   topLPs(id, pools).then(lps => {
+    if (stale()) return;
     const box = $('#tokLps'); if (!box) return;
     if (!lps.length) { box.innerHTML = '<div class="chart-empty">No positions found.</div>'; return; }
     const tot = lps.reduce((s, l) => s + l.amount, 0);
@@ -2017,6 +2033,7 @@ async function openToken(id) {
   const histP = loadHistory();
 
   histP.then(hist => {
+    if (stale()) return;
     if (!farms.length) return;
     // farms rows: [key, rewardUsdDay, stakedUsd, apr, rewardRealDay, stakedReal, aprReal]
     const trend = new Map();
@@ -2037,6 +2054,7 @@ async function openToken(id) {
   }).catch(() => {});
 
   histP.then(hist => {
+    if (stale()) return;
     const box = $('#tokHist'); if (!box) return;
     const series = perDay(tokenSeries(hist, id), r => r.at);
     if (series.length < 3) {
@@ -2063,6 +2081,7 @@ async function openToken(id) {
   try {
     holders = await topHolders(t.contract, t.symbol, cap('holders'));
     await clusterHolders(holders);
+    if (stale()) return;
   } catch (e) {
     $('#tokHolders').innerHTML = `<div class="chart-empty">Holder list unavailable (${esc(e.message)}).</div>`;
     $('#tokDist').innerHTML = '<div class="chart-empty">Needs the holder list.</div>';
@@ -2071,6 +2090,7 @@ async function openToken(id) {
   }
 
   const stats = await statsP;
+  if (stale()) return;
   const supply = stats?.supply ?? 0;
   if (!holders.length) {
     $('#tokHolders').innerHTML = '<div class="chart-empty">No holders returned.</div>';
