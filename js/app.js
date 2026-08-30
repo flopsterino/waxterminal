@@ -137,7 +137,11 @@ async function boot() {
     const alive = state.hosts.filter(h => h.ok).length;
     // A node roster and a raw pool count are things the author cares about.
     // What a reader wants from a footer is how old the numbers are.
-    $('#freshness').textContent = state.loadedAt ? `Updated ${ago(new Date(state.loadedAt).toISOString())}` : '';
+    // Volume refreshes hourly, everything else daily, so say which is which
+    // rather than stamping one time over both.
+    $('#freshness').textContent = state.volumeAt
+      ? `Volume ${ago(new Date(state.volumeAt).toISOString())} · rest ${ago(new Date(state.loadedAt).toISOString())}`
+      : (state.loadedAt ? `Updated ${ago(new Date(state.loadedAt).toISOString())}` : '');
     if (loadError) {
       banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
         Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);

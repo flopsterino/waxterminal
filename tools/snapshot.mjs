@@ -138,6 +138,39 @@ const [tacoVol, boxVol, adexVol] = await Promise.all([
 ]);
 const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
 
+// Alcor publishes safe_usd_price and sets it to zero for tokens it will not
+// stand behind. Where the venue itself refuses to quote, this terminal has no
+// business inventing one: honouring that veto is what closes the gap between
+// $2.65M of "Alcor TVL" here and the $1.69M Alcor reports, and it is a simpler
+// rule than any model of our own.
+const vetoed = new Set();
+try {
+  const toks = await (await fetch('https://wax.alcor.exchange/api/v2/tokens', { signal: AbortSignal.timeout(30000) })).json();
+  for (const t of toks) {
+    if (t.safe_usd_price === 0 || t.is_scam) vetoed.add(`${t.symbol}@${t.contract}`);
+  }
+  console.log(`alcor declines to price ${vetoed.size} tokens; honouring that`);
+  let dropped = 0;
+  for (const id of vetoed) {
+    if (state.prices.delete(id)) dropped++;
+    const d = state.depth.get(id);
+    if (d) { d.nominal = 0; d.realisable = 0; d.ratio = 0; }
+  }
+  // Re-price the pools without them.
+  for (const p of state.pools) {
+    if (vetoed.has(p.tokenA)) { p.priceUsdA = null; p.usdA = null; }
+    if (vetoed.has(p.tokenB)) { p.priceUsdB = null; p.usdB = null; }
+    const pa = p.priceUsdA, pb = p.priceUsdB;
+    if (pa != null && pb != null) p.tvl = p.reserveA * pa + p.reserveB * pb;
+    else if (pa != null || pb != null) {
+      const known = pa != null ? p.reserveA * pa : p.reserveB * pb;
+      p.tvl = p.dex === 'alcor' ? known : known * 2;
+    } else p.tvl = null;
+    if (p.tvlReal != null && p.tvl != null) p.tvlReal = Math.min(p.tvlReal, p.tvl);
+  }
+  console.log(`dropped ${dropped} prices; Alcor TVL now $${Math.round(state.pools.filter(p => p.dex === 'alcor').reduce((s, p) => s + (p.tvl || 0), 0)).toLocaleString()}`);
+} catch (e) { console.log('could not read Alcor token list:', e.message); }
+
 // Transfer taxes, for every token that appears in a pool. Reading these needs a
 // table call per contract, which is why it happens here rather than in the
 // browser — and it belongs on every list, because a 5% tax silently eats a

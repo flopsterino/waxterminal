@@ -10,7 +10,7 @@ on:
   # fresh data that never reaches the site, and the terminal quietly serves
   # yesterday's numbers.
   workflow_run:
-    workflows: ["Chain snapshot"]
+    workflows: ["Chain snapshot", "Volume"]
     types: [completed]
   workflow_dispatch:
 

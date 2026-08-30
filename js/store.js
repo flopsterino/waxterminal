@@ -65,7 +65,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null, facing: new Map() };
+export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), counts: null, facing: new Map(), volumeAt: null };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -390,6 +390,24 @@ async function loadSnapshot() {
     const k = `${f.d}:${f.i}`;
     state.snapshotFarms.set(k, { stakedUsd: f.su, stakedReal: f.sr, at: d.at });
   }
+  // Volume is refreshed hourly in its own file, because a 24h figure written
+  // into a daily snapshot reads 75% wrong a few hours later.
+  try {
+    const vr = await fetch('data/volume.json', { cache: 'no-cache' });
+    if (vr.ok) {
+      const v = await vr.json();
+      state.volumeAt = v.at;
+      const byId = new Map(pools.map(p => [`${p.dex}:${p.id}`, p]));
+      for (const [id, row] of Object.entries(v.alcor || {})) {
+        const pool = byId.get(`alcor:${id}`);
+        if (!pool) continue;
+        const [v1, v7, ch] = row;
+        pool.vol24 = v1; pool.vol7d = v7; pool.change24 = ch;
+        pool.turnover = (v1 > 0 && pool.tvlReal > 0) ? v1 / pool.tvlReal : null;
+      }
+    }
+  } catch { /* the snapshot's own figures stand in */ }
+
   state.fromSnapshot = true;
   return d;
 }

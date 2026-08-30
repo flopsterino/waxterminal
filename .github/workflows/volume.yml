@@ -1,0 +1,33 @@
+name: Volume
+
+# Hourly, on its own, because a 24h volume figure decays continuously — one
+# written at snapshot time reads badly wrong a few hours later. Everything else
+# the terminal shows moves slowly enough to wait for the daily job.
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: volume
+  cancel-in-progress: true
+
+jobs:
+  volume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node tools/volume.mjs
+      - name: Commit if changed
+        run: |
+          git config user.name  "wax-terminal-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/volume.json
+          git diff --staged --quiet || git commit -m "volume $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
