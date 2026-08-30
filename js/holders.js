@@ -332,3 +332,100 @@ export async function tokenTax(contract, symbol) {
   }
   return { bps: 0, source: null, parts: [], tradeable: null };
 }
+
+// How many accounts hold it at all. Concentration is meaningless without it:
+// one wallet holding 40% reads very differently at thirty holders than at
+// thirty thousand, and every "top holders" table implies a denominator it
+// never shows.
+export async function holderCount(contract, symbol) {
+  const r = await fetch(`${LIGHT}/holdercount/wax/${contract}/${symbol}`, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`holdercount ${r.status}`);
+  const n = Number((await r.text()).trim());
+  return isFinite(n) ? n : null;
+}
+
+// Transfers are a different question from swap volume, and a token page that
+// only counts trades misses most of what happens to a token: an airdrop moves
+// a fortune without a single trade, and a token can trade hard on one pool
+// while nothing at all moves between wallets.
+//
+// Hyperion returns one document per action with every receiver folded into a
+// `receipts` array, so a transfer arrives once — but older nodes in the pool
+// answer with a row per receiver, so this dedupes on the pair that is unique
+// either way.
+export async function transferActivity(contract, symbol, { hours = 24, maxPages = 4 } = {}) {
+  const { hyperion } = await import('./chain.js');
+  const after = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const page = n => hyperion(`/v2/history/get_actions?${new URLSearchParams({
+    'act.account': contract, 'act.name': 'transfer', after,
+    limit: '1000', skip: String(n * 1000), sort: 'desc',
+  })}`);
+
+  const first = await page(0);
+  const rows = [...(first.actions || [])];
+  const claimed = first.total?.value ?? rows.length;
+  const pages = Math.min(Math.ceil(claimed / 1000) - 1, maxPages - 1);
+  if (pages > 0) {
+    const rest = await Promise.all(Array.from({ length: pages }, (_, i) =>
+      page(i + 1).then(d => d.actions || []).catch(() => [])));
+    for (const got of rest) rows.push(...got);
+  }
+
+  // A contract that re-notifies a transfer it just received produces a second
+  // row for the same movement: same parties, same amount, with
+  // `creator_action_ordinal` pointing back at the original. Alcor does this on
+  // every swap, so keeping both counts every trade twice — the same trap that
+  // once made a single 1.6128 CHEESE swap look like two.
+  //
+  // Deduping on `trx_id` would be worse than the disease: a split route really
+  // does send several transfers in one transaction. A row is dropped only when
+  // it duplicates the exact action that created it, which leaves two genuine
+  // equal legs alone.
+  const byTrx = new Map();
+  for (const a of rows) {
+    if (!byTrx.has(a.trx_id)) byTrx.set(a.trx_id, []);
+    byTrx.get(a.trx_id).push(a);
+  }
+  const isEcho = a => {
+    if (!a.creator_action_ordinal) return false;
+    const d = a.act?.data || {};
+    return (byTrx.get(a.trx_id) || []).some(b => b !== a
+      && b.action_ordinal === a.creator_action_ordinal
+      && b.act?.data?.quantity === d.quantity
+      && b.act?.data?.from === d.from
+      && b.act?.data?.to === d.to);
+  };
+
+  const seen = new Set();
+  const out = [];
+  let oldest = Infinity;
+  for (const a of rows) {
+    const key = `${a.trx_id}:${a.action_ordinal}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (isEcho(a)) continue;
+    const x = a.act?.data;
+    if (!x?.quantity) continue;
+    const [amtStr, sym] = String(x.quantity).split(' ');
+    if (sym !== symbol) continue;
+    const amount = parseFloat(amtStr) || 0;
+    const ts = new Date(a.timestamp + (a.timestamp.endsWith('Z') ? '' : 'Z')).getTime();
+    oldest = Math.min(oldest, ts);
+    const memo = String(x.memo || '');
+    // An Alcor swap arrives as a transfer to swap.alcor whose memo names every
+    // pool the route will cross: swapexactin#<ids>#<recipient>#<minOut>#<deadline>.
+    // The trader and their route are therefore already in this feed, which is
+    // the one thing replaying a pool row can never tell you.
+    const route = memo.startsWith('swapexactin#') ? memo.split('#')[1]?.split(',').filter(Boolean) ?? null : null;
+    out.push({ ts, trx: a.trx_id, from: x.from, to: x.to, amount, memo, route });
+  }
+  out.sort((a, b) => b.ts - a.ts);
+  // Hyperion caps `total` at 10,000. Past that the window really covered is
+  // whatever the pages reached, not the hours that were asked for, and saying
+  // "24 hours" over a truncated read is how a quiet token gets invented.
+  return {
+    transfers: out,
+    covered: isFinite(oldest) ? oldest : Date.now(),
+    complete: claimed < 10000 && claimed <= rows.length,
+  };
+}

@@ -15,13 +15,14 @@
 // =============================================================================
 
 import { writeFile, appendFile, readFile, mkdir } from 'node:fs/promises';
-import { loadCore, state, farmGroups, groupStakedUsd } from '../js/store.js';
+import { loadCore, state, farmGroups, groupStakedUsd, tokenTable } from '../js/store.js';
 import { hyperion } from '../js/chain.js';
 import { parseAsset } from '../js/math.js';
 import { probeToken } from './taxprobe.mjs';
 
 const OUT = new URL('../data/', import.meta.url);
 const TOP_POOLS_IN_HISTORY = 150;
+const TOP_TOKENS_IN_HISTORY = 300;
 const MIN_TVL = 100;
 
 const round = (v, d = 6) => (v == null || !isFinite(v)) ? null : Number(v.toFixed(d));
@@ -139,6 +140,18 @@ const [tacoVol, boxVol, adexVol] = await Promise.all([
 ]);
 const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
 
+// Fold it back onto the pools in memory, not only into the file being written.
+// Everything downstream in this job — the token table, and so the token history
+// — reads `state`, and a volume that only exists in the output means the
+// history records a column of zeroes that looks exactly like a quiet market.
+for (const p of state.pools) {
+  const v = p.dex === 'alcor' ? volByPool.get(String(p.id)) : null;
+  p.vol24 = p.dex === 'alcor' ? (v?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null);
+  p.vol7d = v?.d7 ?? null;
+  p.change24 = v?.ch24 ?? null;
+  p.bornAt = v?.born ?? p.bornAt ?? null;
+}
+
 // Alcor publishes safe_usd_price and zeroes it for tokens it will not stand
 // behind. That judgement is worth deferring to — honouring it brings Alcor TVL
 // here within 1% of what Alcor itself reports — but not on its own: they zero
@@ -233,10 +246,10 @@ const pools = state.pools
     l: p.liquidity, t: p.tick, s: p.sqrtX64,
     p: round(p.priceAB, 12), v: round(p.tvl, 2), pa: round(p.priceUsdA, 12), pb: round(p.priceUsdB, 12),
     rd: isFinite(p.routeDepth) ? round(p.routeDepth, 0) : null, tn: p.thin ? 1 : 0,
-    bd: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.born ?? null) : null,
-    v1: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null),
-    v7: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.d7 ?? null) : null,
-    ch: p.dex === 'alcor' ? (volByPool.get(String(p.id))?.ch24 ?? null) : null,
+    bd: p.bornAt ?? null,
+    v1: p.vol24 ?? null,
+    v7: p.vol7d ?? null,
+    ch: p.change24 ?? null,
     vr: round(p.tvlReal, 2), er: round(p.exitRatio, 6), d1: round(p.depth1, 2),
   }));
 
@@ -327,6 +340,21 @@ const topPools = [...state.pools].filter(p => p.tvl > 0)
 const farms = groups.filter(g => g.rewardUsdDay > 0.01)
   .map(g => [`${g.dex}:${g.poolId}`, round(g.rewardUsdDay, 3), round(g.stakedUsd, 0), round(g.apr, 1), round(g.rewardRealDay, 3), round(g.stakedReal, 0), round(g.aprReal, 1)]);
 
+// Tokens ride along too, and without them the token page can only ever show
+// today. A price chart can be rebuilt from pool state changes whenever someone
+// asks, but nothing on chain records what a token's pooled value or its daily
+// volume was last week — Hyperion's retention is not ours to rely on, and once
+// a day passes unrecorded it is gone.
+//
+// 300 tokens at five numbers each is about 12 KB a run. The whole point of
+// keeping it this small is that it stays a file in a repo rather than becoming
+// a database someone has to host.
+const tokenRows = tokenTable()
+  .filter(t => (t.tvl || 0) >= 50 || (t.vol24 || 0) >= 50)
+  .sort((a, b) => (b.tvl || 0) - (a.tvl || 0))
+  .slice(0, TOP_TOKENS_IN_HISTORY)
+  .map(t => [t.id, round(t.tvl, 0), round(t.vol24, 0), round(t.price, 12), t.pools]);
+
 // One file per month keeps any single file small and lets old months be pruned
 // or archived without rewriting history.
 const month = new Date().toISOString().slice(0, 7);
@@ -341,8 +369,9 @@ await appendFile(new URL(`history/${month}.ndjson`, OUT), JSON.stringify({
   nFarms: groups.length,
   pools: topPools,
   farms,
+  tokens: tokenRows,
 }) + '\n');
-console.log(`appended history/${month}.ndjson — ${topPools.length} pools, ${farms.length} farms`);
+console.log(`appended history/${month}.ndjson — ${topPools.length} pools, ${farms.length} farms, ${tokenRows.length} tokens`);
 
 // Guard against silently shipping a broken snapshot: if the anchor price or the
 // pool count collapses, the run should fail loudly rather than overwrite good

@@ -45,6 +45,7 @@ Two files. Nothing else needs touching.
 - **Compound** — the full harvest for each position and the exact transaction that redeposits it.
 - **Overview** — the dashboard: where liquidity sits, who pays the most, where APRs actually fall, WAX candles, and the multi-year TVL series.
 - **Activity** — the live swap feed: who traded what, through which pool, for how much.
+- **Token** — one page per token: price, supply, what is burned and what can still be minted, the transfer tax and whether a DEX actually pays it, every holder with what they hold inside pools, a bubble map of who moves it to whom, the liquidity providers, every pool it trades in, the farms touching it, transfer traffic, and its whole trade history.
 
 Charts are hand-drawn SVG for categorical work (donut, bars, distribution) and
 TradingView Lightweight Charts for price, where people expect candles, a real
@@ -180,11 +181,38 @@ missing because of the tier or because the data ends there.
 
 With `enabled: false` nothing is gated and every cap stays where it is today.
 
+## Reading a token's trades without a trade index
+
+Hyperion cannot filter `logswap` by pool. The `poolId` query parameter is
+accepted and silently ignored, and what comes back is the whole chain's swap
+firehose — so asking it for one token's trades means reading every swap on WAX
+and discarding almost all of it. The first token page did exactly that for three
+pages and then printed "no trades in the last six hours", a claim it had no way
+to make: three pages of a live firehose is about twenty minutes.
+
+The pool row is the trade index. Every swap rewrites it, so two consecutive
+states *are* a trade — the reserve that fell is what was sold, the one that rose
+is what was bought, and `get_deltas` replays them filtered server-side by primary
+key. Deposits and withdrawals rewrite the same row, so they are told apart by
+sign: a swap moves the two sides in opposite directions and moves the price with
+them, which a mint or a burn does not.
+
+Measured on CHEESE/HOLE: six calls, 1,485 states, **1,224 real trades reaching
+back forty-five days**. The same six calls also draw the candles, which is why
+the page fetches them once and hands the rows to both.
+
+The one thing this cannot give is who traded. A pool row records the change, not
+the account that caused it — that stays on the Activity page, which reads
+`logswap` and has the trader on every row.
+
 ## Not built yet
 
-- TacoSwap history and its `exchangelog` feed.
+- TacoSwap history and its `exchangelog` feed. Its pairs show TVL and price but
+  no trade tape: the delta trick above is written against Alcor's `pools` table.
 - Alerts and CSV export.
 - Restaking after a compound is built (`buildRestake`) but not yet in the flow.
+- Per-token history starts the day the snapshot job first records it. The chart
+  says so rather than drawing two points across a year of axis.
 
 **Thin routes are marked, not hidden.** Only bridged dollars are declared worth
 a dollar. Everything else is priced through the pool graph, and a price carries

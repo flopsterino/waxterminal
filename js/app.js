@@ -3,14 +3,14 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, poolHistory, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, poolDeltas, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay } from './store.js';
 import { harvestFor, planCompound } from './compound.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom } from './tx.js';
-import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap } from './charts.js';
+import { areaChart, donut, bars, histogram, rangeBar, hideTip, bubbleMap, columns } from './charts.js';
 import { candleChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
-import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax } from './holders.js';
+import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { configurePremium, checkPremium, isPremium, premiumConfigured, premiumTerms, premiumState, onPremium, cap } from './premium.js';
 import { sqrtPriceFromX64 } from './math.js';
 
@@ -23,7 +23,11 @@ function usd(v) {
   if (a >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
   if (a >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'k';
   if (a >= 0.995) return '$' + v.toFixed(2);
-  if (a > 0)    return '$' + v.toPrecision(2);
+  // Sub-cent dollar amounts are noise in every place this is used — a pool
+  // holding $0.0000000043 is a pool holding nothing — and toPrecision hands
+  // back "4.3e-9", which is not a thing to print on a page.
+  if (a >= 0.005) return '$' + v.toFixed(3);
+  if (a > 0)      return (v < 0 ? '>-$0.01' : '<$0.01');
   return '$0';
 }
 function qty(v) {
@@ -196,12 +200,14 @@ let lastView = 'pools';
 // limits the view or because the data ends there is exactly the thing a visitor
 // cannot tell by looking, so it is always said out loud — and the free cap
 // always names what lifts it rather than pretending the list simply stops.
-function capNote(total, shown, noun) {
+function capNote(total, shown, noun, { filterable = true } = {}) {
   if (!(total > shown)) return `${total.toLocaleString()} ${noun}`;
+  // Only tables that actually have a search box may advise using one.
+  const narrow = filterable ? ', or narrow it with search and filters' : '';
   const lift = premiumConfigured() && !isPremium()
-    ? ` <span class="dim">&mdash; hold ${esc(premiumTerms())} to see them all, or narrow it with search and filters</span>`
-    : ` <span class="dim">&mdash; narrow it with search or filters</span>`;
-  return `showing top ${shown.toLocaleString()} of ${total.toLocaleString()}${lift}`;
+    ? ` <span class="dim">&mdash; hold ${esc(premiumTerms())} to see them all${narrow}</span>`
+    : filterable ? ' <span class="dim">&mdash; narrow it with search or filters</span>' : '';
+  return `showing top ${shown.toLocaleString()} of ${total.toLocaleString()} ${noun}${lift}`;
 }
 
 function renderPremiumChip() {
@@ -1458,24 +1464,40 @@ async function renderActivity() {
 // Everything about one token in one place: what it is worth, how much exists,
 // how much is gone, where it trades, who owns it and which of those owners are
 // connected. The pieces were scattered across three views and a tooltip.
+// ---------------------------------------------------------- TOKEN DETAIL ----
+// Everything the chain will say about one token, on one page.
+//
+// Nothing is awaited before the page paints. The first version read the token's
+// supply first and only then started the price chart, the liquidity providers
+// and the trade feed — so a slow `stat` read held up work that never depended
+// on it. Each card now goes and gets its own answer, and says what it is doing
+// while it waits.
 async function openToken(id) {
   const rows = tokRows || tokenTable();
   const t = rows.find(x => x.id === id);
   if (!t) return;
   show('token', encodeURIComponent(id));
+
   const d = state.depth.get(id);
   const meta = tokenMeta(id);
   const pools = state.pools.filter(p => (p.tokenA === id || p.tokenB === id) && p.tvl > 0)
     .sort((a, b) => (b.tvl || 0) - (a.tvl || 0));
-  const deepest = pools.find(p => p.dex === 'alcor' && p.sqrtX64) || null;
+  // Trades are read back out of Alcor's pool table, which is the only venue
+  // whose history a browser can replay without an indexer.
+  const alcorPools = pools.filter(p => p.dex === 'alcor' && p.sqrtX64);
+  const deepest = alcorPools[0] || null;
   const farms = farmGroups().filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
+  const venues = [...t.venues];
+
+  const priceStr = t.price == null ? '—'
+    : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3));
 
   $('#tokenDetail').innerHTML = `
     <div class="tokhead">
       <span id="tokMark"></span>
       <div>
-        <h2 class="vt" style="margin:0">${esc(t.symbol)}</h2>
-        <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${meta?.score != null ? ` &middot; Alcor rates it ${meta.score}/100` : ''}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
+        <h2 class="vt" style="margin:0">${esc(t.symbol)} ${trustChip(id)}</h2>
+        <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
       </div>
       <span style="flex:1"></span>
       <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
@@ -1483,140 +1505,216 @@ async function openToken(id) {
     </div>
 
     <div class="stats" id="tokStats">
-      <div class="stat"><span class="v">${t.price == null ? '—' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</span><span class="k">price</span>${(() => {
-        // Change from the deepest pool that reports one — a thin pool's 24h move
-        // is noise, so it takes the number from where the trading actually is.
+      <div class="stat"><span class="v">${priceStr}</span><span class="k">price</span>${(() => {
+        // The change comes from the deepest pool that reports one. A thin
+        // pool's 24h move is noise, so it is taken from where the trading is.
         const src = pools.filter(p => p.change24 != null && p.vol24 > 0).sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0))[0];
         if (!src) return '<span class="sub">&nbsp;</span>';
-        const inv = src.tokenB === id;               // change is quoted on A
-        const ch = inv ? -src.change24 : src.change24;
+        const ch = src.tokenB === id ? -src.change24 : src.change24;   // quoted on A
         return `<span class="sub ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : ''}">${ch > 0 ? '+' : ''}${ch.toFixed(1)}% in 24h</span>`;
       })()}</div>
-      <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating × price</span></div>
+      <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating &times; price</span></div>
       <div class="stat"><span class="v" id="tokCirc">—</span><span class="k">circulating</span><span class="sub" id="tokBurn">&nbsp;</span></div>
-      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pools on ${[...t.venues].length} venue${[...t.venues].length === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${t.vol24 > 0 ? usd(t.vol24) : '—'}</span><span class="k">traded 24h</span></div>
+      <div class="stat"><span class="v" id="tokHolderN">—</span><span class="k">holders</span><span class="sub" id="tokHolderSub">accounts with a balance</span></div>
+      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pool${t.pools === 1 ? '' : 's'} on ${venues.length} venue${venues.length === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v" id="tokVol">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">measuring…</span>'}</span><span class="k">traded 24h</span><span class="sub" id="tokVolSub">${t.vol24 > 0 ? 'across every venue' : '&nbsp;'}</span></div>
       <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
     </div>
 
     <div class="section"><h3>The token itself</h3>
-      <div class="card"><dl class="facts" id="tokFacts">
-        <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
-        <dt>Symbol</dt><dd class="mono">${esc(t.symbol)}</dd>
-        <dt>Decimals</dt><dd class="mono" id="fDec">—</dd>
-        <dt>Issued by</dt><dd class="mono" id="fIssuer">—</dd>
-        <dt>Total supply</dt><dd class="mono" id="fSupply">—</dd>
-        <dt>Maximum ever</dt><dd class="mono" id="fMax">—</dd>
-        <dt>Burned</dt><dd class="mono" id="fBurned">—</dd>
-        <dt>Circulating</dt><dd class="mono" id="fCirc">—</dd>
-        <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
-        <dt>Transfer tax</dt><dd class="mono" id="fTax">checking…</dd>
-      </dl></div>
+      <div class="grid g2">
+        <div class="card"><dl class="facts" id="tokFacts">
+          <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
+          <dt>Symbol</dt><dd class="mono">${esc(t.symbol)}</dd>
+          <dt>Decimals</dt><dd class="mono" id="fDec">—</dd>
+          <dt>Issued by</dt><dd class="mono" id="fIssuer">—</dd>
+          <dt>Total supply</dt><dd class="mono" id="fSupply">—</dd>
+          <dt>Maximum ever</dt><dd class="mono" id="fMax">—</dd>
+          <dt>Still mintable</dt><dd class="mono" id="fMint">—</dd>
+          <dt>Burned</dt><dd class="mono" id="fBurned">—</dd>
+          <dt>Circulating</dt><dd class="mono" id="fCirc">—</dd>
+          <dt>Holders</dt><dd class="mono" id="fHolders">—</dd>
+          <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
+          <dt>Rated by Alcor</dt><dd class="mono">${meta?.score != null ? `${meta.score}/100` : '<span class="dim">not rated</span>'}</dd>
+        </dl></div>
+        <div class="card"><h3>Transfer tax</h3><div id="tokTax"><div class="loading"><span class="spinner"></span><span>Reading the contract&rsquo;s tables…</span></div></div></div>
+      </div>
     </div>
 
     ${deepest ? `<div class="section"><h3>Price</h3>
-      <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">— candles from pool state changes</span>
+      <div class="card"><h3>${esc(deepest.symA)}/${esc(deepest.symB)} <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" data-tiv="900" aria-pressed="false">15m</button>
           <button class="chip" data-tiv="3600" aria-pressed="true">1h</button>
           <button class="chip" data-tiv="14400" aria-pressed="false">4h</button>
           <button class="chip" data-tiv="86400" aria-pressed="false">24h</button>
         </span></h3>
-        <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
+        <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Replaying the pool…</span></div></div></div>
+    </div>` : ''}
+
+    ${alcorPools.length ? `<div class="section"><h3>Trading</h3>
+      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; every Alcor trade in ${esc(t.symbol)}, sized from the pool it moved</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" data-tvol="24" aria-pressed="true">24h</button>
+          <button class="chip" data-tvol="72" aria-pressed="false">3d</button>
+          <button class="chip" data-tvol="168" aria-pressed="false">7d</button>
+        </span></h3>
+        <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
+        <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
+      <div class="grid g2">
+        <div class="card"><h3>Every trade <span class="dim">&mdash; newest first</span></h3>
+          <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>
+        <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
+          <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
+      </div>
     </div>` : ''}
 
     <div class="section"><h3>Ownership</h3>
       <div class="grid g2">
-        <div class="card"><h3>Largest holders <span class="dim">— wallet plus what they hold inside pools</span></h3>
+        <div class="card"><h3>Largest holders <span class="dim">&mdash; wallet plus what they hold inside pools</span></h3>
           <div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
-        <div class="card"><h3>Holder map <span class="dim">— lines mean they have moved ${esc(t.symbol)} to each other</span></h3>
+        <div class="card"><h3>Holder map <span class="dim">&mdash; lines mean they have moved ${esc(t.symbol)} to each other</span></h3>
           <div id="tokBubbles"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
       </div>
     </div>
 
-    <div class="section"><h3>Distribution</h3>
+    <div class="section"><h3>Where the supply sits</h3>
       <div class="grid g2">
-        <div class="card"><h3>Who the supply sits with</h3><div id="tokDist"></div></div>
-        <div class="card"><h3>Recent trades</h3><div id="tokTrades"><div class="loading"><span class="spinner"></span><span>Reading the feed…</span></div></div></div>
+        <div class="card"><h3>Share of supply</h3><div id="tokDist"><div class="loading"><span class="spinner"></span><span>Waiting on holders…</span></div></div></div>
+        <div class="card"><h3>Movement <span class="dim">&mdash; transfers, which is not the same question as trades</span></h3>
+          <div id="tokMoves"><div class="loading"><span class="spinner"></span><span>Reading transfers…</span></div></div></div>
       </div>
     </div>
 
     <div class="section"><h3>Liquidity</h3>
       <div class="grid g2">
-        <div class="card"><h3>Biggest liquidity providers <span class="dim">— ${esc(t.symbol)} supplied to pools</span></h3>
+        <div class="card"><h3>Biggest liquidity providers <span class="dim">&mdash; ${esc(t.symbol)} supplied to pools</span></h3>
           <div id="tokLps"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>
         <div class="card"><h3>Where it trades</h3><div id="tokPools"></div>
           <p class="sub" style="margin:10px 0 0">${d?.topPartner
             ? `${(d.topPartner.share * 100).toFixed(0)}% of the value standing opposite ${esc(t.symbol)} is ${esc(d.topPartner.token.split('@')[0])}.`
-              + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% of it comes from tokens issued by the same account.` : '')
+              + (d.sameIssuerShare > 0.2 ? ` ${(d.sameIssuerShare * 100).toFixed(0)}% of it comes from tokens issued by the same account, so its depth leans on one issuer.` : '')
             : ''}</p></div>
       </div>
     </div>
 
     ${farms.length ? `<div class="section"><h3>Farms paying or holding ${esc(t.symbol)}</h3>
-      <div class="card"><div id="tokFarms"></div></div></div>` : ''}`;
+      <div class="card"><div id="tokFarms"></div></div></div>` : ''}
+
+    <div class="section"><h3>Tracked over time</h3>
+      <div class="card"><h3>Pooled value and daily volume <span class="dim">&mdash; one point per day from the snapshot job</span></h3>
+        <div id="tokHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
+    </div>`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
+
+  // ---- where it trades -----------------------------------------------------
+  // Two pools on the same pair are common on Alcor — they differ by fee tier,
+  // and a list that shows the pair alone prints the same row twice.
   $('#tokPools').appendChild(bars(pools.slice(0, 8).map(p => ({
     label: `${p.symA}/${p.symB}`, value: p.tvl || 0,
-    note: `${p.dex} · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}`,
+    note: `${p.dex} &middot; ${(p.feeBps / 100).toFixed(2)}% fee &middot; ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no recorded volume'}`,
   })), { fmt: usd }));
 
   if (farms.length) {
-    $('#tokFarms').appendChild(bars(farms.slice(0, 8).map(g => ({
-      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
-      value: g.rewardRealDay || 0,
-      note: `pays ${g.rewards.map(r => r.symbol).slice(0, 3).join(', ')}${g.aprReal != null ? ` · ${pct(g.aprReal)} APR` : ''}`,
-    })), { fmt: v => usd(v) + '/day', color: 'var(--c3)' }));
+    $('#tokFarms').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+      <thead><tr><th>Pool</th><th>Pays</th><th class="r">Per day</th><th class="r">Staked</th><th class="r">APR</th><th class="r">Runway</th></tr></thead>
+      <tbody>${farms.slice(0, cap('farms')).sort((a, b) => (b.rewardRealDay || 0) - (a.rewardRealDay || 0)).map(g => `
+        <tr data-fpool="${esc(g.key)}" style="cursor:pointer">
+          <td>${g.pool ? `${esc(g.pool.symA)}/${esc(g.pool.symB)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
+          <td>${g.rewards.map(r => esc(r.symbol)).slice(0, 4).join(', ')}</td>
+          <td class="r num">${usd(g.rewardRealDay)}</td>
+          <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
+          <td class="r num">${g.aprReal != null ? pct(g.aprReal) : '<span class="dim">—</span>'}</td>
+          <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+    $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.fpool));
   }
 
-  // ---- the facts -----------------------------------------------------------
+  // ---- decimals, straight off the row we already have ----------------------
   const decs = state.tokens.get(id)?.decimals;
   if (decs != null) $('#fDec').textContent = String(decs);
+
+  // ---- transfer tax --------------------------------------------------------
   tokenTax(t.contract, t.symbol).then(tax => {
-    const el = $('#fTax');
+    const el = $('#tokTax');
     if (!el) return;
+    const venueBps = t.venueTaxBps || 0;
     if (!tax.bps) {
-      // Absence of evidence: some contracts hold the rate in code rather than a
-      // readable table, so this cannot promise there is none.
-      el.innerHTML = '<span class="dim">none found in the contract\'s tables</span>';
+      // Absence of evidence. Some contracts hold the rate in code rather than
+      // in a readable table, so this cannot promise there is none.
+      el.innerHTML = `<p class="sub" style="margin:0">Nothing found in this contract&rsquo;s tables. That is not a guarantee &mdash; a rate held in code rather than in a table is invisible from outside, so a swap that comes back short is still worth believing over this line.</p>`;
       return;
     }
-    const burnPart = tax.parts.find(x => x.to === 'eosio.null');
-    el.innerHTML = `<b class="neg">${(tax.bps / 100).toFixed(2)}% on every transfer</b>`
-      + `<span class="dim"> — ${tax.parts.map(x => `${(x.bps / 100).toFixed(2)}% to ${esc(x.to)}`).join(', ')}</span>`
-      + (burnPart ? `<span class="dim"><br>The share to eosio.null is burned, so supply falls with every send.</span>` : '')
-      + `<span class="dim"><br>A swap route through this token pays it at each hop.</span>`;
-  }).catch(() => { const el = $('#fTax'); if (el) el.textContent = 'could not read'; });
+    const burn = tax.parts.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0);
+    el.innerHTML = `<div class="stat" style="padding:0 0 10px"><span class="v neg">${(tax.bps / 100).toFixed(2)}%</span><span class="k">taken from every transfer</span></div>
+      <dl class="facts">${tax.parts.map(x => `<dt>${(x.bps / 100).toFixed(2)}% to</dt><dd class="mono">${esc(x.to)}${x.to === 'eosio.null' ? ' <span class="dim">burned</span>' : ''}</dd>`).join('')}
+        <dt>Read from</dt><dd class="mono dim">${esc(tax.source)}</dd>
+        <dt>Paid to a DEX</dt><dd>${venueBps > 0
+          ? `<b class="neg">${(venueBps / 100).toFixed(2)}%</b> <span class="dim">&mdash; measured on a real deposit into swap.alcor</span>`
+          : '<span class="ok">exempt</span> <span class="dim">&mdash; a real deposit into swap.alcor paid nothing, whatever the table says</span>'}</dd>
+      </dl>
+      <p class="sub" style="margin:10px 0 0">${burn > 0 ? `The ${(burn / 100).toFixed(2)}% sent to eosio.null is destroyed, so supply falls with every send. ` : ''}A swap route pays this at every hop that moves the token between accounts.</p>`;
+  }).catch(() => { const el = $('#tokTax'); if (el) el.innerHTML = '<div class="chart-empty">Could not read the contract.</div>'; });
 
   // ---- supply, burn, market cap -------------------------------------------
-  let stats = null;
-  try {
-    stats = await tokenStats(t.contract, t.symbol);
-    if (stats) {
-      $('#fSupply').textContent = qty(stats.supply);
-      $('#fMax').textContent = qty(stats.maxSupply);
-      $('#fBurned').innerHTML = stats.burned > 0
-        ? `${qty(stats.burned)} <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>`
-        : '<span class="dim">none</span>';
-      $('#fCirc').textContent = qty(stats.circulating);
-      $('#fIssuer').textContent = stats.issuer || '—';
-      $('#tokCirc').textContent = qty(stats.circulating);
-      $('#tokBurn').innerHTML = stats.burned > 0
-        ? `${qty(stats.burned)} burned <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}%)</span>`
-        : `of ${qty(stats.maxSupply)} ever`;
-      if (t.price != null) {
-        $('#tokCap').textContent = usd(stats.circulating * t.price);
-        $('#tokCapSub').textContent = `${(t.tvl / (stats.circulating * t.price) * 100).toFixed(1)}% of it is pooled`;
-      }
+  // Kicked off, not awaited: the holder table and the distribution donut need
+  // the supply to turn balances into percentages, so they wait on this promise
+  // rather than on this line.
+  const statsP = tokenStats(t.contract, t.symbol).catch(() => null);
+  statsP.then(stats => {
+    if (!stats) return;
+    const set = (sel, html) => { const e = $(sel); if (e) e.innerHTML = html; };
+    set('#fSupply', qty(stats.supply));
+    set('#fMax', qty(stats.maxSupply));
+    set('#fMint', stats.maxSupply > stats.supply
+      ? `<b class="warnish">${qty(stats.maxSupply - stats.supply)} more</b> <span class="dim">the issuer can still create</span>`
+      : '<span class="ok">no</span> <span class="dim">— the whole maximum is already issued</span>');
+    set('#fBurned', stats.burned > 0
+      ? `${qty(stats.burned)} <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>`
+      : '<span class="dim">none</span>');
+    set('#fCirc', qty(stats.circulating));
+    set('#fIssuer', esc(stats.issuer || '—'));
+    set('#tokCirc', qty(stats.circulating));
+    set('#tokBurn', stats.burned > 0
+      ? `${qty(stats.burned)} burned <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}%)</span>`
+      : `of ${qty(stats.maxSupply)} ever`);
+    if (t.price != null) {
+      set('#tokCap', usd(stats.circulating * t.price));
+      set('#tokCapSub', `${(t.tvl / (stats.circulating * t.price) * 100).toFixed(1)}% of it is pooled`);
     }
-  } catch {}
+  });
+
+  // ---- how many hold it at all --------------------------------------------
+  holderCount(t.contract, t.symbol).then(n => {
+    if (n == null) return;
+    const e = $('#tokHolderN'); if (e) e.textContent = n.toLocaleString();
+    const f = $('#fHolders'); if (f) f.textContent = n.toLocaleString();
+    const s = $('#tokHolderSub');
+    if (s) s.textContent = n < 100 ? 'a small, easily-moved holder base' : 'accounts with a balance';
+  }).catch(() => {
+    const e = $('#tokHolderN'); if (e) e.innerHTML = '<span class="dim">—</span>';
+    const f = $('#fHolders'); if (f) f.innerHTML = '<span class="dim">holder index unavailable</span>';
+  });
+
+  // ---- the pools, replayed once ------------------------------------------
+  // One read serves both the candles and the trade tape. They ask the same
+  // question of the same rows, and this page runs on the reader's own IP —
+  // fetching the deepest pool twice is a cost paid by whoever opened it.
+  const use = alcorPools.slice(0, cap('tokenPools'));
+  const deltasP = use.length
+    ? Promise.all(use.map(p => poolDeltas(p.id, { pages: 6 })
+        .then(rws => ({ pool: p, rows: rws }))
+        .catch(() => ({ pool: p, rows: [] }))))
+    : Promise.resolve([]);
 
   // ---- price chart ---------------------------------------------------------
   if (deepest) {
-    poolDeltas(deepest.id, { pages: 8 }).then(rws => {
+    deltasP.then(sets => {
+      const rws = sets.find(x => x.pool.id === deepest.id)?.rows || [];
       const box = $('#tokChart');
-      if (!rws.length) { box.innerHTML = '<div class="chart-empty">No state changes in the window the history node keeps.</div>'; return; }
+      if (!box) return;
+      if (!rws.length) { box.innerHTML = '<div class="chart-empty">The history node keeps no state changes for this pool in its window.</div>'; return; }
       const prec = Math.max(2, Math.min(8, Math.ceil(-Math.log10(rws.at(-1).price || 1)) + 4));
       const draw = iv => candleChart(box, toCandles(rws, { bucketSec: iv }), { height: 280, precision: prec })
         .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
@@ -1625,12 +1723,221 @@ async function openToken(id) {
         document.querySelectorAll('[data-tiv]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
         draw(Number(b.dataset.tiv));
       });
-    }).catch(() => { $('#tokChart').innerHTML = '<div class="chart-empty">History unavailable.</div>'; });
+    }).catch(() => { const b = $('#tokChart'); if (b) b.innerHTML = '<div class="chart-empty">History unavailable.</div>'; });
   }
+
+  // ---- trades, read back out of the pool rows ------------------------------
+  // Hyperion will not filter logswap by pool, so asking it for one token's
+  // trades means reading every swap on WAX. The old page did that for three
+  // pages and then said "no trades in the last six hours" — a claim it had no
+  // way to make, since three pages of a live firehose is about twenty minutes.
+  // Replaying each pool's own row is both cheaper and actually complete: the
+  // deepest CHEESE/HOLE pool gives back forty-five days of trades in six calls.
+  if (alcorPools.length) {
+    deltasP.then(raw => {
+      const sets = raw.map(({ pool, rows }) => ({ pool, swaps: swapsFromDeltas(rows) }));
+      const legs = [];
+      for (const { pool, swaps } of sets) {
+        const isA = pool.tokenA === id;
+        const px = isA ? pool.priceUsdA : pool.priceUsdB;
+        for (const s of swaps) {
+          const amt = isA ? s.amountA : s.amountB;         // signed, in this token
+          legs.push({
+            ts: s.ts, block: s.block, pool, price: s.price,
+            amount: Math.abs(amt), signed: amt,
+            // The sign is the pool's: it gained the token, so someone sold it.
+            side: amt > 0 ? 'sold' : 'bought',
+            usd: px != null ? Math.abs(amt) * px : null,
+          });
+        }
+      }
+
+      // A route through two of this token's pools writes both rows in the same
+      // block, and listing them separately says a trade happened twice and
+      // doubles the volume with it — the same mistake as summing every hop of a
+      // multi-hop swap. One block is one decision: the legs are folded into it,
+      // and the trade is worth its largest leg rather than their sum.
+      //
+      // Two unrelated traders landing in one block would be merged by this. On a
+      // token with four pools that is rare, and undercounting a coincidence is a
+      // far smaller error than double-counting every route.
+      const byBlock = new Map();
+      for (const l of legs) {
+        if (!byBlock.has(l.block)) byBlock.set(l.block, []);
+        byBlock.get(l.block).push(l);
+      }
+      const all = [...byBlock.values()].map(g => {
+        const biggest = g.reduce((m, l) => (l.amount > m.amount ? l : m), g[0]);
+        const net = g.reduce((a, l) => a + l.signed, 0);
+        return {
+          ts: g[0].ts, block: g[0].block, legs: g,
+          pools: [...new Set(g.map(l => `${l.pool.symA}/${l.pool.symB}`))],
+          amount: biggest.amount,
+          usd: g.reduce((m, l) => Math.max(m, l.usd ?? 0), 0) || null,
+          // A route that hands the token straight on nets out near zero: it
+          // passed through rather than being bought or sold.
+          side: g.length > 1 && Math.abs(net) < biggest.amount * 0.02 ? 'through'
+            : net > 0 ? 'sold' : 'bought',
+        };
+      }).sort((a, b) => b.ts - a.ts);
+      const oldest = all.length ? all.at(-1).ts : Date.now();
+
+      const drawVol = hours => {
+        const box = $('#tokVolChart'); if (!box) return;
+        const since = Date.now() - hours * 3600 * 1000;
+        const bucketSec = hours <= 24 ? 3600 : hours <= 72 ? 4 * 3600 : 24 * 3600;
+        const win = all.filter(s => s.ts >= since);
+        const buckets = new Map();
+        for (const s of win) {
+          const key = Math.floor(s.ts / 1000 / bucketSec) * bucketSec;
+          let c = buckets.get(key);
+          if (!c) { c = { time: key, usd: 0, n: 0 }; buckets.set(key, c); }
+          c.n++; if (s.usd != null) c.usd += s.usd;
+        }
+        const pts = [...buckets.values()].sort((a, b) => a.time - b.time)
+          .map(b => ({ x: b.time * 1000, y: b.usd, note: `${b.n} trade${b.n === 1 ? '' : 's'}` }));
+        box.innerHTML = '';
+        if (!pts.length) {
+          box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades on Alcor in this window.</div>`;
+        } else {
+          box.appendChild(columns(pts, {
+            fmtY: usd,
+            fmtX: ts => new Date(ts).toISOString().slice(bucketSec >= 86400 ? 5 : 11, bucketSec >= 86400 ? 10 : 16),
+            label: 'volume per bucket', color: 'var(--c2)',
+          }));
+        }
+        const moved = win.reduce((a, s) => a + (s.usd || 0), 0);
+        const biggest = win.reduce((m, s) => (s.usd || 0) > (m?.usd || 0) ? s : m, null);
+        const note = $('#tokVolNote');
+        if (note) note.innerHTML = win.length
+          ? `${win.length.toLocaleString()} trade${win.length === 1 ? '' : 's'} worth ${usd(moved)} across ${use.length} Alcor pool${use.length === 1 ? '' : 's'}`
+            + (biggest?.usd ? `, the largest ${usd(biggest.usd)}` : '')
+            + `. ${oldest > since ? `The history node only reaches back to ${ago(new Date(oldest).toISOString())}, so anything older is missing rather than absent.` : 'The window is fully covered.'}`
+          : `Nothing traded here in that window. Read back to ${ago(new Date(oldest).toISOString())}.`;
+      };
+
+      drawVol(24);
+      document.querySelectorAll('[data-tvol]').forEach(b => b.onclick = () => {
+        document.querySelectorAll('[data-tvol]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        drawVol(Number(b.dataset.tvol));
+      });
+
+      // A measured 24h figure beats a snapshot that can be hours old — but only
+      // for Alcor, so it never overwrites an all-venue number that exists.
+      const v24 = all.filter(s => s.ts >= Date.now() - 86400000).reduce((a, s) => a + (s.usd || 0), 0);
+      if (!(t.vol24 > 0) && v24 > 0) {
+        const e = $('#tokVol'); if (e) e.textContent = usd(v24);
+        const s = $('#tokVolSub'); if (s) s.textContent = 'on Alcor, measured just now';
+      }
+
+      const tape = $('#tokTape');
+      if (tape) {
+        if (!all.length) { tape.innerHTML = '<div class="chart-empty">The history node returned no state changes for these pools.</div>'; return; }
+        tape.innerHTML = `<div class="tablewrap" style="max-height:360px;border:0"><table style="font-size:12px">
+          <thead><tr><th>When</th><th>Through</th><th></th><th class="r">${esc(t.symbol)}</th><th class="r">Value</th></tr></thead>
+          <tbody>${all.slice(0, cap('tokenTape')).map(s => `<tr>
+            <td class="num dim">${ago(new Date(s.ts).toISOString())}</td>
+            <td>${s.pools.map(esc).join('<span class="dim"> + </span>')}</td>
+            <td class="${s.side === 'bought' ? 'pos' : s.side === 'sold' ? 'neg' : 'dim'}">${s.side}</td>
+            <td class="r num">${qty(s.amount)}</td>
+            <td class="r num">${s.usd != null ? usd(s.usd) : '<span class="dim">—</span>'}</td>
+          </tr>`).join('')}</tbody></table></div>
+          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades reconstructed, newest ${Math.min(all.length, cap('tokenTape'))} shown${premiumConfigured() && !isPremium() ? `, and ${esc(premiumTerms())} shows more` : ''}.
+          Sizes are what actually moved in the pool, so they are the trade rather than an estimate of it.
+          &ldquo;through&rdquo; means the route crossed two of ${esc(t.symbol)}&rsquo;s pools in one block and handed it straight on &mdash; arbitrage, not someone buying.
+          Who traded is beside this, read from the swap memos.</p>`;
+      }
+    }).catch(() => {
+      const b = $('#tokVolChart'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
+      const c = $('#tokTape'); if (c) c.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
+    });
+  }
+
+  // ---- transfers -----------------------------------------------------------
+  // Read once, used twice: the movement card and the trader list are two
+  // questions of the same feed.
+  const movesP = transferActivity(t.contract, t.symbol, { hours: 24 });
+
+  movesP.then(({ transfers, covered, complete }) => {
+    const box = $('#tokMoves'); if (!box) return;
+    if (!transfers.length) { box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} transfers in the last 24 hours.</div>`; return; }
+    const total = transfers.reduce((a, x) => a + x.amount, 0);
+    // The DEX contracts are one side of most transfers by construction, so
+    // ranking them as "active senders" says nothing except that the token
+    // trades. The accounts behind them are the answer.
+    const VENUES = new Set(['swap.alcor', 'swap.taco', 'swap.box', 'swap.adex', 'alcordexmain', 'reward.alcor']);
+    const parties = new Map();
+    for (const x of transfers) {
+      if (VENUES.has(x.from)) continue;
+      parties.set(x.from, (parties.get(x.from) || 0) + x.amount);
+    }
+    const top = [...parties].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const biggest = [...transfers].sort((a, b) => b.amount - a.amount).slice(0, 6);
+    box.innerHTML = `<div class="stats" style="margin:0 0 12px">
+        <div class="stat"><span class="v">${transfers.length.toLocaleString()}</span><span class="k">transfers</span><span class="sub">${complete ? 'last 24h' : `back to ${ago(new Date(covered).toISOString())}`}</span></div>
+        <div class="stat"><span class="v">${qty(total)}</span><span class="k">${esc(t.symbol)} moved</span><span class="sub">${t.price != null ? usd(total * t.price) : '&nbsp;'}</span></div>
+      </div>
+      <h3 style="font-size:12px;margin:0 0 6px">Largest single moves</h3>
+      <div class="tablewrap" style="max-height:200px;border:0"><table style="font-size:12px"><tbody>${
+        biggest.map(x => `<tr>
+          <td class="num dim">${ago(new Date(x.ts).toISOString())}</td>
+          <td class="mono">${esc(x.from)} <span class="dim">&rarr;</span> ${esc(x.to)}</td>
+          <td class="r num">${qty(x.amount)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${top.length ? `Most active sender${top.length === 1 ? '' : 's'}, the DEX contracts aside: ${top.map(([a, v]) => `${esc(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}.` : 'Every transfer in this window came from a DEX contract.'}
+      Transfers include claims, farm payouts and swaps, so this runs well ahead of trading volume on a token people actually use.</p>`;
+  }).catch(() => { const b = $('#tokMoves'); if (b) b.innerHTML = '<div class="chart-empty">Transfer history unavailable.</div>'; });
+
+  // ---- who trades it, and through what ------------------------------------
+  // Replaying a pool row gives the trade but never the trader — the row records
+  // the change, not the account that caused it. The swap memo does: an Alcor
+  // swap is a transfer to swap.alcor naming every pool the route will cross, so
+  // the feed already fetched above answers it for free.
+  movesP.then(({ transfers, covered, complete }) => {
+    const box = $('#tokTraders'); if (!box) return;
+    // Indexed once. A linear scan per pool id, over twenty thousand pools and a
+    // few hundred routes, is tens of millions of comparisons on the main thread.
+    const byId = new Map();
+    for (const p of state.pools) if (p.dex === 'alcor') byId.set(String(p.id), p);
+    const poolName = pid => {
+      const p = byId.get(String(pid));
+      return p ? `${p.symA}/${p.symB}` : `#${pid}`;
+    };
+    const who = new Map();
+    for (const x of transfers) {
+      const inLeg = x.to === 'swap.alcor' && x.route;
+      const outLeg = x.from === 'swap.alcor';
+      if (!inLeg && !outLeg) continue;
+      const acct = inLeg ? x.from : x.to;
+      let r = who.get(acct);
+      if (!r) { r = { acct, n: 0, amount: 0, routes: new Map() }; who.set(acct, r); }
+      r.n++; r.amount += x.amount;
+      if (inLeg && x.route.length) {
+        const key = x.route.map(poolName).join(' \u2192 ');
+        r.routes.set(key, (r.routes.get(key) || 0) + 1);
+      }
+    }
+    const list = [...who.values()].sort((a, b) => b.amount - a.amount);
+    if (!list.length) { box.innerHTML = `<div class="chart-empty">Nobody swapped ${esc(t.symbol)} on Alcor in this window.</div>`; return; }
+    box.innerHTML = `<div class="tablewrap" style="max-height:360px;border:0"><table style="font-size:12px">
+      <thead><tr><th>Trader</th><th class="r">Trades</th><th class="r">${esc(t.symbol)}</th><th>Usual route</th></tr></thead>
+      <tbody>${list.slice(0, cap('routes')).map(r => {
+        const top = [...r.routes].sort((a, b) => b[1] - a[1])[0];
+        const hops = top ? top[0].split(' \u2192 ').length : 0;
+        return `<tr>
+          <td class="mono">${esc(r.acct)}</td>
+          <td class="r num">${r.n}</td>
+          <td class="r num">${qty(r.amount)}</td>
+          <td>${top ? `<span class="route">${esc(top[0])}</span>${hops > 2 ? ' <span class="badge warn">multi-hop</span>' : ''}` : '<span class="dim">out only</span>'}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${capNote(list.length, Math.min(list.length, cap('routes')), 'accounts', { filterable: false })} traded ${esc(t.symbol)} on Alcor ${complete ? 'in the last 24 hours' : `back to ${ago(new Date(covered).toISOString())}`}.
+      A route with several pools is one transaction crossing all of them; where it comes back to ${esc(t.symbol)} it is arbitrage rather than someone buying.
+      &ldquo;Out only&rdquo; means they received ${esc(t.symbol)} from a swap whose input was another token.</p>`;
+  }).catch(() => { const b = $('#tokTraders'); if (b) b.innerHTML = '<div class="chart-empty">Swap memos unavailable.</div>'; });
 
   // ---- liquidity providers -------------------------------------------------
   topLPs(id, pools).then(lps => {
-    const box = $('#tokLps');
+    const box = $('#tokLps'); if (!box) return;
     if (!lps.length) { box.innerHTML = '<div class="chart-empty">No positions found.</div>'; return; }
     const tot = lps.reduce((s, l) => s + l.amount, 0);
     box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px"><tbody>${
@@ -1638,82 +1945,96 @@ async function openToken(id) {
         <td class="mono">${esc(l.account)}</td>
         <td class="r num">${qty(l.amount)}</td>
         <td class="r num dim">${(l.amount / tot * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it — the largest supplier often does not appear there at all.</p>`;
-  }).catch(e => { $('#tokLps').innerHTML = `<div class="chart-empty">Positions unavailable.</div>`; });
+      <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}. This is a different list from the holders beside it &mdash; the largest supplier often does not appear there at all.</p>`;
+  }).catch(() => { const b = $('#tokLps'); if (b) b.innerHTML = '<div class="chart-empty">Positions unavailable.</div>'; });
 
-  // ---- recent trades -------------------------------------------------------
-  if (!SNAPSHOT_ONLY) {
-    recentSwaps({ minutes: 360, maxPages: 3 }).then(sw => {
-      const mine = sw.filter(x => x.pool && (x.pool.tokenA === id || x.pool.tokenB === id));
-      const box = $('#tokTrades');
-      if (!mine.length) { box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} trades on Alcor in the last six hours.</div>`; return; }
-      box.innerHTML = `<div class="tablewrap" style="max-height:260px;border:0"><table style="font-size:12px"><tbody>${
-        mine.slice(0, 20).map(x => `<tr>
-          <td class="num dim">${ago(x.ts)}</td>
-          <td>${esc(x.pool.symA)}/${esc(x.pool.symB)}</td>
-          <td class="mono dim">${esc(x.trader)}</td>
-          <td class="r num">${usd(x.volumeReal ?? x.volumeUsd)}</td></tr>`).join('')}</tbody></table></div>
-        <p class="sub" style="margin:8px 0 0">${mine.length} trades in six hours.</p>`;
-    }).catch(() => { $('#tokTrades').innerHTML = '<div class="chart-empty">Trade feed unavailable.</div>'; });
-  } else $('#tokTrades').innerHTML = '<div class="chart-empty">Snapshot mode — live feed not fetched.</div>';
+  // ---- the long record -----------------------------------------------------
+  loadHistory().then(hist => {
+    const box = $('#tokHist'); if (!box) return;
+    const series = perDay(tokenSeries(hist, id), r => r.at);
+    if (series.length < 3) {
+      box.innerHTML = `<div class="chart-empty">${series.length ? `${series.length} day${series.length === 1 ? '' : 's'} recorded so far.` : 'Nothing recorded for this token yet.'}<br>
+        A daily job appends one reading per run, and this chart appears once there are three &mdash; two points drawn across an axis is a picture of nothing.
+        Tokens enter the record once they hold $50 in pools or trade $50 in a day.</div>`;
+      return;
+    }
+    box.innerHTML = '';
+    box.appendChild(areaChart(series.map(r => ({ x: r.at, y: r.tvl })), {
+      fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(0, 10), color: 'var(--c1)', label: 'pooled value over time',
+    }));
+    box.appendChild(columns(series.map(r => ({ x: r.at, y: r.vol })), {
+      fmtY: usd, fmtX: ts => new Date(ts).toISOString().slice(5, 10), color: 'var(--c2)', label: 'daily volume', height: 140,
+    }));
+    const first = series[0], last = series.at(-1);
+    const move = first.tvl > 0 ? (last.tvl / first.tvl - 1) * 100 : null;
+    box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:9px 0 0">${series.length} days recorded.
+      Pooled value ${move == null ? 'has no baseline to compare against' : `${move >= 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)}% since ${new Date(first.at).toISOString().slice(0, 10)}`}.</p>`);
+  }).catch(() => { const b = $('#tokHist'); if (b) b.innerHTML = '<div class="chart-empty">Record unavailable.</div>'; });
 
-  // ---- holders and the map -------------------------------------------------
+  // ---- holders, the map, and the donut ------------------------------------
   let holders = [];
   try {
-    holders = await topHolders(t.contract, t.symbol, 25);
+    holders = await topHolders(t.contract, t.symbol, cap('holders'));
     await clusterHolders(holders);
   } catch (e) {
     $('#tokHolders').innerHTML = `<div class="chart-empty">Holder list unavailable (${esc(e.message)}).</div>`;
+    $('#tokDist').innerHTML = '<div class="chart-empty">Needs the holder list.</div>';
+    $('#tokBubbles').innerHTML = '<div class="chart-empty">Needs the holder list.</div>';
+    return;
   }
 
+  const stats = await statsP;
   const supply = stats?.supply ?? 0;
-  if (holders.length) {
-    const top = holders.slice(0, 14);
-    await Promise.all(top.map(async h => {
-      try { h.lp = (await lpHoldings(h.account, id, pools)).total; } catch { h.lp = 0; }
-      h.total = h.balance + (h.lp || 0);
-    }));
-    top.sort((a, b) => b.total - a.total);
-    const share = b => supply > 0 ? (b / supply * 100) : null;
-    $('#tokHolders').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-      <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
-      <tbody>${top.map((h, i) => `
-      <tr><td class="rank">${i + 1}</td>
-        <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
-        <td class="r num">${qty(h.balance)}</td>
-        <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
-        <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
-      </tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
-
-    // Distribution: contracts, the largest wallets, and everything else.
-    if (supply > 0) {
-      const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
-      const slices = top.filter(h => !h.contractRole).slice(0, 5)
-        .map(h => ({ label: h.account, value: h.total }));
-      const named = slices.reduce((a, x) => a + x.value, 0);
-      if (inContracts > 0) slices.unshift({ label: 'held by contracts', value: inContracts });
-      const rest = supply - named - inContracts;
-      if (rest > 0) slices.push({ label: 'everyone else', value: rest });
-      $('#tokDist').appendChild(donut(slices, { fmt: v => qty(v) + ' ' + t.symbol, top: 8 }));
-    }
-
-    try {
-      const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });
-      const nodes = top.map(h => ({ id: h.account, value: h.total, contract: !!h.contractRole, share: supply > 0 ? h.total / supply : null }));
-      const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
-      const box = $('#tokBubbles');
-      box.innerHTML = '';
-      box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol }));
-      const note = document.createElement('p');
-      note.className = 'sub'; note.style.marginTop = '8px';
-      note.innerHTML = links.length
-        ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts — read it next to the share column.`
-        : 'No transfers between the largest holders.';
-      box.appendChild(note);
-    } catch { $('#tokBubbles').innerHTML = '<div class="chart-empty">Could not trace transfers.</div>'; }
+  if (!holders.length) {
+    $('#tokHolders').innerHTML = '<div class="chart-empty">No holders returned.</div>';
+    return;
   }
+
+  const top = holders.slice(0, 14);
+  await Promise.all(top.map(async h => {
+    try { h.lp = (await lpHoldings(h.account, id, pools)).total; } catch { h.lp = 0; }
+    h.total = h.balance + (h.lp || 0);
+  }));
+  top.sort((a, b) => b.total - a.total);
+  const share = b => supply > 0 ? (b / supply * 100) : null;
+  $('#tokHolders').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
+    <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
+    <tbody>${top.map((h, i) => `
+    <tr><td class="rank">${i + 1}</td>
+      <td class="mono">${esc(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
+      <td class="r num">${qty(h.balance)}</td>
+      <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
+      <td class="r num ${share(h.total) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.total) == null ? '' : share(h.total).toFixed(2) + '%'}</td>
+    </tr>`).join('')}</tbody></table></div>
+    <p class="sub" style="margin:9px 0 0">Contracts are marked. Pools, lockers and bridges hold tokens for other people, so counting them as owners makes every token look held by one address.</p>`;
+
+  if (supply > 0) {
+    const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
+    const slices = top.filter(h => !h.contractRole).slice(0, 5).map(h => ({ label: h.account, value: h.total }));
+    const named = slices.reduce((a, x) => a + x.value, 0);
+    if (inContracts > 0) slices.unshift({ label: 'held by contracts', value: inContracts });
+    const rest = supply - named - inContracts;
+    if (rest > 0) slices.push({ label: 'everyone else', value: rest });
+    const box = $('#tokDist'); box.innerHTML = '';
+    box.appendChild(donut(slices, { fmt: v => qty(v) + ' ' + t.symbol, top: 8 }));
+  } else $('#tokDist').innerHTML = '<div class="chart-empty">Needs the supply to turn balances into shares.</div>';
+
+  try {
+    const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });
+    const nodes = top.map(h => ({ id: h.account, value: h.total, contract: !!h.contractRole, share: supply > 0 ? h.total / supply : null }));
+    const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
+    const box = $('#tokBubbles');
+    box.innerHTML = '';
+    box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol }));
+    const note = document.createElement('p');
+    note.className = 'sub'; note.style.marginTop = '8px';
+    note.innerHTML = links.length
+      ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts &mdash; read it next to the share column.`
+      : 'No transfers between the largest holders.';
+    box.appendChild(note);
+  } catch { $('#tokBubbles').innerHTML = '<div class="chart-empty">Could not trace transfers.</div>'; }
 }
+
 
 // ---------------------------------------------------------- POOL DETAIL -----
 async function openPool(key) {

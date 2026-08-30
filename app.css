@@ -118,6 +118,7 @@ td.r, th.r { text-align: right; }
 .dim { color: var(--muted); }
 .pos { color: var(--good); }
 .neg { color: var(--bad); }
+.ok  { color: var(--good); }
 
 /* ------------------------------------------------------------ range bar -- */
 /* The signature element: a position's tick band with the market price on it. */

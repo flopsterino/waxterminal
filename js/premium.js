@@ -86,6 +86,11 @@ const CAPS = {
   routes:     { free: 40,   premium: 400 },
   swaps:      { free: 150,  premium: 1000 },
   holders:    { free: 50,   premium: 200 },
+  // How many of a token's Alcor pools get replayed for its trade history, and
+  // how long the resulting tape is. Each pool is a handful of history calls, so
+  // this is the one cap that costs the node rather than the reader.
+  tokenPools: { free: 4,    premium: 12 },
+  tokenTape:  { free: 40,   premium: 500 },
   historyDays:{ free: 90,   premium: Infinity },
 };
 

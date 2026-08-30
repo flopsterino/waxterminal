@@ -104,6 +104,56 @@ export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v 
   return wrap;
 }
 
+// --------------------------------------------------------------- columns ----
+// Volume through time.
+//
+// Not an area chart: a filled line implies a continuous quantity that was
+// always somewhere between two readings, and volume is a bucket total. Drawn
+// that way it invents trades in the gaps and makes an hour with one swap look
+// like an hour of steady flow. Columns say the bucket is the unit.
+export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v => v, fmtX = v => v, label = '' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
+
+  const W = 720, H = height, padL = 46, padR = 12, padT = 12, padB = 24;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
+  svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
+
+  const y1 = Math.max(...points.map(p => p.y).filter(Number.isFinite), 0) * 1.1 || 1;
+  const inner = W - padL - padR;
+  const step = inner / points.length;
+  const bw = Math.max(1, Math.min(step * 0.72, 34));
+  const X = i => padL + step * i + (step - bw) / 2;
+  const Y = v => H - padB - (v / y1) * (H - padT - padB);
+
+  for (let i = 0; i <= 3; i++) {
+    const v = y1 * (i / 3), y = Y(v);
+    svg.appendChild(el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1 }));
+    const t = el('text', { x: padL - 6, y: y + 3.5, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': 'end' });
+    t.style.fontFamily = 'var(--font-data)'; t.textContent = fmtY(v);
+    svg.appendChild(t);
+  }
+
+  points.forEach((p, i) => {
+    const h = Math.max(p.y > 0 ? 1.5 : 0, (H - padB) - Y(p.y));
+    const r = el('rect', { x: X(i), y: H - padB - h, width: bw, height: h, fill: color, rx: 1.5 });
+    r.style.cursor = 'crosshair';
+    r.addEventListener('pointerenter', e => { r.setAttribute('opacity', 0.75); showTip(`<b>${fmtY(p.y)}</b><span>${fmtX(p.x)}</span>${p.note ? `<span>${p.note}</span>` : ''}`, e.clientX, e.clientY); });
+    r.addEventListener('pointermove', e => showTip(`<b>${fmtY(p.y)}</b><span>${fmtX(p.x)}</span>${p.note ? `<span>${p.note}</span>` : ''}`, e.clientX, e.clientY));
+    r.addEventListener('pointerleave', () => { r.removeAttribute('opacity'); hideTip(); });
+    svg.appendChild(r);
+  });
+
+  for (const [v, anchor] of [[points[0].x, 'start'], [points.at(-1).x, 'end']]) {
+    const t = el('text', { x: v === points[0].x ? padL : W - padR, y: H - 6, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': anchor });
+    t.style.fontFamily = 'var(--font-data)'; t.textContent = fmtX(v); svg.appendChild(t);
+  }
+
+  wrap.appendChild(svg);
+  return wrap;
+}
+
 // ----------------------------------------------------------------- donut ----
 // Share-of-total. Capped low on purpose: a ring of twenty slivers encodes
 // nothing, and past a handful the colours stop being separable, so the tail
@@ -234,62 +284,132 @@ export function rangeBar(tickLower, tickUpper, tick, { pad = 0.35 } = {}) {
   return d;
 }
 
-// A bubble map. Circle area is what a wallet holds; a line means those two
-// wallets have moved this token between each other. Laid out on a ring rather
-// than with a force simulation — with a dozen nodes the physics adds nothing but
-// a dependency and a wait, and a ring keeps every label readable.
+// ------------------------------------------------------------ bubble map ----
+// Holders as bubbles, wallets that have moved the token to each other drawn
+// together.
+//
+// The first version spaced every holder evenly around one ring, which is a
+// picture of the holder list rather than of the token: the clusters were in
+// there, but only as lines you had to trace. Grouping the ring by connected
+// component and colouring each group means the shape of the ownership is the
+// first thing you see — one colour taking up half the circle is the finding.
+//
+// Sitting in a group is not an accusation. Projects legitimately run a
+// treasury, a farm funder and an airdrop account, and those three will always
+// be connected. The map shows the relationship; the share column says whether
+// it matters.
 export function bubbleMap(nodes, links, { size = 380, fmt = v => v } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart';
-  const live = nodes.filter(n => n.value > 0).slice(0, 12);
+  const live = nodes.filter(n => n.value > 0).slice(0, 14);
   if (live.length < 2) { wrap.innerHTML = '<div class="chart-empty">Not enough holders to map.</div>'; return wrap; }
 
-  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': 'Holder map' });
+  const ids = new Set(live.map(n => n.id));
+  const parent = new Map(live.map(n => [n.id, n.id]));
+  const find = a => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
+  for (const l of links) {
+    if (!ids.has(l.source) || !ids.has(l.target)) continue;
+    const ra = find(l.source), rb = find(l.target);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  const byRoot = new Map();
+  for (const n of live) {
+    const r = find(n.id);
+    if (!byRoot.has(r)) byRoot.set(r, []);
+    byRoot.get(r).push(n);
+  }
+  // Groups first, largest holding first inside each — the eye should land on
+  // the connected mass before the unaffiliated singletons.
+  const sum = g => g.reduce((s, n) => s + n.value, 0);
+  const groups = [...byRoot.values()]
+    .map(g => g.sort((a, b) => b.value - a.value))
+    .sort((a, b) => (b.length > 1) - (a.length > 1) || sum(b) - sum(a));
+
+  const groupOf = new Map();
+  let ci = 0;
+  for (const g of groups) {
+    if (g.length < 2) continue;
+    for (const n of g) groupOf.set(n.id, ci);
+    ci++;
+  }
+
+  const H = size + 22;
+  const svg = el('svg', { viewBox: `0 0 ${size} ${H}`, role: 'img', 'aria-label': 'Holder map' });
   svg.style.cssText = `width:100%;max-width:${size}px;height:auto;display:block;margin:0 auto;overflow:visible`;
 
   const max = Math.max(...live.map(n => n.value));
-  const R = size * 0.34, cx = size / 2, cy = size / 2;
-  const pos = new Map();
-  live.forEach((n, i) => {
-    const a = (i / live.length) * Math.PI * 2 - Math.PI / 2;
-    pos.set(n.id, { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, n });
-  });
+  const rOf = n => 9 + 25 * Math.sqrt(n.value / max);
+  const R = size * 0.32, cx = size / 2, cy = size / 2;
 
-  // Edges first so bubbles sit on top of them.
+  // Each bubble is given the arc it actually needs, with a wider gap between
+  // groups than inside one. Angles are normalised, so a crowded map crowds
+  // rather than spilling out of the frame.
+  const slots = [];
+  for (const g of groups) {
+    for (const n of g) slots.push({ n, w: 2 * rOf(n) + 8 });
+    slots.push({ n: null, w: 30 });
+  }
+  const totalW = slots.reduce((s, x) => s + x.w, 0) || 1;
+  const pos = new Map();
+  let acc = 0;
+  for (const s of slots) {
+    const a = ((acc + s.w / 2) / totalW) * Math.PI * 2 - Math.PI / 2;
+    if (s.n) pos.set(s.n.id, { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R });
+    acc += s.w;
+  }
+
   const maxLink = Math.max(...links.map(l => l.value), 1);
   for (const l of links) {
     const a = pos.get(l.source), b = pos.get(l.target);
     if (!a || !b) continue;
+    const gi = groupOf.get(l.source);
     const line = el('line', {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      stroke: 'var(--accent)', 'stroke-opacity': 0.45,
-      'stroke-width': 1 + 3 * Math.sqrt(l.value / maxLink),
+      stroke: gi == null ? 'var(--line-2)' : SERIES(gi), 'stroke-opacity': 0.5,
+      'stroke-width': 1 + 3.5 * Math.sqrt(l.value / maxLink),
     });
     line.appendChild(el('title')).textContent = `${l.source} ↔ ${l.target}: ${fmt(l.value)}`;
     svg.appendChild(line);
   }
 
-  live.forEach((n, i) => {
+  for (const n of live) {
     const p = pos.get(n.id);
-    const r = 10 + 26 * Math.sqrt(n.value / max);
+    if (!p) continue;
+    const r = rOf(n);
+    const gi = groupOf.get(n.id);
     const g = el('g');
     const c = el('circle', {
       cx: p.x, cy: p.y, r,
-      fill: n.contract ? 'var(--line-2)' : SERIES(i),
-      'fill-opacity': n.contract ? 0.5 : 0.75,
+      fill: n.contract ? 'var(--line-2)' : gi == null ? 'var(--muted)' : SERIES(gi),
+      'fill-opacity': n.contract ? 0.45 : gi == null ? 0.35 : 0.8,
       stroke: 'var(--surface)', 'stroke-width': 2,
     });
-    c.appendChild(el('title')).textContent = `${n.id}: ${fmt(n.value)}${n.share != null ? ` (${(n.share * 100).toFixed(2)}% of supply)` : ''}${n.contract ? ' — a contract, holding for others' : ''}`;
+    c.appendChild(el('title')).textContent = `${n.id}: ${fmt(n.value)}`
+      + (n.share != null ? ` (${(n.share * 100).toFixed(2)}% of supply)` : '')
+      + (n.contract ? ' — a contract, holding for others' : '')
+      + (gi != null ? ` — moves this token with ${byRoot.get(find(n.id)).length - 1} other wallet${byRoot.get(find(n.id)).length === 2 ? '' : 's'} here` : '');
     g.appendChild(c);
-    const label = el('text', {
-      x: p.x, y: p.y + r + 12, 'text-anchor': 'middle',
-      fill: 'var(--ink-2)', 'font-size': 9.5,
-    });
+
+    // The share goes inside the bubble when there is room for it, because the
+    // number is the point and a legend forces the reader to look twice.
+    if (n.share != null && r >= 17) {
+      const s = el('text', { x: p.x, y: p.y + 3.5, 'text-anchor': 'middle', fill: 'var(--surface)', 'font-size': 10, 'font-weight': 700 });
+      s.style.fontFamily = 'var(--font-data)';
+      s.textContent = (n.share * 100).toFixed(n.share >= 0.1 ? 0 : 1) + '%';
+      g.appendChild(s);
+    }
+    const label = el('text', { x: p.x, y: p.y + r + 11, 'text-anchor': 'middle', fill: 'var(--ink-2)', 'font-size': 9.5 });
     label.style.fontFamily = 'var(--font-data)';
     label.textContent = n.id.length > 13 ? n.id.slice(0, 12) + '…' : n.id;
     g.appendChild(label);
     svg.appendChild(g);
-  });
+  }
+
+  const caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+  caption.textContent = ci > 0
+    ? 'One colour = wallets that have sent this token to each other'
+    : 'No transfers between these wallets — grey is unaffiliated, faded is a contract';
+  svg.appendChild(caption);
 
   wrap.appendChild(svg);
   return wrap;

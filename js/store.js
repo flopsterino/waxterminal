@@ -839,6 +839,40 @@ export async function poolDeltas(poolId, { limit = 1000, pages = 3 } = {}) {
 
 export const poolHistory = (poolId, opts) => poolDeltas(poolId, opts);
 
+// Trades read back out of the pool row.
+//
+// Hyperion cannot filter logswap by pool: the `poolId` query parameter is
+// accepted and silently ignored, and what comes back is the whole chain's swap
+// firehose. Asking for one pool's trades that way means reading every swap on
+// WAX and throwing almost all of it away, which is why a token page could only
+// ever claim "no trades in six hours" after actually looking at about twenty
+// minutes of them.
+//
+// The pool row itself is the trade index. Every swap rewrites it, so two
+// consecutive states are one trade: the reserve that fell is what was sold,
+// the one that rose is what was bought. Deposits and withdrawals rewrite the
+// same row, so they have to be told apart or a single large deposit reads as a
+// day of trading — a swap moves the two sides in opposite directions and moves
+// the price with them, which a mint or a burn does not.
+export function swapsFromDeltas(rows) {
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1], r = rows[i];
+    const dA = r.reserveA - prev.reserveA;
+    const dB = r.reserveB - prev.reserveB;
+    const opposed = (dA > 0 && dB < 0) || (dA < 0 && dB > 0);
+    if (!opposed || r.price === prev.price) continue;
+    out.push({
+      ts: r.ts, block: r.block, price: r.price,
+      amountA: dA, amountB: dB,
+      // Which way a reader thinks of it: A went in, or A came out.
+      side: dA > 0 ? 'sell' : 'buy',
+    });
+  }
+  return out;
+}
+
+
 // Candles from state changes. Every swap rewrites the pool row, so consecutive
 // rows give both the price path and — from the change in reserves — the volume
 // that moved it. No trade index required.
@@ -969,6 +1003,27 @@ export async function loadHistory({ months = 24 } = {}) {
     } catch { return []; }
   }));
   return files.flat().sort((a, b) => a.at - b.at);
+}
+
+// One token's line out of that history. The daily job records the tokens with
+// real pooled value, so a token that has never been in that band has no history
+// at all — an empty series is a gap to say out loud, not a zero to plot.
+export function tokenSeries(rows, id) {
+  const out = [];
+  for (const r of rows) {
+    const hit = (r.tokens || []).find(t => t[0] === id);
+    if (!hit) continue;
+    out.push({ at: r.at, tvl: hit[1] ?? 0, vol: hit[2] ?? 0, price: hit[3] ?? null, pools: hit[4] ?? 0 });
+  }
+  return out;
+}
+
+// Several runs a day collapse to that day's last reading, so a day the job ran
+// twice does not weigh double against one where it ran once.
+export function perDay(rows, key = r => r.at) {
+  const m = new Map();
+  for (const r of rows) m.set(new Date(key(r)).toISOString().slice(0, 10), r);
+  return [...m.values()];
 }
 
 
