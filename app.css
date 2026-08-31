@@ -196,8 +196,12 @@ td.r, th.r { text-align: right; }
 .pc-farm .sub { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 .pc-farm .btn { flex: 0 0 auto; }
 
-.pc-act { display: flex; gap: 8px; margin-top: auto; }
+.pc-act { display: flex; align-items: center; gap: 12px; margin-top: auto; }
 .pc-act .btn { flex: 1; text-align: center; }
+/* A link off the site is not an action, and drawing it as loudly as the one
+   action this card exists for is how Compound stopped being the obvious thing. */
+.pc-act .plink { flex: 0 0 auto; font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.pc-act .plink:hover { color: var(--accent); }
 
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12.5px; margin-top: 10px; }
 .kv dt { color: var(--muted); }
@@ -707,3 +711,35 @@ body { overflow-x: hidden; }
 .pc-band { display: flex; justify-content: space-between; gap: 8px; font-family: var(--font-data);
   font-size: 10.5px; color: var(--muted); margin-top: -6px; }
 .pc-band .now { color: var(--ink-2); font-weight: 600; }
+
+/* ------------------------------------------------------- compound plan --- */
+/* This was three nested cards and a four-tile stat grid inside a card that is
+   itself half of a two-column grid — every box drawing its own border, nothing
+   with room to breathe. A plan is a short sequence, so it reads as one. */
+.cplan .plan { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 9px; }
+
+.planhead { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-family: var(--font-data); }
+.planhead .from { font-size: 15px; color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.planhead .arrow { color: var(--muted); }
+.planhead .to { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+.planhead .note { font-family: var(--font); font-size: 11.5px; color: var(--muted); flex: 1 1 100%; }
+
+/* One row per reward: symbol, amount, value, where it came from, what to do
+   with it. The select is the point of the row, so it ends there. */
+.prows { display: flex; flex-direction: column; gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.prow { display: grid; grid-template-columns: auto 1fr auto auto; grid-template-areas: "s a u sel" "w w w sel";
+  align-items: center; gap: 1px 10px; background: var(--surface); padding: 7px 10px; font-size: 12.5px; }
+.prow .s { grid-area: s; font-weight: 650; }
+.prow .a { grid-area: a; font-family: var(--font-data); color: var(--ink-2); }
+.prow .u { grid-area: u; font-family: var(--font-data); }
+.prow .w { grid-area: w; font-size: 10.5px; color: var(--muted); }
+.prow select { grid-area: sel; }
+
+.planline { display: grid; grid-template-columns: 74px 1fr; gap: 10px; font-size: 12px; align-items: baseline; }
+.planline .k { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
+.planline .mono { font-size: 11px; }
+
+.cplan .plan > .btn { width: 100%; margin-top: 2px; }
+.cplan .runbox:empty { display: none; }

@@ -85,8 +85,12 @@ for (const arg of process.argv.slice(3).filter(a => a.startsWith('--click='))) {
   const sel = arg.slice('--click='.length);
   const el = document.querySelector(sel);
   if (!el) { console.error(`[click] no match for ${sel}`); continue; }
+  let fired = false;
+  const spy = () => { fired = true; };
+  el.addEventListener('click', spy);
   el.dispatchEvent(new window.Event('click', { bubbles: true }));
-  if (typeof el.onclick === 'function') await el.onclick(new window.Event('click'));
+  el.removeEventListener('click', spy);
+  if (!fired && typeof el.onclick === 'function') await el.onclick(new window.Event('click'));
   await new Promise(r => setTimeout(r, Number(process.env.CLICK_WAIT || 12) * 1000));
 }
 

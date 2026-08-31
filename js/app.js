@@ -2148,7 +2148,7 @@ function positionCard(p) {
 
     <footer class="pc-act">
       <button class="btn" data-compound="${esc(pool.id)}:${p.posId}">Compound</button>
-      <a class="btn" href="${venueUrl.alcor(pool)}" target="_blank" rel="noopener">Open the pool</a>
+      <a class="plink" href="${venueUrl.alcor(pool)}" target="_blank" rel="noopener">Pool &nearr;</a>
     </footer>
     <div class="cplan" hidden></div></article>`;
 }
@@ -2179,7 +2179,7 @@ function tacoCard(p) {
       <div class="fig"><span class="k">Earning / day</span><span class="v ${tacoDay > 0 ? '' : 'dim'}">${tacoDay > 0 ? usd(tacoDay) : '&mdash;'}</span></div>
       <div class="fig"><span class="k">Fee tier</span><span class="v">${(pool.feeBps / 100).toFixed(2)}%</span></div>
     </div>
-    <footer class="pc-act"><a class="btn" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">Open the pool</a></footer>
+    <footer class="pc-act"><a class="plink" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">Open the pool on TacoSwap &nearr;</a></footer>
   </article>`;
 }
 
@@ -2338,7 +2338,8 @@ async function lookupWallet(account) {
 // No contract, no delegated permission: the terminal computes the sequence and
 // the wallet signs it. Nothing here can move funds on its own.
 async function showCompound(btn, pos) {
-  const box = btn.nextElementSibling;
+  const box = btn.closest('.poscard, .card')?.querySelector('.cplan');
+  if (!box) return;
   const label = btn.dataset.label || (btn.dataset.label = btn.textContent);
   if (!box.hidden) { box.hidden = true; btn.textContent = label; return; }
   box.hidden = false;
@@ -2362,54 +2363,52 @@ async function showCompound(btn, pos) {
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
 
   const b = plan;
-  const basketRows = harvest.basket.map((x, bi) => `<tr>
-      <td><b>${esc(x.symbol)}</b></td>
-      <td class="r num">${qty(x.amount)}</td>
-      <td class="r num">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token">unpriceable</span>'}</td>
-      <td class="dim" style="font-size:11px">${esc(x.source)}</td>
-      <td class="r"><select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
+  // Three nested cards and a four-tile stat grid, dropped inside a card that is
+  // itself half of a two-column grid. Every box drew its own border and nothing
+  // had room to breathe. A plan is a short sequence, so it reads as one.
+  const rewardRows = harvest.basket.map((x, bi) => `
+    <label class="prow">
+      <span class="s">${esc(x.symbol)}</span>
+      <span class="a">${qty(x.amount)}</span>
+      <span class="u">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token">unpriced</span>'}</span>
+      <span class="w">${esc(x.source === 'fees' ? 'LP fees' : x.source)}</span>
+      <select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
         <option value="compound" selected>compound</option>
         <option value="keep">keep</option>
         <option value="skip">skip</option>
-      </select></td></tr>`).join('');
-
-  const swapRows = b.swaps.length
-    ? b.swaps.map(s => `<tr><td><b>${esc(s.from)}</b> → <b>${esc(s.to)}</b></td><td class="r num">${usd(s.usd)}</td><td class="dim" style="font-size:11px">${esc(s.why)}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="dim" style="padding:8px 13px">No swap needed — the harvest already matches the band.</td></tr>';
+      </select>
+    </label>`).join('');
 
   box.innerHTML = `
-    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-      ${!b.viable ? `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">${esc(b.reason)}</div>` : ''}
-      <div class="stats" style="margin-bottom:10px">
-        <div class="stat"><span class="v">${usd(b.grossUsd)}</span><span class="k">claimable now</span><span class="sub">${harvest.basket.length} item${harvest.basket.length === 1 ? '' : 's'}</span></div>
-        <div class="stat"><span class="v">${usd(b.netUsd)}</span><span class="k">redeposited</span><span class="sub">${b.feeUsd > 0 ? 'after ' + usd(b.feeUsd) + ' fee' : 'no fee charged'}</span></div>
-        <div class="stat"><span class="v">${(b.ratio.shareA * 100).toFixed(1)}/${(b.ratio.shareB * 100).toFixed(1)}</span><span class="k">this band needs</span><span class="sub">${esc(pos.pool.symA)} / ${esc(pos.pool.symB)}</span></div>
-        <div class="stat"><span class="v">${b.swaps.length ? 3 : 2}</span><span class="k">signatures</span><span class="sub">${b.actions.length} action${b.actions.length === 1 ? '' : 's'}${b.needsSplit ? ' &middot; must be split' : ''}</span></div>
+    <div class="plan">
+      ${!b.viable ? `<div class="err">${esc(b.reason)}</div>` : ''}
+
+      <div class="planhead">
+        <span class="from">${usd(b.grossUsd)}</span>
+        <span class="arrow">&rarr;</span>
+        <span class="to">${usd(b.netUsd)}</span>
+        <span class="note">back into the band${b.feeUsd > 0 ? ` &middot; ${usd(b.feeUsd)} fee` : ''} &middot; ${b.swaps.length ? 3 : 2} signatures</span>
       </div>
 
-      <div class="grid g2">
-        <div class="card"><h3>Harvest <span class="dim">— what is claimable</span></h3>
-          <table style="font-size:12.5px"><tbody>${basketRows}</tbody></table>
-          ${b.alreadyRight.length ? `<p class="sub" style="margin:9px 0 0">${b.alreadyRight.map(x => esc(x.symbol)).join(', ')} ${b.alreadyRight.length === 1 ? 'is' : 'are'} already a pool token — never swapped, that would pay the spread to stand still.</p>` : ''}
-        </div>
-        <div class="card"><h3>Swaps <span class="dim">— basket into the band's ratio</span></h3>
-          <table style="font-size:12.5px"><tbody>${swapRows}</tbody></table>
-          <p class="sub" style="margin:9px 0 0">Lands at ${(b.finalA / (b.finalA + b.finalB) * 100 || 0).toFixed(2)}% / ${(b.finalB / (b.finalA + b.finalB) * 100 || 0).toFixed(2)}%.</p>
-        </div>
+      <div class="prows">${rewardRows}</div>
+
+      <div class="planline">
+        <span class="k">Convert</span>
+        <span>${b.swaps.length
+          ? b.swaps.map(x => `<b>${esc(x.from)}</b>&nbsp;&rarr;&nbsp;<b>${esc(x.to)}</b> <span class="dim">${usd(x.usd)}</span>`).join(', ')
+          : '<span class="dim">nothing &mdash; the harvest already matches the band</span>'}</span>
+      </div>
+      <div class="planline">
+        <span class="k">Lands at</span>
+        <span>${(b.finalA / (b.finalA + b.finalB) * 100 || 0).toFixed(1)} / ${(b.finalB / (b.finalA + b.finalB) * 100 || 0).toFixed(1)}
+          <span class="dim">against ${(b.ratio.shareA * 100).toFixed(1)} / ${(b.ratio.shareB * 100).toFixed(1)} this band needs</span></span>
+      </div>
+      <div class="planline">
+        <span class="k">Signs</span>
+        <span class="mono">${b.actions.map(a => esc(a.name)).join(' &middot; ')}</span>
       </div>
 
-      <div class="card" style="margin-top:12px"><h3>The transaction your wallet would sign</h3>
-        <ol style="margin:0;padding-left:20px;font-size:12.5px;line-height:1.75">
-          ${b.actions.map(a => `<li><code class="mono">${esc(a.name)}</code> <span class="dim">${esc(a.note)}</span></li>`).join('')}
-        </ol>
-        <p class="sub" style="margin:10px 0 0">Claim, convert, redeposit &mdash; three signatures, two when nothing needs converting.</p>
-      </div>
-
-      <div class="cta" style="margin:12px 0 0">
-        <div><b>Compound ${usd(b.netUsd)} back into this position</b>
-          <span class="sub">compound = back into the pool &middot; keep = into your wallet &middot; skip = leave it accruing</span></div>
-        <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
-      </div>
+      <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
       <div class="runbox" id="wbox-${pos.posId}"></div>
     </div>`;
 
