@@ -2254,9 +2254,9 @@ async function lookupWallet(account) {
   }, 0);
 
   let html = `<div class="stats">
-      <div class="stat"><span class="v">${usd(totalUsd)}</span><span class="k">liquidity value</span><span class="sub">${all.length} position${all.length === 1 ? '' : 's'} across ${new Set(all.map(p => p.pool.dex)).size} venue${new Set(all.map(p => p.pool.dex)).size === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${usd(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
-      <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usd(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${usdExact(totalUsd)}</span><span class="k">liquidity value</span><span class="sub">${all.length} position${all.length === 1 ? '' : 's'} across ${new Set(all.map(p => p.pool.dex)).size} venue${new Set(all.map(p => p.pool.dex)).size === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${usdExact(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
+      <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usdExact(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
       ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">${usd(alcorValue)} now against ${usd(deposited)} put in, on Alcor positions only${tacoCount > 0 ? ` &mdash; the ${tacoCount} TacoSwap position${tacoCount === 1 ? '' : 's'} above ${tacoCount === 1 ? 'is' : 'are'} not in this` : ''}</span></div>` : ''}
     </div>`;
@@ -2339,27 +2339,39 @@ async function lookupWallet(account) {
 // the wallet signs it. Nothing here can move funds on its own.
 async function showCompound(btn, pos) {
   const box = btn.nextElementSibling;
-  if (!box.hidden) { box.hidden = true; btn.textContent = 'Plan compound'; return; }
+  const label = btn.dataset.label || (btn.dataset.label = btn.textContent);
+  if (!box.hidden) { box.hidden = true; btn.textContent = label; return; }
   box.hidden = false;
   btn.textContent = 'Hide plan';
   box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading claimable rewards…</span></div>';
+
+  // The same fee the transaction will actually carry. Planning at zero and
+  // charging 0.75% at signing time is the one surprise this panel must not
+  // spring — the Compound page has always used the configured rate.
+  const feeAccount = CFG?.commercial?.feeAccount || '';
+  const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
 
   let harvest, plan;
   try {
     harvest = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
     plan = planCompound({
       pool: pos.pool, position: pos, basket: harvest.basket,
-      feeBps: 0,
+      feeBps,
       sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64),
     });
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
 
   const b = plan;
-  const basketRows = harvest.basket.map(x => `<tr>
+  const basketRows = harvest.basket.map((x, bi) => `<tr>
       <td><b>${esc(x.symbol)}</b></td>
       <td class="r num">${qty(x.amount)}</td>
       <td class="r num">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token">unpriceable</span>'}</td>
-      <td class="dim" style="font-size:11px">${esc(x.source)}</td></tr>`).join('');
+      <td class="dim" style="font-size:11px">${esc(x.source)}</td>
+      <td class="r"><select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
+        <option value="compound" selected>compound</option>
+        <option value="keep">keep</option>
+        <option value="skip">skip</option>
+      </select></td></tr>`).join('');
 
   const swapRows = b.swaps.length
     ? b.swaps.map(s => `<tr><td><b>${esc(s.from)}</b> → <b>${esc(s.to)}</b></td><td class="r num">${usd(s.usd)}</td><td class="dim" style="font-size:11px">${esc(s.why)}</td></tr>`).join('')
@@ -2372,7 +2384,7 @@ async function showCompound(btn, pos) {
         <div class="stat"><span class="v">${usd(b.grossUsd)}</span><span class="k">claimable now</span><span class="sub">${harvest.basket.length} item${harvest.basket.length === 1 ? '' : 's'}</span></div>
         <div class="stat"><span class="v">${usd(b.netUsd)}</span><span class="k">redeposited</span><span class="sub">${b.feeUsd > 0 ? 'after ' + usd(b.feeUsd) + ' fee' : 'no fee charged'}</span></div>
         <div class="stat"><span class="v">${(b.ratio.shareA * 100).toFixed(1)}/${(b.ratio.shareB * 100).toFixed(1)}</span><span class="k">this band needs</span><span class="sub">${esc(pos.pool.symA)} / ${esc(pos.pool.symB)}</span></div>
-        <div class="stat"><span class="v">${b.actions.length}</span><span class="k">actions, one signature</span>${b.needsSplit ? '<span class="sub neg">must be split</span>' : ''}</div>
+        <div class="stat"><span class="v">${b.swaps.length ? 3 : 2}</span><span class="k">signatures</span><span class="sub">${b.actions.length} action${b.actions.length === 1 ? '' : 's'}${b.needsSplit ? ' &middot; must be split' : ''}</span></div>
       </div>
 
       <div class="grid g2">
@@ -2392,7 +2404,41 @@ async function showCompound(btn, pos) {
         </ol>
         <p class="sub" style="margin:10px 0 0">Claim, convert, redeposit &mdash; three signatures, two when nothing needs converting.</p>
       </div>
+
+      <div class="cta" style="margin:12px 0 0">
+        <div><b>Compound ${usd(b.netUsd)} back into this position</b>
+          <span class="sub">compound = back into the pool &middot; keep = into your wallet &middot; skip = leave it accruing</span></div>
+        <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
+      </div>
+      <div class="runbox" id="wbox-${pos.posId}"></div>
     </div>`;
+
+  // This panel used to end at "the transaction your wallet would sign" and stop
+  // there, so the only way to actually compound was to leave the page.
+  const go = box.querySelector(`#wrun-${pos.posId}`);
+  if (go) go.onclick = async () => {
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    if (wallet.account() !== pos.owner) {
+      alert(`Connected as ${wallet.account()}, but this position belongs to ${pos.owner}.`);
+      return;
+    }
+    const modes = new Map([...box.querySelectorAll(`[data-wpick="${pos.posId}"]`)].map(c => [Number(c.dataset.bi), c.value]));
+    const claimBasket = harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') !== 'skip');
+    const planBasket = harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') === 'compound');
+    const runbox = box.querySelector(`#wbox-${pos.posId}`);
+    if (!claimBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to skip.</div>'; return; }
+    if (!planBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Nothing set to compound &mdash; set at least one reward to compound.</div>'; return; }
+    const entry = (claimBasket.length === harvest.basket.length && planBasket.length === harvest.basket.length)
+      ? { pos, harvest, plan }
+      : {
+        pos,
+        harvest: { ...harvest, basket: claimBasket },
+        plan: planCompound({ pool: pos.pool, position: pos, basket: planBasket, feeBps, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }),
+      };
+    go.disabled = true;
+    await runOne(runbox, entry, feeBps, feeAccount);
+    go.disabled = false;
+  };
 }
 
 // ---------------------------------------------------------- WALLET LINK -----
