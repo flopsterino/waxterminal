@@ -330,6 +330,8 @@ async function boot() {
       banner(`<div class="freshbar">Daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}. Pools and wallets you open are read live.
         <button class="btn ghost" id="goLive">Refresh from chain</button></div>`);
     } else banner('');
+    // Money left mid-flight outranks anything else on the page.
+    resumeBanner().catch(() => {});
     const b = $('#goLive');
     if (b) b.onclick = async () => {
       b.disabled = true; b.textContent = 'Reading chain…';
@@ -2372,18 +2374,25 @@ async function showCompound(btn, pos) {
   // Three nested cards and a four-tile stat grid, dropped inside a card that is
   // itself half of a two-column grid. Every box drew its own border and nothing
   // had room to breathe. A plan is a short sequence, so it reads as one.
-  const rewardRows = harvest.basket.map((x, bi) => `
+  // A token with no price cannot be sized into the band, so offering to compound
+  // it is offering something that will not happen — it defaults to the wallet.
+  const inPool = x => x.tokenId === pos.pool.tokenA || x.tokenId === pos.pool.tokenB;
+  const rewardRows = harvest.basket.map((x, bi) => {
+    const def = x.priced ? 'compound' : 'keep';
+    const opt = (v, t) => `<option value="${v}"${v === def ? ' selected' : ''}>${t}</option>`;
+    return `
     <label class="prow">
       <span class="s">${esc(x.symbol)}</span>
       <span class="a">${qty(x.amount)}</span>
-      <span class="u">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token">unpriced</span>'}</span>
-      <span class="w">${esc(x.source === 'fees' ? 'LP fees' : x.source)}</span>
+      <span class="u">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token — it cannot be swapped, so it can only go to your wallet">unpriced</span>'}</span>
+      <span class="w">${esc(x.source === 'fees' ? 'LP fees' : x.source)}${inPool(x) ? '' : ' &middot; not a token in this pool'}</span>
       <select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
-        <option value="compound" selected>compound</option>
-        <option value="keep">keep</option>
-        <option value="skip">skip</option>
+        ${x.priced ? opt('compound', '&rarr; into the pool') : ''}
+        ${opt('keep', '&rarr; to my wallet')}
+        ${opt('skip', "leave it, don't claim")}
       </select>
-    </label>`).join('');
+    </label>`;
+  }).join('');
 
   box.innerHTML = `
     <div class="plan">
@@ -2490,7 +2499,27 @@ function wireConnect() {
 // The convert step is skipped outright when the harvest already arrives in the
 // two tokens the position needs, which is common on a single-token farm, so it
 // is drawn as skipped rather than quietly vanishing.
-async function runOne(box, entry, feeBps, feeAccount) {
+// A compound is three signatures, and it used to ask for all three from one
+// click. Browsers only let a page open a window during a user gesture, and an
+// `await` spends it — so the second and third signature arrive with the gesture
+// gone. WAX Cloud Wallet needs a popup, and when the popup is refused it falls
+// back to navigating the whole page at the wallet. That is the "the page
+// refreshes at step 3 and the steps are interrupted" report: not a crash, a
+// blocked popup, and the flow died with the document.
+//
+// So every signature now waits for its own click. It is one more press and it
+// is the only shape that works in a browser.
+//
+// The second half matters more. Between the claim and the deposit the harvest
+// is sitting loose in the wallet — already collected, not yet put back — and a
+// reload in that window used to lose the thread entirely. The step that has
+// been reached is written down, so an interrupted compound can be finished
+// rather than quietly abandoned.
+const RESUME_KEY = 'wt.compound.pending';
+const loadResume = () => { try { return JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; } };
+const saveResume = v => { try { v ? localStorage.setItem(RESUME_KEY, JSON.stringify(v)) : localStorage.removeItem(RESUME_KEY); } catch {} };
+
+async function runOne(box, entry, feeBps, feeAccount, resume = null) {
   const { pos, harvest, plan } = entry;
   const steps = [
     { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
@@ -2498,43 +2527,68 @@ async function runOne(box, entry, feeBps, feeAccount) {
     { t: 'Redeposit', d: 'Add exactly what arrived back into your range.'
         + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on what was harvested goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
   ];
-  const render = (i, msg, err) => {
+
+  // `cta` is a label for a button that advances to step i; without one the step
+  // is simply reported as in progress.
+  const render = (i, msg, { err = null, cta = null } = {}) => {
     box.innerHTML = `<div class="steps">${steps.map((s, n) => `
       <div class="step ${s.skipped ? 'done' : n < i ? 'done' : n === i ? 'active' : ''}">
         <span class="n">${s.skipped || n < i ? '&check;' : n + 1}</span>
         <div><h4>${s.t}</h4><p>${s.skipped ? esc(s.skipped) : n === i && msg ? esc(msg) : s.d}</p></div>
       </div>`).join('')}</div>
-      ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}`;
+      ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}
+      ${cta ? `<button class="btn" style="margin-top:10px;width:100%" data-next>${esc(cta)}</button>` : ''}`;
   };
 
+  // Waits for a real click, because that is what a wallet popup needs.
+  const press = (i, label, note) => new Promise(r => {
+    render(i, note, { cta: label });
+    box.querySelector('[data-next]').onclick = e => { e.currentTarget.disabled = true; r(); };
+  });
+
+  const basketIds = [...new Set(harvest.basket.map(b => b.tokenId))];
+  let before = resume?.before ?? null;
+  let r1id = resume?.claimTx ?? '';
+  let skipped = [];
+
   try {
-    render(0, 'Reading your balances…');
-    // Everything the claim could produce, measured first, so afterwards the
-    // difference is the harvest and nothing else.
-    const basketIds = [...new Set(harvest.basket.map(b => b.tokenId))];
-    const before = await readBalances(pos.pool, basketIds);
+    // ---- 1. claim -------------------------------------------------------
+    if (!resume) {
+      render(0, 'Reading your balances…');
+      // Everything the claim could produce, measured first, so afterwards the
+      // difference is the harvest and nothing else.
+      before = await readBalances(pos.pool, basketIds);
 
-    render(0, 'Waiting for your wallet…');
-    const { actions } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
-    if (!actions.length) throw new Error('Nothing claimable to harvest.');
-    const r1 = await wallet.transact(actions);
+      const { actions } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
+      if (!actions.length) throw new Error('Nothing claimable to harvest.');
+      await press(0, 'Sign 1 of 3 — claim', 'Your wallet will ask you to collect the fees and rewards. Nothing is swapped or spent.');
+      render(0, 'Waiting for your wallet…');
+      const r1 = await wallet.transact(actions);
+      r1id = r1.id;
+      // From here the harvest is loose in the wallet. If anything interrupts
+      // this, it has to be finishable.
+      saveResume({ account: pos.owner, poolId: pos.pool.id, posId: pos.posId, before, claimTx: r1id, at: Date.now() });
+    }
 
+    // ---- 2. convert -----------------------------------------------------
     render(1, 'Measuring what arrived…');
     await new Promise(r => setTimeout(r, 2500));
     const after = await readBalances(pos.pool, basketIds);
     const harvested = harvestedFrom(before, after);
     if (!harvested.size) throw new Error('The claim produced nothing.');
 
-    // Swaps sized from the measured harvest, then the deposit, in one signature.
     const sw = buildSwaps({ pool: pos.pool, plan, harvested });
-    const skipped = sw.swaps.filter(x => x.skipped);
+    skipped = sw.swaps.filter(x => x.skipped);
     if (sw.actions.length) {
-      render(1, 'Waiting for your wallet — converting what you claimed…');
+      await press(1, 'Sign 2 of 3 — convert', `Convert ${sw.swaps.filter(x => !x.skipped).map(x => `${x.from}→${x.to}`).join(', ')} — only what you just claimed.`);
+      render(1, 'Waiting for your wallet…');
       await wallet.transact(sw.actions);
       await new Promise(r => setTimeout(r, 2500));
     } else {
       steps[1].skipped = 'Nothing to convert — the harvest already arrived in the two tokens this position holds.';
     }
+
+    // ---- 3. redeposit ---------------------------------------------------
     render(2, 'Sizing the deposit from what actually landed…');
     // What the plan said the harvest is worth, in token terms — the cap the
     // redeposit checks itself against.
@@ -2544,20 +2598,49 @@ async function runOne(box, entry, feeBps, feeAccount) {
       b: pxB > 0 ? (plan.netUsd * plan.ratio.shareB) / pxB : 0,
     };
     const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected });
-    render(2, 'Waiting for your wallet — putting it back…');
+    await press(2, 'Sign 3 of 3 — put it back', `Add ${qty(dep.depA)} ${pos.pool.symA} and ${qty(dep.depB)} ${pos.pool.symB} back into your range.`);
+    render(2, 'Waiting for your wallet…');
     const r2 = await wallet.transact(dep.actions);
+    saveResume(null);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
       <b>Compounded.</b> Put back ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} — the harvest only.
       Your existing ${esc(pos.pool.symA)} and ${esc(pos.pool.symB)} were left alone.
       ${skipped.length ? `<br><span class="dim">${skipped.length} reward left unswapped (${skipped.map(s => esc(s.skipped)).join(', ')}) — it is in your wallet.</span>` : ''}
-      <br><span class="mono" style="font-size:11px">${r1.id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
+      <br><span class="mono" style="font-size:11px">${r1id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
   } catch (e) {
     const m = String(e.message || e);
-    render(0, null, /cancel|reject|declin/i.test(m)
-      ? 'You declined the signature — nothing happened.'
-      : `Transaction failed: ${m}`);
+    const declined = /cancel|reject|declin/i.test(m);
+    // A decline before the claim leaves nothing behind; after it, the harvest
+    // is in the wallet and saying "nothing happened" would be a lie.
+    render(0, null, {
+      err: declined
+        ? (r1id ? 'You declined that signature. What you already claimed is in your wallet — reopen this position to finish putting it back.' : 'You declined the signature — nothing happened.')
+        : `Transaction failed: ${m}`,
+    });
   }
+}
+
+// An interrupted compound, offered back. The claim has executed, so the money is
+// in the wallet either way; the only question is whether it gets put back.
+async function resumeBanner() {
+  const r = loadResume();
+  if (!r) return;
+  // A stale record is worse than none: after a day the balances it measured
+  // against mean nothing.
+  if (Date.now() - r.at > 6 * 3600e3) { saveResume(null); return; }
+  const me = wallet.account();
+  if (me && me !== r.account) return;
+  const bar = $('#resumeBar');
+  bar.innerHTML = `<div class="freshbar" style="border-color:var(--accent);background:var(--accent-soft)">
+    <b>An unfinished compound.</b> Position #${esc(r.posId)} was claimed but never put back &mdash; the harvest is in your wallet.
+    <button class="btn" id="resumeGo">Finish it</button>
+    <button class="btn ghost" id="resumeDrop">Forget it</button></div>`;
+  $('#resumeDrop').onclick = () => { saveResume(null); bar.innerHTML = ''; };
+  $('#resumeGo').onclick = () => {
+    bar.innerHTML = '';
+    show('compound'); $('#compInput').value = r.account; runCompound(r.account, r);
+  };
 }
 
 // --------------------------------------------------- COMPOUND (whole wallet) -
@@ -2913,7 +2996,7 @@ function renderRemoveLiquidity(box, pos, account) {
   };
 }
 
-async function runCompound(account) {
+async function runCompound(account, resume = null) {
   if (!account) return;
   show('compound', account);
   const out = $('#compOut');
@@ -3012,9 +3095,9 @@ async function runCompound(account) {
       <span class="pick">
         <span class="badge">${esc(b.symbol)} ${b.priced ? usd(b.usd) : '?'}</span>
         <select class="pickmode" data-pick="${pos.posId}" data-bi="${bi}">
-          <option value="compound" selected>compound</option>
-          <option value="keep">keep</option>
-          <option value="skip">skip</option>
+          <option value="compound" selected>&rarr; into the pool</option>
+          <option value="keep">&rarr; to my wallet</option>
+          <option value="skip">leave it, don't claim</option>
         </select>
         <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm')}${inPool(b) ? '' : ' &middot; not in this pool'}</span>
       </span>`).join(' ');
@@ -3034,7 +3117,7 @@ async function runCompound(account) {
       </div>` : ''}
       ${harvest.basket.length ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
-        <p class="sub" style="margin:-2px 0 8px">compound = back into the pool &middot; keep = into your wallet &middot; skip = leave it accruing</p>
+        <p class="sub" style="margin:-2px 0 8px">Claiming is its own action, so leaving one unclaimed saves the CPU and it keeps accruing for next time.</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
           <div><span class="dim">Already the right token</span><br><span class="mono">${[...new Set(plan.alreadyRight.map(b => b.symbol))].map(esc).join(', ') || '—'}</span></div>
@@ -3084,6 +3167,18 @@ async function runCompound(account) {
     const entry = plans.find(x => String(x.pos.posId) === b.dataset.remove);
     if (entry) renderRemoveLiquidity(out.querySelector(`[data-lpbox="${b.dataset.remove}"]`), entry.pos, account);
   });
+
+  // An interrupted compound reopens on its own position, already past the claim.
+  if (resume) {
+    const entry = plans.find(x => String(x.pos.posId) === String(resume.posId));
+    const rbox = out.querySelector(`[data-runbox="${resume.posId}"]`);
+    if (entry && rbox) {
+      rbox.scrollIntoView({ block: 'center' });
+      runOne(rbox, entry, feeBps, feeAccount, resume);
+    } else {
+      out.insertAdjacentHTML('afterbegin', `<div class="err">Could not reopen position #${esc(resume.posId)} to finish it. What was claimed is in your wallet.</div>`);
+    }
+  }
 
   out.querySelectorAll('button[data-run]').forEach(b => b.onclick = async () => {
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
