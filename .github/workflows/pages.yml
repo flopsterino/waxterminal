@@ -31,6 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      # Every deploy gets its own asset URLs. Without this a fix is live on the
+      # server and absent from the browser for ten minutes, which is
+      # indistinguishable from the fix never having happened.
+      - run: node tools/stamp.mjs "${{ github.sha }}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

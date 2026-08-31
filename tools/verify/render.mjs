@@ -50,7 +50,7 @@ globalThis.customElements = { define() {}, get() {} };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (u, o) => {
   if (typeof u === 'string' && !/^https?:/.test(u)) {
-    try { return new Response(await readFile(new URL(u, root)), { status: 200 }); }
+    try { return new Response(await readFile(new URL(String(u).split('?')[0], root)), { status: 200 }); }
     catch { return new Response('', { status: 404 }); }
   }
   return realFetch(u, o);
@@ -65,7 +65,8 @@ globalThis.indexedDB = undefined;
 process.on('unhandledRejection', e => console.error('[unhandled]', e?.stack || e));
 process.on('uncaughtException', e => console.error('[uncaught]', e?.stack || e));
 
-await import(new URL('js/app.js', root).href).catch(e => { console.error('[import failed]', e?.stack || e); });
+const entry = (html.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/) || [, 'js/app.js'])[1];
+await import(new URL(entry, root).href).catch(e => { console.error('[import failed]', e?.stack || e); });
 
 // The app boots on DOMContentLoaded, which never fires against an
 // already-parsed document — so it is dispatched by hand, once the module has

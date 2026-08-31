@@ -314,9 +314,15 @@ async function boot() {
     // What a reader wants from a footer is how old the numbers are.
     // Volume refreshes hourly, everything else daily, so say which is which
     // rather than stamping one time over both.
-    $('#freshness').textContent = state.volumeAt
+    let txt = state.volumeAt
       ? `Volume ${ago(new Date(state.volumeAt).toISOString())} · rest ${ago(new Date(state.loadedAt).toISOString())}`
       : (state.loadedAt ? `Updated ${ago(new Date(state.loadedAt).toISOString())}` : '');
+    // Which build this browser is actually running. Pages caches code for ten
+    // minutes, so "it is still broken" and "the fix is live" can both be true
+    // at once, and without this neither of us can tell which.
+    const build = (import.meta.url.split('?v=')[1] || '').slice(0, 7);
+    if (build) txt += `${txt ? ' · ' : ''}build ${build}`;
+    $('#freshness').textContent = txt;
     if (loadError) {
       banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
         Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
