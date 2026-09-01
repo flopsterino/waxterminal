@@ -436,7 +436,7 @@ function redrawCurrent() {
 function show(v, arg = null) {
   // A view the partner turned off is not a view.
   if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
-  if (v !== 'pool' && v !== 'token' && v !== 'account') lastView = v;
+  if (!['pool', 'token', 'account', 'farm'].includes(v)) lastView = v;
   // A once-a-second recompute has no business running behind a page nobody is
   // looking at, and it holds every incentive row it read alive with it.
   if (v !== 'wallet') stopAccrual();
