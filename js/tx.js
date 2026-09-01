@@ -640,9 +640,13 @@ export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAcco
   const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
   if (!actions.length) throw new Error('Nothing claimable to harvest.');
 
-  // Ask for slightly less than the plan says will arrive.
-  let depA = (plan.depositAmtA ?? 0) * CLAIM_MARGIN;
-  let depB = (plan.depositAmtB ?? 0) * CLAIM_MARGIN;
+  // The recorded floor, not the forecast. A farm reward's live figure
+  // extrapolates with the staking weight we read, and a large staker joining
+  // after that read makes it too high — 4.91% too high on a farm last written
+  // four hours earlier, which no flat margin covers. The floor is what the
+  // contract has already booked and cannot go down.
+  let depA = (plan.depositFloorA ?? plan.depositAmtA ?? 0) * CLAIM_MARGIN;
+  let depB = (plan.depositFloorB ?? plan.depositAmtB ?? 0) * CLAIM_MARGIN;
 
   const fee = [];
   if (feeAccount && feeBps > 0) {

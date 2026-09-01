@@ -70,8 +70,11 @@ export async function harvestFor(position, pool, { prices, tokens }) {
 
   const feeA = Number(position.feesA ?? 0);
   const feeB = Number(position.feesB ?? 0);
-  if (feeA > 0) basket.push({ tokenId: pool.tokenA, symbol: pool.symA, amount: feeA, usd: pool.priceUsdA != null ? feeA * pool.priceUsdA : null, source: 'fees', priced: pool.priceUsdA != null });
-  if (feeB > 0) basket.push({ tokenId: pool.tokenB, symbol: pool.symB, amount: feeB, usd: pool.priceUsdB != null ? feeB * pool.priceUsdB : null, source: 'fees', priced: pool.priceUsdB != null });
+  // `amountFloor` is what the chain has already recorded, as opposed to what
+  // the formula says is accruing. Fees come from the pool's own counters, so
+  // for them the two are the same number.
+  if (feeA > 0) basket.push({ tokenId: pool.tokenA, symbol: pool.symA, amount: feeA, amountFloor: feeA, usd: pool.priceUsdA != null ? feeA * pool.priceUsdA : null, source: 'fees', priced: pool.priceUsdA != null });
+  if (feeB > 0) basket.push({ tokenId: pool.tokenB, symbol: pool.symB, amount: feeB, amountFloor: feeB, usd: pool.priceUsdB != null ? feeB * pool.priceUsdB : null, source: 'fees', priced: pool.priceUsdB != null });
 
   // Which incentives is this position staked in? stakingpos is the global map.
   let incentiveIds = [];
@@ -98,9 +101,18 @@ export async function harvestFor(position, pool, { prices, tokens }) {
       const dec = (String(inc.reward.quantity).split(' ')[0].split('.')[1] || '').length;
       const amount = pendingReward(inc, stake) / 10 ** dec;
       if (!(amount > 0)) return null;
+      // Two numbers, and they are not interchangeable. `amount` extrapolates
+      // forward using the totalStakingWeight we read; if a large staker joins
+      // after that read, the real rate per position drops and this figure is
+      // too HIGH — measured at +4.91% on a farm whose row was last written four
+      // hours earlier. Fine to show. Fatal to write into a transaction.
+      //
+      // `amountFloor` is the value at the incentive's own last update: what the
+      // contract has already recorded, which no later event can reduce.
+      const amountFloor = pendingReward(inc, stake, Number(inc.lastUpdateTime)) / 10 ** dec;
       const tokenId = `${sym}@${inc.reward.contract}`;
       const px = prices.get(tokenId);
-      return { tokenId, symbol: sym, amount, usd: px ? amount * px.usd : null, source: `farm #${iid}`, priced: !!px, incentiveId: String(iid) };
+      return { tokenId, symbol: sym, amount, amountFloor, usd: px ? amount * px.usd : null, source: `farm #${iid}`, priced: !!px, incentiveId: String(iid) };
     } catch { return null; }          // one unreadable incentive must not void the harvest
   }));
   for (const r of results) if (r) basket.push(r);
@@ -178,6 +190,9 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
     const share = (usdPart, wholeUsd, wholeAmt) => (wholeUsd > 0 ? wholeAmt * (usdPart / wholeUsd) : 0);
     const amtA = priced.filter(isA).reduce((s, b) => s + b.amount, 0);
     const amtB = priced.filter(isB).reduce((s, b) => s + b.amount, 0);
+    // What a transaction may ask for: the recorded floor, never the forecast.
+    const floorA = priced.filter(isA).reduce((s, b) => s + (b.amountFloor ?? b.amount), 0);
+    const floorB = priced.filter(isB).reduce((s, b) => s + (b.amountFloor ?? b.amount), 0);
     const left = [];
     if (haveA - depA > DUST_USD) left.push({ symbol: pool.symA, tokenId: pool.tokenA, usd: haveA - depA, amount: share(haveA - depA, haveA, amtA) });
     if (haveB - depB > DUST_USD) left.push({ symbol: pool.symB, tokenId: pool.tokenB, usd: haveB - depB, amount: share(haveB - depB, haveB, amtB) });
@@ -198,6 +213,8 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
       depositA: depA, depositB: depB, depositUsd,
       // What the deposit is, in the tokens themselves.
       depositAmtA: toAmt(depA, haveA, amtA), depositAmtB: toAmt(depB, haveB, amtB),
+      // The same fraction of what is provably there, for a builder to write in.
+      depositFloorA: toAmt(depA, haveA, floorA), depositFloorB: toAmt(depB, haveB, floorB),
       leftover: left, leftoverUsd: left.reduce((s, x) => s + x.usd, 0),
       swaps: [], alreadyRight: priced.filter(b => isA(b) || isB(b)), unpriced, foreign,
       actions,
