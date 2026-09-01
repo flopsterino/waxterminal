@@ -10,7 +10,7 @@
 
 import { state } from './store.js';
 import { balanceOf } from './chain.js';
-import { authorization, account } from './wallet.js';
+import { authorization, account, hasSession } from './wallet.js';
 
 const ALCOR = 'swap.alcor';
 const SLIPPAGE = 0.02;          // on swap minOut only; the deposit uses real balances
@@ -28,9 +28,21 @@ export const asset = (amount, symbol, decimals) => `${dec(amount, decimals)} ${s
 // rescue it either, and the first anyone hears of it is the ABI encoder
 // refusing to serialise a name field: "Found null for non-optional type: name".
 // A true message about entirely the wrong thing.
+//
+// Reported once from a connected wallet on the Liquidity page, which none of
+// the obvious explanations account for: both modules import the same wallet.js
+// under the same stamped URL, there is no second load path, and the button
+// behind it already checks account(). So the guard says what it actually saw —
+// whether a session object exists, and what it reported as the actor — because
+// the next occurrence has to be diagnosable from a screenshot rather than
+// another round of guessing.
 const signer = me => {
   const who = me ?? account();
-  if (!who) throw new Error('No wallet connected — connect one and try again.');
+  if (!who) {
+    throw new Error(`No wallet connected — connect one and try again. `
+      + `(passed ${me === undefined ? 'nothing' : JSON.stringify(me)}, `
+      + `session ${hasSession() ? 'present' : 'missing'}, account ${JSON.stringify(account())})`);
+  }
   return String(who);
 };
 

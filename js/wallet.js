@@ -78,6 +78,7 @@ export async function disconnect() {
 }
 
 export const account = () => (session ? String(session.actor) : null);
+export const hasSession = () => !!session;
 
 // One signature, N actions. Returns the transaction id the chain accepted.
 // ----------------------------------------------------------- simulation ----
