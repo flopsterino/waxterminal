@@ -248,8 +248,9 @@ const farmAprFor = (pool, usdIn) => {
   return ((day * (usdIn / (staked + usdIn))) * 365 / usdIn) * 100;
 };
 
+const FEE_APR_MIN_TVL = 25;
 const feeApr = pool => {
-  if (!pool || !(pool.vol7d > 0) || !(pool.tvlReal > 0)) return null;
+  if (!pool || !(pool.vol7d > 0) || !(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
   return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
 };
 const $ = s => document.querySelector(s);
@@ -833,7 +834,7 @@ function promoteBox(kind, id, name) {
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
       <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day on the front page. Ordered by spend; paying again extends it.</p>
-    ${fixedPool ? '' : '</div>'}</div>`;
+    </div></div>`;
 }
 
 // Wired after the page is written, like every other control here.
@@ -1426,6 +1427,24 @@ function renderFarms() {
     // Trading fees are the other half of what a position in a farmed pool earns,
     // and they carry on after the incentive ends.
     for (const g of groups) g.feeApr = feeApr(g.pool);
+
+    // A pool with no farm still pays its providers, and some pay better than
+    // farmed ones — WAX/WUF returns 76.7% on fees alone with nothing staked on
+    // it. Leaving those out made this a list of incentives rather than a list
+    // of places to put money.
+    const farmed = new Set(groups.map(g => `${g.dex}:${g.poolId}`));
+    for (const p of state.pools) {
+      if (farmed.has(`${p.dex}:${p.id}`)) continue;
+      const fa = feeApr(p);
+      if (fa == null) continue;
+      groups.push({
+        key: `${p.dex}:${p.id}`, dex: p.dex, poolId: p.id, pool: p,
+        farms: [], rewards: [], rewardUsdDay: 0, rewardRealDay: 0,
+        stakedUsd: p.tvl, stakedReal: p.tvlReal,
+        apr: null, aprReal: null, aprAt: null, aprStatus: 'no_farm',
+        feeApr: fa, tokenCount: 0, newestId: 0, endsAt: null, feesOnly: true,
+      });
+    }
     groups._key = key; groups._at = state.loadedAt;
   }
   const rows = filteredGroups();
@@ -1518,7 +1537,8 @@ function renderFarms() {
             g.aprStatus === 'unpriceable' ? 'reward unpriced'
             : g.aprStatus === 'no_stake' ? 'nobody staked'
             : g.aprStatus === 'thin' ? 'too little staked'
-            : g.aprStatus === 'lazy' ? 'computing…' : '—'}</span>`;
+            : g.aprStatus === 'lazy' ? 'computing…'
+            : g.aprStatus === 'no_farm' ? 'no farm' : '—'}</span>`;
     const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}</td>
@@ -3216,7 +3236,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
         <button class="btn ghost" id="npClose">Cancel</button>
         <button class="btn" id="npGo">Review</button>
       </div>
-    </div></div>`;
+    ${fixedPool ? '' : '</div>'}</div>`;
 
   let band = 'full';
   const poolOf = () => pools.find(p => String(p.id) === $('#npPool').value);
@@ -4496,6 +4516,7 @@ const aprWhy = st => st === 'no_stake' ? 'nobody has staked, so there is no rate
   : st === 'thin' ? 'too little staked to divide by'
   : st === 'unpriceable' ? 'the reward has no price this terminal will stand behind'
   : st === 'ended' ? 'this farm has finished'
+  : st === 'no_farm' ? 'no farm here — the fee APR beside it is what it pays'
   : 'not computed yet';
 
 // ------------------------------------------------------------- ZAP IN -------
