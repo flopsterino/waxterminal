@@ -108,6 +108,7 @@ try {
 console.log(`reading positions in ${pools.length} pools (${rawPools.size} fee-growth rows)…`);
 
 const lp = new Map();       // account -> totals
+const poolOwners = new Map();  // poolId -> the distinct wallets providing there
 const touch = a => {
   let r = lp.get(a);
   if (!r) { r = { account: a, valueUsd: 0, nominalUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set() }; lp.set(a, r); }
@@ -151,6 +152,8 @@ await mapLimit(pools, 4, async p => {
         feesUsd = ((owed.feesA / 10 ** p.decA) * (p.priceUsdA || 0) + (owed.feesB / 10 ** p.decB) * (p.priceUsdB || 0)) * realRatio;
       } catch {}
     }
+
+    (poolOwners.get(String(p.id)) ?? poolOwners.set(String(p.id), new Set()).get(String(p.id))).add(pos.owner);
 
     const r = touch(pos.owner);
     r.valueUsd += valueUsd;
@@ -253,6 +256,9 @@ await writeFile(new URL('leaders.json', OUT), JSON.stringify({
     hidden: HIDDEN.size,
   },
   providers, earners, farmers, movers,
+  // Wallets per pool, so a list can say how many people are in a market
+  // without reading eighteen thousand positions to find out.
+  lps: Object.fromEntries([...poolOwners].filter(([, set]) => set.size > 0).map(([id, set]) => [id, set.size])),
 }));
 
 console.log(`leaders: ${providers.length} providers, ${earners.length} earners, ${farmers.length} farmers, ${movers.length} traders`

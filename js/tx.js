@@ -54,10 +54,20 @@ const priceOf = id => state.prices.get(id)?.usd ?? null;
 // Alcor's swapexactin memo routes a whole comma-separated pool path internally,
 // so one transfer can cross several pools. Find the path whose thinnest pool is
 // deepest — a route is only as good as its worst hop.
-export function findPath(fromToken, toToken, { maxHops = 3 } = {}) {
+// What a pool can absorb before the price moves 1%. Measured where the daily
+// pass got to it; half a percent of the pool where it did not, which is the
+// same fallback tradeDepth uses and still far closer than pooled value.
+const carries = p => (p.depth1 > 0 ? p.depth1 : (p.tvlReal ?? p.tvl ?? 0) * 0.005);
+
+export function findPath(fromToken, toToken, { maxHops = 3, usd = 0 } = {}) {
   if (fromToken === toToken) return [];
   const byToken = new Map();
   for (const p of state.pools) {
+    // Pooled value is not depth. Concentrated liquidity puts the same dollars
+    // in a band, so two pools of equal size differ by orders of magnitude in
+    // what they can absorb — and ranking on value sent a $20 swap through pool
+    // 8791, which holds $8 and has seven cents of depth before a 1% move. The
+    // swap came back "Received lower than minTokenOut", as it had to.
     if (p.dex !== 'alcor' || !(p.tvl > 0)) continue;
     for (const [a, b] of [[p.tokenA, p.tokenB], [p.tokenB, p.tokenA]]) {
       if (!byToken.has(a)) byToken.set(a, []);
@@ -71,7 +81,7 @@ export function findPath(fromToken, toToken, { maxHops = 3 } = {}) {
     const cur = queue.shift();
     if (cur.path.length >= maxHops) continue;
     for (const edge of (byToken.get(cur.token) || [])) {
-      const bottleneck = Math.min(cur.bottleneck, edge.pool.tvl);
+      const bottleneck = Math.min(cur.bottleneck, carries(edge.pool));
       if (best && bottleneck <= best.bottleneck) continue;      // cannot beat what we have
       const path = [...cur.path, edge.pool];
       if (edge.other === toToken) {
@@ -82,7 +92,13 @@ export function findPath(fromToken, toToken, { maxHops = 3 } = {}) {
       if (bottleneck > depthSeen) { seen.set(edge.other, bottleneck); queue.push({ token: edge.other, path, bottleneck }); }
     }
   }
-  return best ? best.path : null;
+  if (!best) return null;
+  // Depth is quoted for a 1% move, so a trade's price impact is roughly its
+  // size over that depth, in per cent.
+  const path = best.path;
+  path.bottleneck = best.bottleneck;
+  path.impact = usd > 0 && best.bottleneck > 0 ? usd / best.bottleneck / 100 : 0;
+  return path;
 }
 
 // --------------------------------------------------------- transaction 1 ----
@@ -131,7 +147,7 @@ export function buildSwaps({ pool, plan, harvested, me = account(), auth = null 
     const from = tokenMeta(s.fromToken), to = tokenMeta(s.toToken);
     const pFrom = priceOf(s.fromToken), pTo = priceOf(s.toToken);
     if (!pFrom || !pTo) { swaps.push({ ...s, skipped: 'unpriceable' }); continue; }
-    const path = findPath(s.fromToken, s.toToken);
+    const path = findPath(s.fromToken, s.toToken, { usd: s.usd });
     if (!path || !path.length) { swaps.push({ ...s, skipped: 'no route' }); continue; }
 
     // Sized against the measured harvest, never the estimate. `harvested` maps
@@ -576,7 +592,7 @@ export function buildPowerupVia({ amount, target, from, to, me = account(), auth
   const fromT = tokenMeta(from), toT = tokenMeta(to);
   const pFrom = priceOf(from), pTo = priceOf(to);
   if (!pFrom || !pTo) throw new Error(`No price for ${fromT.symbol} or ${toT.symbol}, so the swap cannot be sized.`);
-  const path = findPath(from, to);
+  const path = findPath(from, to, { usd: amount * pFrom });
   if (!path || !path.length) throw new Error(`No route from ${fromT.symbol} to ${toT.symbol}.`);
 
   const expect = (amount * pFrom) / pTo;
@@ -789,7 +805,14 @@ export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps 
     if (token === fromToken) { keep = want; continue; }   // already the right token
     if (!(want > 0)) continue;                            // band wants none of this side
     const px = priceOf(token);
-    legs.push({ token, sym, decimals: dcm, from: want, expect: px ? (want * pFrom) / px : null, priced: !!px });
+    const route = findPath(fromToken, token, { usd: want * pFrom });
+    legs.push({
+      token, sym, decimals: dcm, from: want,
+      expect: px ? (want * pFrom) / px : null, priced: !!px,
+      // What this leg does to the price, so the panel can say it before anyone
+      // signs rather than the chain saying it afterwards.
+      impact: route?.impact ?? null, depth: route?.bottleneck ?? null, hops: route?.length ?? 0,
+    });
   }
   // A token the pool does not hold leaves nothing behind: every part of it is
   // swapped, and `keep` stays zero.
@@ -823,9 +846,18 @@ export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth
 
   for (const leg of plan.legs) {
     const to = tokenMeta(leg.token);
-    const path = findPath(plan.fromToken, leg.token);
+    const path = findPath(plan.fromToken, leg.token, { usd: leg.from * priceOf(plan.fromToken) });
     if (!path || !path.length) throw new Error(`No route from ${from.symbol} to ${leg.sym}.`);
-    const minOut = leg.expect * (1 - SLIPPAGE);
+    // A tolerance that ignores the price impact of the trade itself is a
+    // tolerance for a trade nobody is making. Depth is quoted for a 1% move, so
+    // a swap worth more than that depth moves the price by more than 1% and the
+    // quote has to allow for it.
+    const impact = path.impact || 0;
+    if (impact > 0.25) {
+      throw new Error(`${from.symbol} to ${leg.sym} would move the price about ${(impact * 100).toFixed(0)}% — `
+        + `the best route holds ${'$' + (path.bottleneck || 0).toFixed(2)} of depth. Zap a smaller amount, or a different pair.`);
+    }
+    const minOut = leg.expect * (1 - SLIPPAGE - impact);
     if (parseFloat(dec(leg.from, from.decimals)) <= 0) throw new Error(`Below one ${from.symbol} unit to swap into ${leg.sym}.`);
     if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${leg.sym} unit.`);
     actions.push({

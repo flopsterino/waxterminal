@@ -1155,7 +1155,7 @@ export function farmGroups({ liveOnly = true } = {}) {
       g = {
         key, dex: f.poolDex, poolId: f.poolId, pool: f.pool,
         farms: [], rewards: [], rewardUsdDay: 0, stakedUsd: null, apr: null,
-        aprStatus: 'lazy', endsAt: null, anyUnpriceable: false,
+        aprStatus: 'lazy', endsAt: null, anyUnpriceable: false, newestId: 0,
       };
       groups.set(key, g);
     }

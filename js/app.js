@@ -102,7 +102,7 @@ const qtyFine = v => {
   if (v >= 1e-6) return v.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 8 });
   return v.toPrecision(3);
 };
-const pct = v => (v == null || !isFinite(v)) ? '—' : (v >= 1000 ? '>999%' : v.toFixed(1) + '%');
+const pct = v => (v == null || !isFinite(v)) ? '—' : (v >= 1000 ? 'off the scale' : v.toFixed(1) + '%');
 const ago = t => {
   const s = (Date.now() - new Date(t + (String(t).endsWith('Z') ? '' : 'Z')).getTime()) / 1000;
   if (s < 60) return Math.max(0, Math.round(s)) + 's ago';
@@ -1426,7 +1426,17 @@ function renderFarms() {
     groups = farmGroups({ liveOnly: !farmFilters.expired });
     // Trading fees are the other half of what a position in a farmed pool earns,
     // and they carry on after the incentive ends.
-    for (const g of groups) g.feeApr = feeApr(g.pool);
+    for (const g of groups) {
+      g.feeApr = feeApr(g.pool);
+      g.vol24 = g.pool?.vol24 ?? null;
+      g.vol7d = g.pool?.vol7d ?? null;
+      // How many wallets are in it, and how many of those took the farm. The
+      // staker count rides on the incentive row; the provider count comes from
+      // the nightly pass, because counting it live means reading every position
+      // in every pool.
+      g.stakers = Math.max(0, ...g.farms.map(f => f.numStakes || 0)) || null;
+      g.lps = poolLpCount(`${g.dex}:${g.poolId}`);
+    }
 
     // A pool with no farm still pays its providers, and some pay better than
     // farmed ones — WAX/WUF returns 76.7% on fees alone with nothing staked on
@@ -1495,6 +1505,9 @@ function renderFarms() {
     { k: 'stakedReal', label: 'Pool', r: true, s: true },
     { k: 'rewardRealDay', label: 'Value / day', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
+    { k: 'vol24', label: 'Vol 24h', r: true, s: true },
+    { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
+    { k: 'lps', label: 'LPs / staked', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -1553,7 +1566,10 @@ function renderFarms() {
         : rw == null ? '—'
         : rw < 1 ? Math.round(rw * 24) + 'h'
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
-      <td class="r num dim">#${g.newestId}</td>
+      <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
+      <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
+      <td class="r num ${g.lps || g.stakers ? '' : 'dim'}" title="${g.lps ? `${g.lps} wallet${g.lps === 1 ? '' : 's'} hold liquidity here` : 'not counted yet'}${g.stakers ? `, ${g.stakers} of them staked into the farm` : ''}">${
+        g.lps ? g.lps + (g.stakers ? ` <span class="dim">/ ${g.stakers}</span>` : '') : g.stakers ? `<span class="dim">? / </span>${g.stakers}` : '—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${cols.length}" class="empty">No farms match.</td></tr>`;
   fillMarks($('#farmTable tbody'));
@@ -3489,6 +3505,21 @@ let activityLoaded = false;
 // answer.
 let ldData = null, ldBoard = 'providers';
 
+// How many wallets provide liquidity in a pool, from the nightly pass. Loaded
+// once, lazily, and absent rather than wrong until it arrives.
+let lpCounts = null;
+function poolLpCount(key) {
+  if (lpCounts === null) {
+    lpCounts = undefined;                       // in flight
+    fetch('data/leaders.json', { cache: 'no-cache' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { lpCounts = d?.lps || {}; if (lastView === 'farms') renderFarms(); })
+      .catch(() => { lpCounts = {}; });
+  }
+  if (!lpCounts) return null;
+  return lpCounts[String(key).split(':')[1]] ?? null;
+}
+
 const LD_BOARDS = {
   providers: {
     key: 'providers', label: 'Liquidity',
@@ -4583,11 +4614,15 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
         const farmA = farmAprFor(pool, inUsd);
         if (!(inUsd > 0) || (fa == null && farmA == null)) return '';
         const day = ((fa || 0) + (farmA || 0)) / 100 * inUsd / 365;
-        return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day &mdash; ${
-          [farmA != null ? `${pct(farmA)} farm` : '', fa != null ? `${pct(fa)} fees` : ''].filter(Boolean).join(' + ')}
-          <span class="dim">at this size, after your money dilutes the pot</span></span></div>`;
+        const rate = r => r == null ? null : r > 999 ? 'more than the pool is worth' : pct(r);
+        return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day
+          <span class="dim">&mdash; farm ${rate(farmA) ?? 'none'} &middot; fees ${rate(fa) ?? 'none'}</span></span></div>`;
       })()}
       <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''} &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
+      ${plan.legs.some(l => l.impact != null) ? `<div class="planline"><span class="k">Moves the price</span><span>${
+        plan.legs.filter(l => l.impact != null).map(l => `${esc(l.sym)} <b class="${l.impact > 0.05 ? 'neg' : ''}">${(l.impact * 100).toFixed(l.impact < 0.01 ? 2 : 1)}%</b>`).join(' &middot; ')}
+        <span class="dim">&mdash; the best route carries ${usd(Math.min(...plan.legs.filter(l => l.depth != null).map(l => l.depth)))} before moving 1%</span></span></div>` : ''}
+      ${plan.legs.some(l => l.impact > 0.25) ? `<div class="note warn">Too big for the route. Zap less, or bring one of the pool's own tokens.</div>` : ''}
       <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two &mdash; sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` &middot; stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
       <button class="btn" id="zapGo" style="width:100%;margin-top:8px">Zap in</button>
       <div class="runbox" id="zapRun"></div>`;
