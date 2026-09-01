@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -820,7 +820,7 @@ function promoteBox(kind, id, name) {
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
       <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day on the front page. Ordered by spend; paying again extends it.</p>
-    </div></div>`;
+    ${fixedPool ? '' : '</div>'}</div>`;
 }
 
 // Wired after the page is written, like every other control here.
@@ -1473,8 +1473,8 @@ function renderFarms() {
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'aprAt', label: 'APR', r: true, s: true },
-    { k: 'share', label: 'You\u2019d own', r: true, s: true },
+    { k: 'aprAt', label: 'Farm APR', r: true, s: true },
+    { k: 'feeApr', label: 'Fee APR', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Pool', r: true, s: true },
     { k: 'rewardRealDay', label: 'Value / day', r: true, s: true },
@@ -1532,7 +1532,6 @@ function renderFarms() {
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
       <td class="r num ${g.feeApr != null ? '' : 'dim'}" title="What the pool's own trading has paid a provider, annualised off the last seven days. It does not stop when the farm does.">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
-      <td class="r num ${g.tooSmall ? 'neg' : g.share > 0.15 ? '' : 'dim'}">${farmFilters.size > 0 ? (g.share * 100).toFixed(g.share > 0.1 ? 0 : 1) + '%' : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
@@ -1698,9 +1697,14 @@ async function renderWalletResources(account) {
         <p class="sub" style="margin:10px 0 0">CPU refills over a day.</p>
       </div>
 
-      <div class="card"><h3>Power up with CHEESE <span class="dim">&mdash; burned, not paid to anyone</span></h3>
+      <div class="card"><h3>Power up <span class="dim">&mdash; the CHEESE is burned, not paid to anyone</span></h3>
+        <div class="toolbar" style="margin:0 0 8px">
+          <button class="chip" data-pwtok="cheese" aria-pressed="true">Pay in CHEESE</button>
+          <button class="chip" data-pwtok="wax">Pay in WAX</button>
+        </div>
         <div class="toolbar" style="margin:0">
-          ${[0.5, 2, 5, 20].map((a, i) => `<button class="chip" data-pw="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a} CHEESE</button>`).join('')}
+          ${[0.5, 2, 5, 20].map((a, i) => `<button class="chip" data-pw="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a}</button>`).join('')}
+          <span class="dim" id="pwUnit" style="font-size:12px">CHEESE</span>
         </div>
         <p class="sub" style="margin:9px 0 0" id="pwNote"></p>
         <div id="pwOut" style="margin-top:10px"></div>
@@ -1749,7 +1753,20 @@ async function renderWalletResources(account) {
   // ---- power up ------------------------------------------------------------
   let pw = 2;
   const pwNote = $('#pwNote');
+  let pwTok = 'cheese';
   const paintPw = () => {
+    const unit = $('#pwUnit'); if (unit) unit.textContent = pwTok === 'wax' ? 'WAX' : 'CHEESE';
+    if (pwTok === 'wax') {
+      let bought = null;
+      try {
+        const b = buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: account });
+        bought = b.buys;
+      } catch { /* no route or no price; the note says so */ }
+      pwNote.innerHTML = bought
+        ? `${pw} WAX buys at least ${qty(bought)} CHEESE, which is burned for roughly ${qty(bought * 1.81)} WAX of CPU and NET for a day. One transaction.`
+        : `${pw} WAX cannot be routed to CHEESE right now.`;
+      return;
+    }
     // Priced from what the service has actually done: 2,636 CHEESE bought 4,778
     // WAX of powerup over its life. An observed rate, not a promised one.
     const waxish = pw * 1.81;
@@ -1757,6 +1774,10 @@ async function renderWalletResources(account) {
       The CHEESE is burned to <span class="mono">eosio.null</span> &mdash; it pays nobody, it leaves circulation.`;
   };
   paintPw();
+  out.querySelectorAll('[data-pwtok]').forEach(b => b.onclick = () => {
+    out.querySelectorAll('[data-pwtok]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    pwTok = b.dataset.pwtok; paintPw();
+  });
   out.querySelectorAll('[data-pw]').forEach(b => b.onclick = () => {
     out.querySelectorAll('[data-pw]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     pw = Number(b.dataset.pw); paintPw();
@@ -1764,9 +1785,11 @@ async function renderWalletResources(account) {
   $('#pwGo').onclick = async () => {
     const box = $('#pwOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-    const built = buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
+    const built = pwTok === 'wax'
+      ? buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
+      : buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span> to power up <span class="mono">${esc(account)}</span>.
+      ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span>`} to power up <span class="mono">${esc(account)}</span>.
       <br><span class="dim">One transfer. The service burns the CHEESE.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
     $('#pwSign').onclick = async () => {
@@ -3164,8 +3187,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
 // nothing, too wide and your capital is spread so thin it barely earns either.
 // So the picker offers bands around the current price rather than raw ticks,
 // and says what each one means.
-function renderNewPosition(account, poolId = null) {
-  const box = $('#newPos');
+function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   if (!box) return;
   const pools = state.pools
     .filter(p => p.dex === 'alcor' && p.sqrtX64 && p.tvlReal > 0)
@@ -3173,9 +3195,12 @@ function renderNewPosition(account, poolId = null) {
     .slice(0, 300);
 
   const want = poolId != null ? String(poolId) : null;
-  box.innerHTML = `<div class="section"><h3>Open a new position</h3>
+  // On a farm or pool page the pool is not a question, so the picker is hidden
+  // rather than offering three hundred alternatives to the one you came for.
+  const fixedPool = !!poolId;
+  box.innerHTML = `<div class="${fixedPool ? 'card' : 'section'}"><h3>Open a position by hand${fixedPool ? ' <span class="dim">— both tokens, your own band</span>' : ''}</h3>
     <div class="card">
-      <div class="filters" style="display:grid;gap:8px;margin:0">
+      <div class="filters" style="display:grid;gap:8px;margin:0${fixedPool ? ';display:none' : ''}">
         <label>Pool<select id="npPool">${(poolId && !pools.some(p => String(p.id) === String(poolId))
           ? [...state.pools.filter(p => p.dex === 'alcor' && String(p.id) === String(poolId)), ...pools]
           : pools).map(p =>
@@ -4669,7 +4694,8 @@ async function openFarm(key) {
     <div class="card" style="margin-top:14px"><h3>Getting in</h3>
       <div id="farmMine"></div>
     </div>
-    <div id="farmZap" style="margin-top:14px"></div>`;
+    <div id="farmZap" style="margin-top:14px"></div>
+    <div id="farmNewPos" style="margin-top:14px"></div>`;
 
   fillMarks(out);
 
@@ -4756,10 +4782,10 @@ async function renderFarmMine(g) {
   if (!mine.length) {
     box.innerHTML = `<p class="sub" style="margin:0 0 10px">You have no position in this pool, so there is nothing to stake here.</p>
       <div class="toolbar" style="margin:0">
-        <button class="btn" id="farmOpen">Open a position</button>
+        <button class="btn" id="farmOpen">Open one by hand</button>
         <a class="plink" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Pool &nearr;</a>
       </div>`;
-    $('#farmOpen').onclick = () => { show('wallet', me); $('#walletInput').value = me; lookupWallet(me); renderNewPosition(me, g.poolId); };
+    $('#farmOpen').onclick = () => renderNewPosition(me, g.poolId, $('#farmNewPos'));
     return;
   }
 

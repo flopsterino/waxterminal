@@ -562,6 +562,55 @@ export function buildPowerup({ amount, target, token, me = account(), auth = nul
   };
 }
 
+// Powering up with WAX, which is what most people are actually holding.
+//
+// One transaction, and that is not a shortcut. `swapexactin` enforces its own
+// minOut — the swap reverts rather than delivering less — so a transfer of that
+// same minOut later in the same transaction is spending money the chain has
+// already guaranteed arrived. Anything above the minimum stays in the wallet
+// and goes into the next one.
+export function buildPowerupVia({ amount, target, from, to, me = account(), auth = null }) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  if (!(amount > 0)) return { actions: [] };
+  const fromT = tokenMeta(from), toT = tokenMeta(to);
+  const pFrom = priceOf(from), pTo = priceOf(to);
+  if (!pFrom || !pTo) throw new Error(`No price for ${fromT.symbol} or ${toT.symbol}, so the swap cannot be sized.`);
+  const path = findPath(from, to);
+  if (!path || !path.length) throw new Error(`No route from ${fromT.symbol} to ${toT.symbol}.`);
+
+  const expect = (amount * pFrom) / pTo;
+  const minOut = expect * (1 - SLIPPAGE);
+  if (parseFloat(dec(amount, fromT.decimals)) <= 0) throw new Error(`Below one ${fromT.symbol} unit.`);
+  if (parseFloat(dec(minOut, toT.decimals)) <= 0) throw new Error(`Would buy less than one ${toT.symbol}.`);
+
+  return {
+    actions: [
+      {
+        account: fromT.contract, name: 'transfer', authorization: auth,
+        data: {
+          from: me, to: ALCOR,
+          quantity: asset(amount, fromT.symbol, fromT.decimals),
+          memo: `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, toT.symbol, toT.decimals)}@${toT.contract}#0`,
+        },
+      },
+      {
+        account: toT.contract, name: 'transfer', authorization: auth,
+        // The guaranteed minimum, not the estimate: the swap above cannot have
+        // delivered less, and asking for more than arrived reverts the lot.
+        data: {
+          from: me, to: CHEESE_POWERUP,
+          quantity: asset(minOut, toT.symbol, toT.decimals),
+          memo: target || me,
+        },
+      },
+    ],
+    amount, spends: amount, buys: minOut, expect, target: target || me,
+    symFrom: fromT.symbol, symTo: toT.symbol, hops: path.length,
+  };
+}
+
+
 // Taking staked WAX back out. Three days in a refund queue before it lands,
 // which is the chain's rule and not something a UI can soften — so it is said
 // plainly rather than buried.

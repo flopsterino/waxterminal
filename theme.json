@@ -34,7 +34,7 @@
       "memoPrefix": "promote"
     },
     "stakeProxy": "waxcommunity",
-    "zapFeeBps": 50
+    "zapFeeBps": 20
   },
   "features": {
     "pools": true,
