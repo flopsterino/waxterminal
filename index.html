@@ -124,6 +124,7 @@
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
     </div>
+    <p class="vs" id="walletReadonly" hidden style="color:var(--muted)"></p>
     <div class="subtabs" id="walletTabs" role="tablist">
       <button role="tab" data-wtab="balances" aria-selected="true">Balances</button>
       <button role="tab" data-wtab="resources" aria-selected="false">Resources</button>
@@ -205,11 +206,6 @@
   </section>
 
   <!-- --------------------------------------------------- ACCOUNT DETAIL -->
-  <section class="view" id="view-account">
-    <button class="btn ghost" id="acctBack" style="margin-bottom:14px">&larr; Back</button>
-    <div id="accountDetail"></div>
-  </section>
-
   <!-- ------------------------------------------------------ POOL DETAIL -->
   <section class="view" id="view-pool">
     <button class="btn ghost" id="poolBack" style="margin-bottom:14px">&larr; Back</button>

@@ -110,7 +110,7 @@ console.log(`reading positions in ${pools.length} pools (${rawPools.size} fee-gr
 const lp = new Map();       // account -> totals
 const touch = a => {
   let r = lp.get(a);
-  if (!r) { r = { account: a, valueUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set() }; lp.set(a, r); }
+  if (!r) { r = { account: a, valueUsd: 0, nominalUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set() }; lp.set(a, r); }
   return r;
 };
 
@@ -132,7 +132,14 @@ await mapLimit(pools, 4, async p => {
     if (!(Number(pos.liquidity) > 0)) continue;
     positionsSeen++;
     const { amountA, amountB } = amountsForLiquidity(pos.liquidity, s, pos.tickLower, pos.tickUpper);
-    const valueUsd = (amountA / 10 ** p.decA) * (p.priceUsdA || 0) + (amountB / 10 ** p.decB) * (p.priceUsdB || 0);
+    const nominalUsd = (amountA / 10 ** p.decA) * (p.priceUsdA || 0) + (amountB / 10 ** p.decB) * (p.priceUsdB || 0);
+    // Discounted by what the pool could actually pay out. Nominal value ranks
+    // whoever printed the biggest number rather than whoever provided the
+    // deepest market: parareserves topped the board on $793,358 of positions in
+    // pools holding $593,202 nominal against $982 realisable — 0.17%. Every
+    // other figure on this site is already discounted this way.
+    const realRatio = p.tvl > 0 ? Math.min(1, (p.tvlReal || 0) / p.tvl) : 0;
+    const valueUsd = nominalUsd * realRatio;
 
     // The number that makes this board worth having. `feesA`/`feesB` on the row
     // are only what a previous collect already credited; what is actually owed
@@ -141,12 +148,13 @@ await mapLimit(pools, 4, async p => {
     if (raw) {
       try {
         const owed = feesOwed(pos, raw, ticks.get(pos.tickLower), ticks.get(pos.tickUpper));
-        feesUsd = (owed.feesA / 10 ** p.decA) * (p.priceUsdA || 0) + (owed.feesB / 10 ** p.decB) * (p.priceUsdB || 0);
+        feesUsd = ((owed.feesA / 10 ** p.decA) * (p.priceUsdA || 0) + (owed.feesB / 10 ** p.decB) * (p.priceUsdB || 0)) * realRatio;
       } catch {}
     }
 
     const r = touch(pos.owner);
     r.valueUsd += valueUsd;
+    r.nominalUsd += nominalUsd;
     r.feesUsd += feesUsd;
     r.positions++;
     r.pools.add(p.id);
