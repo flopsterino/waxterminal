@@ -28,6 +28,14 @@ jobs:
         run: node tools/logos.mjs
       - name: Read chain and write snapshot
         run: node --max-old-space-size=2048 tools/snapshot.mjs
+      # Ranking liquidity providers means reading every position in every pool
+      # and rebuilding fee growth for each — about a minute of table reads, so
+      # it belongs beside the snapshot rather than in anyone's browser. A
+      # failure here must not cost the snapshot, which is the file the whole
+      # site loads.
+      - name: Build the leaderboards
+        continue-on-error: true
+        run: node --max-old-space-size=2048 tools/leaders.mjs
       - name: Commit if anything changed
         run: |
           git config user.name  "wax-terminal-bot"

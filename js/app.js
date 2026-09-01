@@ -254,6 +254,7 @@ async function boot() {
     const b = e.target.closest('button[data-view]'); if (!b) return;
     show(b.dataset.view);
     if (b.dataset.view === 'wallet') autoWallet();
+    if (b.dataset.view === 'leaders') renderLeaders();
   });
   const paintUnit = () => {
     const b = $('#unitToggle');
@@ -277,7 +278,7 @@ async function boot() {
   // first render off a progress callback meant one early return anywhere in
   // that path left the page on a spinner with no error — which is exactly what
   // happened, and only on the path that reads the chain.
-  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireCompound(); wireConnect();
+  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireCompound(); wireConnect(); wireLeaders();
 
   const paint = () => {
     try { renderPools(); renderFarms(); renderTokens(); renderOverview(); }
@@ -431,9 +432,11 @@ function routeFromHash() {
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
   }
   if (view === 'compound' && arg) { const a = decodeURIComponent(arg); show('compound'); $('#compInput').value = a; runCompound(a); return true; }
+  if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
   if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
+    if (view === 'leaders') renderLeaders();
     return true;
   }
   return false;
@@ -3392,6 +3395,91 @@ function wireActivity() {
 }
 
 let activityLoaded = false;
+// ------------------------------------------------------------- LEADERS -----
+// Who is actually doing this, from a file the nightly job writes.
+//
+// It cannot be computed in the browser: ranking liquidity providers means
+// reading every position in every pool with liquidity and reconstructing
+// Uniswap-V3 fee growth for each one, which is about a minute of table reads.
+// Nobody waits a minute. So the job does it once a day and the page serves the
+// answer.
+let ldData = null, ldBoard = 'providers';
+
+const LD_BOARDS = {
+  providers: {
+    key: 'providers', label: 'Liquidity',
+    note: 'Ranked by what their positions are worth right now, across every Alcor pool with liquidity.',
+    cols: [['v', 'Position value', usdExact], ['f', 'Fees owed', usd], ['n', 'Positions', String], ['p', 'Pools', String], ['s', 'Staked', String]],
+  },
+  earners: {
+    key: 'earners', label: 'Fees earned',
+    note: 'Trading fees these positions have accrued and not yet collected. This figure is in no table on chain — it is rebuilt from each pool’s fee-growth counters against every position’s own last checkpoint.',
+    cols: [['f', 'Fees owed', usdExact], ['v', 'Position value', usd], ['n', 'Positions', String], ['p', 'Pools', String]],
+  },
+  farmers: {
+    key: 'farmers', label: 'Farming',
+    note: 'Position value staked into incentives that are still running. A position staked into a farm that has ended is not farming.',
+    cols: [['v', 'Staked value', usdExact], ['n', 'Staked positions', String], ['p', 'Pools', String]],
+  },
+  movers: {
+    key: 'movers', label: 'Traders',
+    note: 'Dollars moved through Alcor in the 24 hours before the snapshot, by the account that signed the swap. Not profit — a swap log cannot tell you that, and an invented profit column is exactly the thing this terminal refuses to print.',
+    cols: [['v', 'Volume 24h', usdExact], ['n', 'Swaps', v => v.toLocaleString()], ['p', 'Pools', String]],
+  },
+};
+
+async function renderLeaders() {
+  const out = $('#ldOut');
+  if (!out) return;
+  if (!ldData) {
+    out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Loading the boards…</span></div>';
+    try {
+      const r = await fetch('data/leaders.json', { cache: 'no-cache' });
+      if (!r.ok) throw new Error(`leaders.json ${r.status}`);
+      ldData = await r.json();
+    } catch (e) {
+      out.innerHTML = `<div class="empty">The leaderboards have not been built yet.<br>
+        <span class="dim">They come from a nightly job that reads every position in every pool; the page cannot compute them while you wait.</span></div>`;
+      $('#ldStats').innerHTML = '';
+      return;
+    }
+  }
+
+  const d = ldData, sc = d.scope || {};
+  $('#ldStats').innerHTML = `
+    <div class="stat"><span class="v">${(sc.accounts || 0).toLocaleString()}</span><span class="k">liquidity providers</span><span class="sub">across ${(sc.pools || 0).toLocaleString()} pools</span></div>
+    <div class="stat"><span class="v">${(sc.positions || 0).toLocaleString()}</span><span class="k">positions read</span><span class="sub">each one's fees rebuilt from chain</span></div>
+    <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts</span></div>
+    <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span><span class="sub">rebuilt nightly</span></div>`;
+
+  document.querySelectorAll('#ldTabs [data-board]').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.board === ldBoard)));
+
+  const cfg = LD_BOARDS[ldBoard];
+  const rows = d[cfg.key] || [];
+  $('#ldNote').textContent = cfg.note + (sc.hidden ? ` ${sc.hidden} account${sc.hidden === 1 ? '' : 's'} withheld at the operator's request; their activity still counts towards every total above.` : '');
+
+  if (!rows.length) { out.innerHTML = '<div class="empty">Nothing on this board yet.</div>'; return; }
+
+  out.innerHTML = `<div class="tablewrap"><table><thead><tr>
+      <th class="r" style="width:44px"></th><th>Account</th>
+      ${cfg.cols.map(c => `<th class="r">${esc(c[1])}</th>`).join('')}
+    </tr></thead><tbody>${rows.map((r, i) => `<tr class="clickable" data-acct-row="${esc(r.a)}">
+      <td class="rank">${i + 1}</td>
+      <td><span class="pairbig">${esc(r.a)}</span></td>
+      ${cfg.cols.map(c => `<td class="r num${r[c[0]] ? '' : ' dim'}">${r[c[0]] ? esc(String(c[2](r[c[0]]))) : '—'}</td>`).join('')}
+    </tr>`).join('')}</tbody></table></div>`;
+
+  out.querySelectorAll('tr[data-acct-row]').forEach(tr => tr.onclick = () => openAccount(tr.dataset.acctRow));
+}
+
+function wireLeaders() {
+  document.querySelectorAll('#ldTabs [data-board]').forEach(b => b.onclick = () => {
+    ldBoard = b.dataset.board;
+    renderLeaders();
+  });
+}
+
 async function renderActivity() {
   const out = $('#activityOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the swap feed…</span></div>';
