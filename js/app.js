@@ -235,6 +235,19 @@ const lpCut = p => p.lpFeeBps ?? p.feeBps;
 // days. A farm's APR and a pool's fee APR are different money from different
 // sources — one stops when the incentive ends, the other does not — so they are
 // never added into a single number without saying so.
+// The farm rate a deposit of this size would get, not the rate on the board:
+// joining puts you in the denominator.
+const farmAprFor = (pool, usdIn) => {
+  const g = farmGroups().find(x => x.dex === pool.dex && String(x.poolId) === String(pool.id));
+  if (!g) return null;
+  const live = g.farms.filter(f => (f.periodFinish ? f.periodFinish > Date.now() : !f.ended));
+  const useReal = g.stakedReal != null && g.rewardRealDay > 0;
+  const day = live.reduce((a, f) => a + ((useReal ? f.rewardRealDay : f.rewardUsdDay) || 0), 0);
+  const staked = (useReal ? g.stakedReal : g.stakedUsd) ?? 0;
+  if (!(day > 0) || !(usdIn > 0)) return null;
+  return ((day * (usdIn / (staked + usdIn))) * 365 / usdIn) * 100;
+};
+
 const feeApr = pool => {
   if (!pool || !(pool.vol7d > 0) || !(pool.tvlReal > 0)) return null;
   return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
@@ -4490,14 +4503,42 @@ const aprWhy = st => st === 'no_stake' ? 'nobody has staked, so there is no rate
 // CHEESE/HOLE band otherwise has to work out the ratio, sell the right
 // fraction, deposit both sides and stake — four places to get the arithmetic
 // wrong, and getting it wrong means a revert or a lopsided deposit.
-function renderZap(box, pool, { tickLower, tickUpper, incentiveIds = [], account }) {
+// Ticks must land on the pool's own spacing or the contract rejects them, and a
+// band is not symmetric in price — halving and doubling are not mirror images
+// on a log scale, so each side is computed from its own ratio and rounded
+// outward. Shared by both ways of funding a position.
+function bandTicks(pool, band) {
+  const spacing = pool.tickSpacing || 60;
+  const MAX = Math.floor(443580 / spacing) * spacing;
+  if (band === 'full') return { lower: -MAX, upper: MAX };
+  const pct = Number(band) / 100;
+  const cur = pool.tick ?? 0;
+  const T = r => Math.log(r) / Math.log(1.0001);
+  return {
+    lower: Math.max(-MAX, Math.floor((cur + T(1 - pct)) / spacing) * spacing),
+    upper: Math.min(MAX, Math.ceil((cur + T(1 + pct)) / spacing) * spacing),
+  };
+}
+const priceAtTick = (pool, t) => Math.pow(1.0001, t) * 10 ** (pool.decA - pool.decB);
+
+const SLIPPAGE_PCT = 2;
+
+function renderZap(box, pool, { incentiveIds = [], account }) {
   if (!box) return;
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(200, CFG?.commercial?.zapFeeBps ?? 0)) : 0;
   const sqrtP = sqrtPriceFromX64(pool.sqrtX64);
   let fromToken = pool.tokenA;
+  let band = '50';
 
   const paint = () => {
+    const { lower: tickLower, upper: tickUpper } = bandTicks(pool, band);
+    const lo = priceAtTick(pool, tickLower), hi = priceAtTick(pool, tickUpper);
+    const now = priceAtTick(pool, pool.tick ?? 0);
+    const bandNote = $('#zapBand');
+    if (bandNote) bandNote.innerHTML = band === 'full'
+      ? `Earns at every price, and earns least per dollar for it.`
+      : `${sigfig(lo)} &ndash; ${sigfig(hi)} ${esc(pool.symB)} per ${esc(pool.symA)}, now ${sigfig(now)}. Outside it, this position earns nothing.`;
     const amt = num($('#zapAmt')?.value) || 0;
     const plan = planZap({ pool, tickLower, tickUpper, fromToken, amount: amt, feeBps, sqrtP });
     const out = $('#zapOut');
@@ -4515,20 +4556,43 @@ function renderZap(box, pool, { tickLower, tickUpper, incentiveIds = [], account
           <span class="det">${feeBps > 0 ? `${qty(plan.fee)} ${esc(plan.symFrom)} fee (${(feeBps / 100).toFixed(2)}%)` : 'no fee'}${plan.legs.length > 1 ? ' &middot; two swaps' : ''}</span></div>
       </div>
       <div class="planline"><span class="k">Band wants</span><span>${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)}</span></div>
-      <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two — sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` · stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
+      ${(() => {
+        const inUsd = plan.usd - plan.usd * feeBps / 10000;
+        const fa = feeApr(pool);
+        const farmA = farmAprFor(pool, inUsd);
+        if (!(inUsd > 0) || (fa == null && farmA == null)) return '';
+        const day = ((fa || 0) + (farmA || 0)) / 100 * inUsd / 365;
+        return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day &mdash; ${
+          [farmA != null ? `${pct(farmA)} farm` : '', fa != null ? `${pct(fa)} fees` : ''].filter(Boolean).join(' + ')}
+          <span class="dim">at this size, after your money dilutes the pot</span></span></div>`;
+      })()}
+      <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''} &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
+      <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two &mdash; sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` &middot; stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
       <button class="btn" id="zapGo" style="width:100%;margin-top:8px">Zap in</button>
       <div class="runbox" id="zapRun"></div>`;
     $('#zapGo').onclick = () => runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account, feeAccount });
   };
 
-  box.innerHTML = `<div class="card"><h3>Zap in <span class="dim">&mdash; one token, straight into a position</span></h3>
+  box.innerHTML = `<div class="card"><h3>Open a position <span class="dim">&mdash; one token, straight in</span></h3>
+    <div class="toolbar" style="margin:0 0 6px">
+      <span class="sub">Range</span>
+      ${[['full', 'Full'], ['50', '\u00b150%'], ['20', '\u00b120%'], ['5', '\u00b15%']].map(([v, l]) =>
+        `<button class="chip" data-zapband="${v}"${v === '50' ? ' aria-pressed="true"' : ''}>${l}</button>`).join('')}
+    </div>
+    <p class="sub" id="zapBand" style="margin:0 0 10px"></p>
     <div class="toolbar" style="margin:0 0 10px">
+      <span class="sub">Bring</span>
       ${[[pool.tokenA, pool.symA], [pool.tokenB, pool.symB], ['WAX@eosio.token', 'WAX'], ['WAXUSDC@eth.token', 'WAXUSDC']]
         .filter(([id], i, all) => all.findIndex(x => x[0] === id) === i)
         .map(([id, sym], i) => `<button class="chip" data-zaptok="${esc(id)}"${i === 0 ? ' aria-pressed="true"' : ''}>${esc(sym)}</button>`).join('')}
       <span class="sizesel"><span class="amt"><input id="zapAmt" type="number" min="0" step="any" placeholder="amount" inputmode="decimal"></span></span>
     </div>
     <div id="zapOut"></div></div>`;
+  box.querySelectorAll('[data-zapband]').forEach(b => b.onclick = () => {
+    band = b.dataset.zapband;
+    box.querySelectorAll('[data-zapband]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    paint();
+  });
   box.querySelectorAll('[data-zaptok]').forEach(b => b.onclick = () => {
     fromToken = b.dataset.zaptok;
     box.querySelectorAll('[data-zaptok]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
@@ -4724,10 +4788,7 @@ async function openFarm(key) {
   // A zap belongs here: the pool and the incentives are already known, so the
   // only thing left to say is which token you hold and how much.
   if (g.dex === 'alcor' && p?.sqrtX64) {
-    const spacing = p.tickSpacing || 60;
-    const lo = Math.floor((p.tick - 6000) / spacing) * spacing;
-    const hi = Math.ceil((p.tick + 6000) / spacing) * spacing;
-    renderZap($('#farmZap'), p, { tickLower: lo, tickUpper: hi, incentiveIds: live.map(f => f.id), account: wallet.account() });
+    renderZap($('#farmZap'), p, { incentiveIds: live.map(f => f.id), account: wallet.account() });
   }
 
   renderFarmMine(g).then(mineUsd => {
