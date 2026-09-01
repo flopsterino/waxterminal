@@ -4658,6 +4658,7 @@ async function openFarm(key) {
   const soonest = live.length ? Math.min(...live.map(f => f.periodFinish)) : null;
   const stakers = Math.max(0, ...rows.map(f => f.numStakes || 0));
 
+  let farmStakedUsd = null;
   const days = ms => (ms == null ? null : Math.max(0, (ms - now) / 86400e3));
   const forHowLong = d => d == null ? '—'
     : d < 1 ? `${Math.round(d * 24)}h`
@@ -4672,7 +4673,7 @@ async function openFarm(key) {
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
       <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null ? 'on what a deposit could get back out' : g.apr != null ? 'on face value' : aprWhy(g.aprStatus)}</span></div>
-      <div class="stat"><span class="v">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${stakers} position${stakers === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${stakers} position${stakers === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${forHowLong(days(soonest))}</span><span class="k">until the first ends</span><span class="sub">${endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : endsAt ? new Date(endsAt).toISOString().slice(0, 10) : 'nothing running'}</span></div>
     </div>
 
@@ -4721,7 +4722,7 @@ async function openFarm(key) {
   const earn = () => {
     const size = num($('#farmSize').value) || 0;
     const box = $('#farmEarn');
-    const staked = g.stakedReal ?? g.stakedUsd ?? 0;
+    const staked = farmStakedUsd ?? g.stakedReal ?? g.stakedUsd ?? 0;
     if (!(size > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Type an amount to see what it earns here.</p>'; return; }
     if (!(liveDay > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Nothing live is paying, so a deposit earns nothing from this farm.</p>'; return; }
     const share = size / (staked + size);
@@ -4746,20 +4747,32 @@ async function openFarm(key) {
   out.querySelectorAll('[data-fsize]').forEach(b => b.onclick = () => { $('#farmSize').value = b.dataset.fsize; earn(); });
   earn();
 
-  renderFarmMine(g).catch(() => {});
+  // Seeded with what is already in, so the first number on screen is about this
+  // holder rather than a round figure nobody chose.
+  groupStakedUsd(g).then(v => {
+    if (!(v > 0)) return;
+    farmStakedUsd = v;
+    const el = $('#farmStaked'); if (el) el.textContent = usd(v);
+    earn();
+  }).catch(() => {});
+
+  renderFarmMine(g).then(mineUsd => {
+    if (mineUsd > 0 && !$('#farmSize').value) { $('#farmSize').value = Math.round(mineUsd * 100) / 100; earn(); }
+  }).catch(() => {});
 }
 
-// Where you stand in this farm, and the way in. A farm page that cannot tell
-// you whether you are already in it is a brochure.
+// Where you stand in this farm. Not a list of positions — a reading of them:
+// what each one is earning here, what share of the pot it holds, what is
+// waiting on it, and whether it is even in range to be earning at all.
 async function renderFarmMine(g) {
   const box = $('#farmMine');
   const me = wallet.account();
   if (!me) {
-    box.innerHTML = `<p class="sub" style="margin:0 0 10px">Connect a wallet to see whether you are in this farm.</p>
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">Connect a wallet to see your positions in this farm.</p>
       <a class="btn" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Add liquidity on ${g.dex === 'alcor' ? 'Alcor' : 'the venue'} &nearr;</a>`;
     return;
   }
-  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Looking for your position…</span></div>';
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your positions…</span></div>';
   let mine = [];
   try {
     const all = await walletPositionsFast(me);
@@ -4767,7 +4780,7 @@ async function renderFarmMine(g) {
   } catch {}
 
   if (!mine.length) {
-    box.innerHTML = `<p class="sub" style="margin:0 0 10px">You have no position in this pool yet, so nothing to stake.</p>
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">You have no position in this pool, so there is nothing to stake here.</p>
       <div class="toolbar" style="margin:0">
         <button class="btn" id="farmOpen">Open a position</button>
         <a class="plink" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Pool &nearr;</a>
@@ -4776,22 +4789,62 @@ async function renderFarmMine(g) {
     return;
   }
 
+  const now = Date.now();
+  const liveIds = new Set(g.farms.filter(f => f.periodFinish > now).map(f => String(f.id)));
+  const liveDay = g.farms.filter(f => f.periodFinish > now).reduce((a, f) => a + (f.rewardUsdDay || 0), 0);
+  // Computed on demand, because the group only carries it when the farms list
+  // happened to ask first — and a zero denominator turned every share into 0%
+  // and the total into Infinity%.
+  let staked = 0;
+  try { staked = (await groupStakedUsd(g)) || 0; } catch {}
+  if (!(staked > 0)) staked = g.stakedReal ?? g.stakedUsd ?? 0;
+
   const joined = await stakedIncentives(mine.map(x => x.posId)).catch(() => new Map());
-  const liveIds = new Set(g.farms.filter(f => f.periodFinish > Date.now()).map(f => String(f.id)));
-  box.innerHTML = `<div class="tablewrap" style="border:0"><table style="font-size:12.5px">
-      <thead><tr><th>Position</th><th class="r">Value</th><th class="r">In range</th><th>Staked here</th><th></th></tr></thead>
-      <tbody>${mine.map(x => {
-        const ids = (joined.get(String(x.posId)) || []).filter(id => liveIds.has(id));
-        const missing = [...liveIds].filter(id => !(joined.get(String(x.posId)) || []).includes(id));
-        return `<tr>
-          <td class="mono">#${x.posId}</td>
-          <td class="r num">${usd(x.valueUsd)}</td>
-          <td class="r"><span class="pill ${x.inRange ? 'good' : 'bad'}">${x.inRange ? 'yes' : 'no'}</span></td>
-          <td>${ids.length ? `<span class="src farm">${ids.length} of ${liveIds.size}</span>` : '<span class="dim">not staked</span>'}</td>
-          <td class="r">${missing.length ? `<button class="btn" data-joinfarm="${x.posId}" data-inc="${missing.map(esc).join(',')}">Join</button>` : ''}</td>
-        </tr>`;
-      }).join('')}</tbody></table></div>`;
+  const pend = await pendingFarms(mine, joined, { prices: state.prices }).catch(() => []);
+
+  const pendPos = new Map();
+  for (const r of pend) {
+    if (r.price == null) continue;
+    pendPos.set(r.posId, (pendPos.get(r.posId) || 0) + pendingAt(r, now) * r.price);
+  }
+
+  // Only a position that is staked AND in range is actually earning here.
+  const rows = mine.map(x => {
+    const ids = (joined.get(String(x.posId)) || []).filter(id => liveIds.has(id));
+    const missing = [...liveIds].filter(id => !(joined.get(String(x.posId)) || []).includes(id));
+    const share = staked > 0 && ids.length ? Math.min(1, x.valueUsd / staked) : 0;
+    return { x, ids, missing, share, perDay: liveDay * share, pending: pendPos.get(String(x.posId)) || 0 };
+  });
+  const totalIn = rows.filter(r => r.ids.length).reduce((a, r) => a + r.x.valueUsd, 0);
+  const totalDay = rows.reduce((a, r) => a + r.perDay, 0);
+  const totalPend = rows.reduce((a, r) => a + r.pending, 0);
+  const idle = rows.filter(r => r.ids.length && !r.x.inRange).reduce((a, r) => a + r.x.valueUsd, 0);
+  const unstaked = rows.filter(r => r.missing.length).reduce((a, r) => a + r.x.valueUsd, 0);
+
+  box.innerHTML = `
+    <div class="stats" style="margin-bottom:12px">
+      <div class="stat"><span class="v">${usd(totalIn)}</span><span class="k">your stake here</span><span class="sub">${staked > 0 ? Math.min(100, totalIn / staked * 100).toFixed(totalIn / staked >= 0.1 ? 1 : 2) + '% of the farm' : 'the farm reports nothing staked'}</span></div>
+      <div class="stat"><span class="v">${usd(totalDay)}</span><span class="k">earning a day</span><span class="sub">${usd(totalDay * 30)} a month</span></div>
+      <div class="stat"><span class="v">${usd4(totalPend)}</span><span class="k">waiting to claim</span><span class="sub">from this farm</span></div>
+      ${unstaked > 0 ? `<div class="stat"><span class="v neg">${usd(unstaked)}</span><span class="k">not staked</span><span class="sub">earning fees only</span></div>` : ''}
+      ${idle > 0 ? `<div class="stat"><span class="v neg">${usd(idle)}</span><span class="k">staked but out of range</span><span class="sub">earns nothing until the price returns</span></div>` : ''}
+    </div>
+
+    <div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+      <thead><tr><th>Position</th><th class="r">Value</th><th class="r">Share here</th><th class="r">A day</th><th class="r">Waiting</th><th>State</th><th></th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td class="mono">${poolLink(g.dex, g.poolId, '#' + r.x.posId)}</td>
+        <td class="r num">${usd(r.x.valueUsd)}</td>
+        <td class="r num ${r.share > 0 ? '' : 'dim'}">${r.share > 0 ? (r.share * 100).toFixed(r.share >= 0.1 ? 1 : 2) + '%' : '—'}</td>
+        <td class="r num ${r.perDay > 0 ? '' : 'dim'}">${r.perDay > 0 ? usd(r.perDay) : '—'}</td>
+        <td class="r num ${r.pending > 0 ? '' : 'dim'}">${r.pending > 0 ? usd4(r.pending) : '—'}</td>
+        <td>${!r.ids.length ? '<span class="pill warn">not staked</span>'
+            : !r.x.inRange ? '<span class="pill bad">out of range</span>'
+            : `<span class="pill good">earning</span>`}${r.ids.length && r.ids.length < liveIds.size ? ` <span class="src farm">${r.ids.length} of ${liveIds.size}</span>` : ''}</td>
+        <td class="r">${r.missing.length ? `<button class="btn" data-joinfarm="${r.x.posId}" data-inc="${r.missing.map(esc).join(',')}">Join</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table></div>`;
   wireJoinFarm(box, me);
+  return totalIn;
 }
 
 // ---------------------------------------------------------- POOL DETAIL -----
