@@ -720,30 +720,41 @@ export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps 
   const pFrom = priceOf(fromToken);
   const isA = fromToken === pool.tokenA;
   const isB = fromToken === pool.tokenB;
-  if (!isA && !isB) return { ok: false, reason: 'Zap in with one of the two tokens this pool holds.' };
   if (!(amount > 0)) return { ok: false, reason: 'Enter an amount.' };
+  if (!pFrom) return { ok: false, reason: 'No price for that token, so the split cannot be sized.' };
 
   const fee = amount * (feeBps / 10000);
   const net = amount - fee;
 
-  // What fraction has to become the other token. A band sitting entirely on one
-  // side wants none of it, and then there is nothing to sell.
-  const wantOther = isA ? ratio.shareB : ratio.shareA;
-  const toSwap = net * wantOther;
-  const keep = net - toSwap;
-
-  const otherToken = isA ? pool.tokenB : pool.tokenA;
-  const pOther = priceOf(otherToken);
-  const expectOther = (pFrom && pOther) ? (toSwap * pFrom) / pOther : null;
+  // One leg per side the holder does not already have. Bringing a pool token
+  // means one swap and the rest kept; bringing anything else — WAX into a
+  // CHEESE/HOLE band, which is what someone who just wants exposure actually
+  // holds — means two, sized by the same ratio.
+  const legs = [];
+  let keep = 0;
+  for (const [token, share, sym, dcm] of [
+    [pool.tokenA, ratio.shareA, pool.symA, pool.decA],
+    [pool.tokenB, ratio.shareB, pool.symB, pool.decB],
+  ]) {
+    const want = net * share;
+    if (token === fromToken) { keep = want; continue; }   // already the right token
+    if (!(want > 0)) continue;                            // band wants none of this side
+    const px = priceOf(token);
+    legs.push({ token, sym, decimals: dcm, from: want, expect: px ? (want * pFrom) / px : null, priced: !!px });
+  }
+  // A token the pool does not hold leaves nothing behind: every part of it is
+  // swapped, and `keep` stays zero.
+  const unpriced = legs.filter(l => !l.priced).map(l => l.sym);
+  if (unpriced.length) return { ok: false, reason: `No price for ${unpriced.join(' or ')}, so the split cannot be sized.` };
 
   return {
-    ok: true, ratio, fromToken, otherToken,
-    symFrom: from.symbol, symOther: tokenMeta(otherToken).symbol,
-    amount, fee, net, toSwap, keep, expectOther,
-    usd: pFrom ? amount * pFrom : null,
-    // Nothing to sell means the deposit is one-sided, which addliquid handles:
-    // it takes what the band can use and leaves the rest in the internal balance.
-    needsSwap: toSwap > 0,
+    ok: true, ratio, fromToken, legs,
+    symFrom: from.symbol,
+    inPool: isA || isB,
+    amount, fee, net, keep,
+    toSwap: legs.reduce((a, l) => a + l.from, 0),
+    usd: amount * pFrom,
+    needsSwap: legs.length > 0,
   };
 }
 
@@ -751,7 +762,7 @@ export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps 
 export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
-  const from = tokenMeta(plan.fromToken), to = tokenMeta(plan.otherToken);
+  const from = tokenMeta(plan.fromToken);
   const actions = [];
 
   if (feeAccount && plan.fee > 0 && parseFloat(dec(plan.fee, from.decimals)) > 0) {
@@ -761,18 +772,18 @@ export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth
     });
   }
 
-  if (plan.needsSwap) {
-    const path = findPath(plan.fromToken, plan.otherToken);
-    if (!path || !path.length) throw new Error(`No route from ${from.symbol} to ${to.symbol}.`);
-    if (!(plan.expectOther > 0)) throw new Error('Cannot price this pair well enough to size the swap.');
-    const minOut = plan.expectOther * (1 - SLIPPAGE);
-    if (parseFloat(dec(plan.toSwap, from.decimals)) <= 0) throw new Error(`Below one ${from.symbol} unit to swap.`);
-    if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${to.symbol} unit.`);
+  for (const leg of plan.legs) {
+    const to = tokenMeta(leg.token);
+    const path = findPath(plan.fromToken, leg.token);
+    if (!path || !path.length) throw new Error(`No route from ${from.symbol} to ${leg.sym}.`);
+    const minOut = leg.expect * (1 - SLIPPAGE);
+    if (parseFloat(dec(leg.from, from.decimals)) <= 0) throw new Error(`Below one ${from.symbol} unit to swap into ${leg.sym}.`);
+    if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${leg.sym} unit.`);
     actions.push({
       account: from.contract, name: 'transfer', authorization: auth,
       data: {
         from: me, to: ALCOR,
-        quantity: asset(plan.toSwap, from.symbol, from.decimals),
+        quantity: asset(leg.from, from.symbol, from.decimals),
         memo: `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, to.symbol, to.decimals)}@${to.contract}#0`,
       },
     });
@@ -797,16 +808,19 @@ export async function buildZapDeposit({
     balanceOf(me, tb.contract, tb.symbol),
   ]);
 
-  const isA = plan.fromToken === pool.tokenA;
-  // The side they brought fell by what was spent; the side they bought rose.
-  // Both are capped at what the plan says, so a balance held beforehand can
-  // never be swept in.
-  let depA = isA ? Math.min(plan.keep, nowA) : Math.max(0, nowA - (before.get(pool.tokenA) ?? 0));
-  let depB = isA ? Math.max(0, nowB - (before.get(pool.tokenB) ?? 0)) : Math.min(plan.keep, nowB);
-  if (plan.expectOther > 0) {
-    const cap = plan.expectOther * 1.05;
-    if (isA) depB = Math.min(depB, cap); else depA = Math.min(depA, cap);
-  }
+  // A side the holder brought is capped at what the plan kept; a side that was
+  // bought is the difference the swap made, capped at what it was expected to
+  // return. Either way a balance held beforehand can never be swept in.
+  const legOf = t => plan.legs.find(l => l.token === t);
+  const sized = (token, now, dcm) => {
+    if (token === plan.fromToken) return Math.min(plan.keep, now);
+    const leg = legOf(token);
+    if (!leg) return 0;
+    const gained = Math.max(0, now - (before.get(token) ?? 0));
+    return Math.min(gained, leg.expect * 1.05);
+  };
+  let depA = sized(pool.tokenA, nowA, pool.decA);
+  let depB = sized(pool.tokenB, nowB, pool.decB);
   if (!(depA > 0) && !(depB > 0)) throw new Error('Nothing arrived to deposit.');
 
   const netOf = (amt, id) => amt * (1 - (venueTaxOf(id) / 10000));

@@ -544,6 +544,7 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
   await applyVolume(pools);
 
   state.pools = pools; state.farms = farms; state.prices = prices; state.tokens = tokens;
+  stakingMap();          // warm it now; the farms page needs it and it takes seconds
   state.loadedAt = Date.now(); state.stale = false; state.fromSnapshot = false;
   state.waxUsd = prices.get('WAX@eosio.token')?.usd ?? null;
 
@@ -1207,15 +1208,27 @@ export function farmGroups({ liveOnly = true } = {}) {
 // pool have different staked sets, so the denominator is their UNION — counting
 // a position once even when it is staked in five of them.
 const groupCache = new Map();
+
+// posId -> the incentives it is staked in, for the whole chain. One paged read
+// shared by every group that asks, instead of the stakes table once per
+// incentive — which is where the wait came from.
+let stakingPromise = null;
+function stakingMap() {
+  stakingPromise ??= getAllRows(ALCOR, ALCOR, 'stakingpos')
+    .then(rows => new Map(rows.map(r => [String(r.posId), (r.incentiveIds || []).map(String)])))
+    .catch(() => { stakingPromise = null; return new Map(); });
+  return stakingPromise;
+}
 export async function groupStakedUsd(group) {
   if (group.dex === 'taco') return group.stakedUsd;
   if (groupCache.has(group.key)) return groupCache.get(group.key);
   const pool = group.pool;
   if (!pool || !pool.sqrtX64) return null;
 
-  const stakeSets = await Promise.all(group.farms.map(f => getAllRows(ALCOR, f.id, 'stakes').catch(() => [])));
+  const staked = await stakingMap();
+  const ours = new Set(group.farms.map(f => String(f.id)));
   const posIds = new Set();
-  for (const rows of stakeSets) for (const r of rows) posIds.add(String(r.posId));
+  for (const [posId, incs] of staked) if (incs.some(i => ours.has(i))) posIds.add(posId);
   if (!posIds.size) { groupCache.set(group.key, 0); return 0; }
 
   const positions = await getAllRows(ALCOR, group.poolId, 'positions');

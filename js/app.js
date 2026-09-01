@@ -230,6 +230,15 @@ const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
 // everywhere: TacoSwap charges 0.30% and passes 0.1% of it to the LP. Earnings
 // use the provider's cut, or a Taco position reads three times too rich.
 const lpCut = p => p.lpFeeBps ?? p.feeBps;
+
+// What the pool's own trading pays a provider, annualised off the last seven
+// days. A farm's APR and a pool's fee APR are different money from different
+// sources — one stops when the incentive ends, the other does not — so they are
+// never added into a single number without saying so.
+const feeApr = pool => {
+  if (!pool || !(pool.vol7d > 0) || !(pool.tvlReal > 0)) return null;
+  return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
+};
 const $ = s => document.querySelector(s);
 
 let CFG = null;
@@ -1413,6 +1422,9 @@ function renderFarms() {
     // APR computed from one is arithmetic on a farm that stopped paying. They
     // are still worth being able to look at, which is what the toggle is for.
     groups = farmGroups({ liveOnly: !farmFilters.expired });
+    // Trading fees are the other half of what a position in a farmed pool earns,
+    // and they carry on after the incentive ends.
+    for (const g of groups) g.feeApr = feeApr(g.pool);
     groups._key = key; groups._at = state.loadedAt;
   }
   const rows = filteredGroups();
@@ -1519,6 +1531,7 @@ function renderFarms() {
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
+      <td class="r num ${g.feeApr != null ? '' : 'dim'}" title="What the pool's own trading has paid a provider, annualised off the last seven days. It does not stop when the farm does.">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td class="r num ${g.tooSmall ? 'neg' : g.share > 0.15 ? '' : 'dim'}">${farmFilters.size > 0 ? (g.share * 100).toFixed(g.share > 0.1 ? 0 : 1) + '%' : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
@@ -1530,7 +1543,7 @@ function renderFarms() {
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
       <td class="r num dim">#${g.newestId}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="9" class="empty">No farms match.</td></tr>';
+  }).join('') || `<tr><td colspan="${cols.length}" class="empty">No farms match.</td></tr>`;
   fillMarks($('#farmTable tbody'));
   // A farm row opens the farm. It used to open the pool, which answers a
   // different question and threw away everything specific to the farm.
@@ -1548,7 +1561,7 @@ async function autoApr() {
   if (autoAprRunning) return;
   const targets = filteredGroups()
     .sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir)
-    .slice(0, 40)
+    .slice(0, 14)
     .filter(g => g.aprStatus === 'lazy' && g.dex === 'alcor');
   if (!targets.length) return;
   autoAprRunning = true;
@@ -3799,6 +3812,11 @@ async function openToken(id) {
       <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
     </div>
 
+    ${farms.length ? `<div class="cta" style="margin-bottom:14px">
+      <div><b>${farms.length} farm${farms.length === 1 ? '' : 's'} on pools holding ${esc(t.symbol)}</b>
+        <span class="sub">${farms.slice(0, 4).map(g => `<span class="xlink" data-farmkey="${esc(g.key)}">${g.pool ? esc(g.pool.symA) + '/' + esc(g.pool.symB) : esc(g.poolId)}</span>${g.aprReal != null || g.apr != null ? ` <b>${pct(g.aprReal ?? g.apr)}</b>` : ''}`).join(' &middot; ')}${farms.length > 4 ? ` &middot; and ${farms.length - 4} more` : ''} &mdash; ${usd(farms.reduce((a, g) => a + (g.rewardUsdDay || 0), 0))} a day between them</span></div>
+    </div>` : ''}
+
     <div class="section"><h3>The token itself</h3>
       <div class="grid g2">
         <div class="card"><dl class="facts" id="tokFacts">
@@ -4482,11 +4500,14 @@ function renderZap(box, pool, { tickLower, tickUpper, incentiveIds = [], account
     if (!plan.ok) { out.innerHTML = `<p class="sub" style="margin:0">${esc(plan.reason)}</p>`; return; }
     out.innerHTML = `<div class="dests">
         <div class="dest in"><span class="lbl">Into the pool</span>
-          <span class="amt">${qty(plan.keep)} ${esc(plan.symFrom)}</span>
-          <span class="det">${plan.needsSwap ? `+ about ${qty(plan.expectOther)} ${esc(plan.symOther)} after the swap` : 'this band wants only this side'}</span></div>
+          <span class="amt">${usd(plan.usd - (plan.usd * feeBps / 10000))}</span>
+          <span class="det">${[
+            plan.keep > 0 ? `${qty(plan.keep)} ${esc(plan.symFrom)}` : '',
+            ...plan.legs.map(l => `about ${qty(l.expect)} ${esc(l.sym)}`),
+          ].filter(Boolean).join(' + ')}</span></div>
         <div class="dest out"><span class="lbl">Sold to get there</span>
           <span class="amt">${plan.needsSwap ? qty(plan.toSwap) + ' ' + esc(plan.symFrom) : 'nothing'}</span>
-          <span class="det">${feeBps > 0 ? `${qty(plan.fee)} ${esc(plan.symFrom)} fee (${(feeBps / 100).toFixed(2)}%)` : 'no fee'}</span></div>
+          <span class="det">${feeBps > 0 ? `${qty(plan.fee)} ${esc(plan.symFrom)} fee (${(feeBps / 100).toFixed(2)}%)` : 'no fee'}${plan.legs.length > 1 ? ' &middot; two swaps' : ''}</span></div>
       </div>
       <div class="planline"><span class="k">Band wants</span><span>${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)}</span></div>
       <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two — sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` · stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
@@ -4497,8 +4518,9 @@ function renderZap(box, pool, { tickLower, tickUpper, incentiveIds = [], account
 
   box.innerHTML = `<div class="card"><h3>Zap in <span class="dim">&mdash; one token, straight into a position</span></h3>
     <div class="toolbar" style="margin:0 0 10px">
-      <button class="chip" data-zaptok="${esc(pool.tokenA)}" aria-pressed="true">${esc(pool.symA)}</button>
-      <button class="chip" data-zaptok="${esc(pool.tokenB)}">${esc(pool.symB)}</button>
+      ${[[pool.tokenA, pool.symA], [pool.tokenB, pool.symB], ['WAX@eosio.token', 'WAX'], ['WAXUSDC@eth.token', 'WAXUSDC']]
+        .filter(([id], i, all) => all.findIndex(x => x[0] === id) === i)
+        .map(([id, sym], i) => `<button class="chip" data-zaptok="${esc(id)}"${i === 0 ? ' aria-pressed="true"' : ''}>${esc(sym)}</button>`).join('')}
       <span class="sizesel"><span class="amt"><input id="zapAmt" type="number" min="0" step="any" placeholder="amount" inputmode="decimal"></span></span>
     </div>
     <div id="zapOut"></div></div>`;
@@ -4515,7 +4537,7 @@ async function runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account,
   const box = $('#zapRun');
   const btn = $('#zapGo');
   const steps = [
-    { t: 'Sell and pay the fee', d: `Sell ${qty(plan.toSwap)} ${plan.symFrom} for ${plan.symOther}. Only what you are zapping is spent.` },
+    { t: 'Sell and pay the fee', d: `Sell ${qty(plan.toSwap)} ${plan.symFrom} into ${plan.legs.map(l => l.sym).join(' and ')}. Only what you are zapping is spent.` },
     { t: 'Deposit and stake', d: `Add what arrived into the band${incentiveIds.length ? ' and stake it' : ''}.` },
   ];
   const render = (i, msg, { err = null, cta = null } = {}) => {
@@ -4605,7 +4627,8 @@ async function openFarm(key) {
 
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
-      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
+      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">farm APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
+      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${feeApr(p) != null ? "the pool's own trading, over 7 days &mdash; it does not stop when the farm does" : 'not enough volume to measure'}</span></div>
       <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
       <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
         soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
