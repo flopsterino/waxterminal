@@ -66,71 +66,6 @@ export async function creatorOf(account) {
   creatorCache.set(account, c);
   return c;
 }
-
-// The real cluster signal: who has moved size to whom.
-//
-// A shared creator is suggestive; a chain of transfers between two wallets is
-// evidence. This walks each top holder's history of THIS token, keeps only the
-// counterparties who are also top holders, and joins them into components — the
-// same thing a bubble map draws, computed from the transfers themselves.
-export async function transferClusters(contract, symbol, holders, { minShare = 0.005, supply = 0 } = {}) {
-  const people = holders.filter(h => !h.contractRole).slice(0, 14);
-  const set = new Set(people.map(h => h.account));
-  const edges = new Map();                       // 'a|b' -> usd-less token amount
-
-  await Promise.all(people.map(async h => {
-    try {
-      const q = new URLSearchParams({
-        account: h.account, 'act.account': contract, 'act.name': 'transfer',
-        limit: '250', sort: 'desc',
-      });
-      const d = await hyperion(`/v2/history/get_actions?${q}`);
-      for (const a of (d.actions || [])) {
-        const x = a.act.data;
-        if (!x || x.from === x.to) continue;
-        const [sym] = String(x.quantity || '').split(' ').slice(1);
-        if (sym !== symbol) continue;
-        if (!set.has(x.from) || !set.has(x.to)) continue;
-        const amt = parseFloat(x.quantity) || 0;
-        if (!(amt > 0)) continue;
-        // Ignore dust: a cluster is about size moving, not a test transaction.
-        if (supply > 0 && amt / supply < minShare / 10) continue;
-        const key = [x.from, x.to].sort().join('|');
-        edges.set(key, (edges.get(key) || 0) + amt);
-      }
-    } catch { /* one unreadable history must not void the graph */ }
-  }));
-
-  // Connected components over those edges.
-  const parent = new Map(people.map(h => [h.account, h.account]));
-  const find = a => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
-  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
-  for (const key of edges.keys()) { const [a, b] = key.split('|'); union(a, b); }
-
-  const groups = new Map();
-  for (const h of people) {
-    const root = find(h.account);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(h);
-  }
-
-  const out = [];
-  for (const [, members] of groups) {
-    if (members.length < 2) continue;
-    const total = members.reduce((s, m) => s + m.balance, 0);
-    const links = [...edges.entries()]
-      .filter(([k]) => { const [a, b] = k.split('|'); return members.some(m => m.account === a) && members.some(m => m.account === b); })
-      .map(([k, v]) => ({ pair: k.split('|'), amount: v }))
-      .sort((a, b) => b.amount - a.amount);
-    out.push({ members, total, links, share: supply > 0 ? total / supply : null });
-    for (const m of members) m.transferCluster = members.map(x => x.account).join('+');
-  }
-  out.sort((a, b) => b.total - a.total);
-  return out;
-}
-
-// Group holders that share a creator. Anything created by the system, or the
-// only member of its group, is left ungrouped — a "cluster of one" is noise.
 export async function clusterHolders(holders) {
   // Resolve contracts first so they are excluded from clustering entirely.
   await Promise.all(holders.map(async h => {
@@ -394,4 +329,83 @@ export async function transferActivity(contract, symbol, { hours = 24, maxPages 
     covered: isFinite(oldest) ? oldest : Date.now(),
     complete: claimed < 10000 && claimed <= rows.length,
   };
+}
+
+// ---------------------------------------------------------- transfer graph --
+// The map people actually want: who moved this token to whom.
+//
+// `transferClusters` only kept a transfer when BOTH ends were already in the
+// top fourteen holders, which discards nearly everything — a deployer sending
+// 5% of supply to a fresh wallet is the single most interesting edge on the
+// chart and that wallet is, by definition, not yet a top holder. The result was
+// a map with no lines on it.
+//
+// This keeps the counterparty. Nodes are the top holders plus anyone who moved
+// a meaningful amount with one of them; edges are the transfers between them.
+export async function transferGraph(contract, symbol, holders, { supply = 0, seeds = 16, minShare = 0.0005, maxNodes = 40 } = {}) {
+  const seedList = holders.slice(0, seeds);
+  const seedSet = new Set(seedList.map(h => h.account));
+  const edges = new Map();                        // 'a|b' -> { amount, count }
+  const seen = new Map();                         // account -> total moved
+
+  const bump = (a, b, amt) => {
+    const key = [a, b].sort().join('|');
+    const e = edges.get(key) || { amount: 0, count: 0 };
+    e.amount += amt; e.count++;
+    edges.set(key, e);
+    seen.set(a, (seen.get(a) || 0) + amt);
+    seen.set(b, (seen.get(b) || 0) + amt);
+  };
+
+  await Promise.all(seedList.map(async h => {
+    try {
+      const q = new URLSearchParams({
+        account: h.account, 'act.account': contract, 'act.name': 'transfer',
+        limit: '250', sort: 'desc',
+      });
+      const d = await hyperion(`/v2/history/get_actions?${q}`);
+      for (const a of (d.actions || [])) {
+        const x = a.act?.data;
+        if (!x || x.from === x.to) continue;
+        if (String(x.quantity || '').split(' ')[1] !== symbol) continue;
+        const amt = parseFloat(x.quantity) || 0;
+        if (!(amt > 0)) continue;
+        // Dust is not a relationship. Below a twentieth of a percent of supply
+        // this is a test transaction or a tip, and a graph full of them says
+        // nothing about who controls what.
+        if (supply > 0 && amt / supply < minShare) continue;
+        if (!seedSet.has(x.from) && !seedSet.has(x.to)) continue;
+        bump(x.from, x.to, amt);
+      }
+    } catch { /* one unreadable history must not void the graph */ }
+  }));
+
+  // Every seed, plus the counterparties that moved the most.
+  const balanceOfAcct = new Map(holders.map(h => [h.account, h]));
+  const extras = [...seen.entries()]
+    .filter(([a]) => !seedSet.has(a))
+    .sort((x, y) => y[1] - x[1])
+    .slice(0, Math.max(0, maxNodes - seedList.length))
+    .map(([a]) => a);
+
+  const keep = new Set([...seedSet, ...extras]);
+  const nodes = [...keep].map(a => {
+    const h = balanceOfAcct.get(a);
+    return {
+      id: a,
+      value: h ? h.balance : (seen.get(a) || 0),
+      // A counterparty we have no balance row for is sized by what it moved,
+      // and said to be sized that way rather than passed off as a holding.
+      moved: !h,
+      contract: !!h?.contractRole,
+      share: supply > 0 && h ? h.balance / supply : null,
+    };
+  }).filter(n => n.value > 0);
+
+  const links = [...edges.entries()]
+    .map(([k, e]) => { const [source, target] = k.split('|'); return { source, target, value: e.amount, count: e.count }; })
+    .filter(l => keep.has(l.source) && keep.has(l.target))
+    .sort((a, b) => b.value - a.value);
+
+  return { nodes, links };
 }

@@ -111,7 +111,7 @@ export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v 
 // always somewhere between two readings, and volume is a bucket total. Drawn
 // that way it invents trades in the gaps and makes an hour with one swap look
 // like an hour of steady flow. Columns say the bucket is the unit.
-export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v => v, fmtX = v => v, label = '' } = {}) {
+export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v => v, fmtX = v => v, label = '', onPick = null } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart';
   if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
@@ -135,15 +135,43 @@ export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v =>
     svg.appendChild(t);
   }
 
+  // The bar was the only hover target, which on a quiet hour is a three-pixel
+  // sliver you have to hunt for. Each column gets a full-height catcher instead,
+  // so the whole vertical strip answers — and it highlights, so you can see
+  // which one you are reading.
+  const bars = [];
   points.forEach((p, i) => {
     const h = Math.max(p.y > 0 ? 1.5 : 0, (H - padB) - Y(p.y));
     const r = el('rect', { x: X(i), y: H - padB - h, width: bw, height: h, fill: color, rx: 1.5 });
-    r.style.cursor = 'crosshair';
-    r.addEventListener('pointerenter', e => { r.setAttribute('opacity', 0.75); showTip(`<b>${fmtY(p.y)}</b><span>${fmtX(p.x)}</span>${p.note ? `<span>${p.note}</span>` : ''}`, e.clientX, e.clientY); });
-    r.addEventListener('pointermove', e => showTip(`<b>${fmtY(p.y)}</b><span>${fmtX(p.x)}</span>${p.note ? `<span>${p.note}</span>` : ''}`, e.clientX, e.clientY));
-    r.addEventListener('pointerleave', () => { r.removeAttribute('opacity'); hideTip(); });
     svg.appendChild(r);
+    bars.push(r);
   });
+
+  const band = el('rect', { x: padL, y: padT, width: 0, height: H - padT - padB, fill: 'var(--ink)', 'fill-opacity': 0.06, rx: 2 });
+  band.style.pointerEvents = 'none';
+  svg.appendChild(band);
+
+  const hit = el('g');
+  points.forEach((p, i) => {
+    const c = el('rect', { x: padL + step * i, y: padT, width: step, height: H - padT - padB, fill: 'transparent' });
+    c.style.cursor = onPick ? 'pointer' : 'crosshair';
+    const show = e => {
+      band.setAttribute('x', padL + step * i);
+      band.setAttribute('width', step);
+      bars.forEach((b, j) => b.setAttribute('opacity', j === i ? 1 : 0.45));
+      showTip(`<b>${fmtY(p.y)}</b><span>${fmtX(p.x)}</span>${p.note ? `<span>${p.note}</span>` : ''}`, e.clientX, e.clientY);
+    };
+    c.addEventListener('pointerenter', show);
+    c.addEventListener('pointermove', show);
+    if (onPick) c.addEventListener('click', () => onPick(p, i));
+    hit.appendChild(c);
+  });
+  hit.addEventListener('pointerleave', () => {
+    band.setAttribute('width', 0);
+    bars.forEach(b => b.removeAttribute('opacity'));
+    hideTip();
+  });
+  svg.appendChild(hit);
 
   for (const [v, anchor] of [[points[0].x, 'start'], [points.at(-1).x, 'end']]) {
     const t = el('text', { x: v === points[0].x ? padL : W - padR, y: H - 6, fill: 'var(--muted)', 'font-size': 10, 'text-anchor': anchor });
@@ -332,10 +360,10 @@ export function rangeBar(tickLower, tickUpper, tick, { pad = 0.35 } = {}) {
 // treasury, a farm funder and an airdrop account, and those three will always
 // be connected. The map shows the relationship; the share column says whether
 // it matters.
-export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = null } = {}) {
+export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = null, cap = 16 } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart bubblemap';
-  const live = nodes.filter(n => n.value > 0).slice(0, 16);
+  const live = nodes.filter(n => n.value > 0).sort((a, b) => b.value - a.value).slice(0, cap);
   if (live.length < 2) { wrap.innerHTML = '<div class="chart-empty">Not enough holders to map.</div>'; return wrap; }
 
   const ids = new Set(live.map(n => n.id));
@@ -422,9 +450,10 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   for (const l of edges) {
     const line = el('line', {
       stroke: groupOf.get(l.source) == null ? 'var(--line-2)' : SERIES(groupOf.get(l.source)),
-      'stroke-opacity': 0.5, 'stroke-width': 1 + 3.5 * Math.sqrt(l.value / maxLink),
+      'stroke-opacity': 0.55, 'stroke-width': 1.2 + 4 * Math.sqrt(l.value / maxLink), 'stroke-linecap': 'round',
     });
-    line.appendChild(el('title')).textContent = `${l.source} ↔ ${l.target}: ${fmt(l.value)}`;
+    line.appendChild(el('title')).textContent = `${l.source} ↔ ${l.target}: ${fmt(l.value)}`
+      + (l.count ? ` over ${l.count} transfer${l.count === 1 ? '' : 's'}` : '');
     lineFor.set(l, line);
     gLinks.appendChild(line);
   }
@@ -440,9 +469,10 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
       r: p.r,
       fill: n.contract ? 'var(--line-2)' : gi == null ? 'var(--muted)' : SERIES(gi),
       'fill-opacity': n.contract ? 0.45 : gi == null ? 0.35 : 0.8,
+      'stroke-dasharray': n.moved ? '3 2' : null,
       stroke: 'var(--surface)', 'stroke-width': 2,
     });
-    c.appendChild(el('title')).textContent = `${n.id}: ${fmt(n.value)}`
+    c.appendChild(el('title')).textContent = `${n.id}: ${fmt(n.value)}${n.moved ? ' moved — not a top holder' : ''}`
       + (n.share != null ? ` (${(n.share * 100).toFixed(2)}% of supply)` : '')
       + (n.contract ? ' — a contract, holding for others' : '')
       + (gi != null ? ` — moves this token with ${linked.get(n.id).size} other wallet${linked.get(n.id).size === 1 ? '' : 's'} here` : '');

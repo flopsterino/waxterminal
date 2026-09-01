@@ -11,7 +11,7 @@ import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSw
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
-import { topHolders, clusterHolders, transferClusters, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
+import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
@@ -4619,22 +4619,34 @@ async function openToken(id) {
     box.appendChild(donut(slices, { fmt: v => qty(v) + ' ' + t.symbol, top: 8 }));
   } else $('#tokDist').innerHTML = '<div class="chart-empty">Needs the supply to turn balances into shares.</div>';
 
-  try {
-    const clusters = await transferClusters(t.contract, t.symbol, holders, { supply });
-    // Wallet balances, for the same reason the share column uses them: pooled
-    // tokens live in the DEX's own balance, and a bubble sized by balance+LP
-    // next to a DEX bubble sized by balance draws the same coins twice.
-    const nodes = top.map(h => ({ id: h.account, value: h.balance, contract: !!h.contractRole, share: supply > 0 ? h.balance / supply : null }));
-    const links = clusters.flatMap(g => g.links.map(l => ({ source: l.pair[0], target: l.pair[1], value: l.amount })));
+  // Detail is a control, not a constant. The old map kept a transfer only when
+  // both ends were already top holders, which threw away the edge that matters
+  // most — a deployer moving supply to a fresh wallet — and left a ring of
+  // bubbles with nothing between them.
+  let mapDetail = 0.0001;
+  const drawMap = async () => {
     const box = $('#tokBubbles');
-    box.innerHTML = '';
-    box.appendChild(bubbleMap(nodes, links, { fmt: v => qty(v) + ' ' + t.symbol, onPick: acct => { show('wallet', acct); $('#walletInput').value = acct; lookupWallet(acct); } }));
-    const note = document.createElement('p');
-    note.className = 'sub'; note.style.marginTop = '8px';
-    note.innerHTML = links.length
-      ? `${clusters.length} group${clusters.length === 1 ? '' : 's'} of wallets have moved ${esc(t.symbol)} between each other, holding ${clusters.map(g => (g.share * 100).toFixed(1) + '%').join(' and ')} of supply. Projects legitimately run several accounts &mdash; read it next to the share column, and click a bubble to see what that wallet actually holds.`
-      : 'No transfers between the largest holders.';
-    box.appendChild(note);
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Following the transfers…</span></div>';
+    let g;
+    try { g = await transferGraph(t.contract, t.symbol, holders, { supply, minShare: mapDetail }); }
+    catch { box.innerHTML = '<div class="chart-empty">Could not read the transfer history.</div>'; return; }
+    box.innerHTML = `<div class="toolbar" style="margin:0 0 8px">
+      <span class="dim" style="font-size:11.5px">Show transfers over</span>
+      ${[[0.001, '0.1%'], [0.0001, '0.01%'], [0.00002, '0.002%']].map(([v, lbl]) =>
+        `<button class="chip" data-detail="${v}" aria-pressed="${v === mapDetail}">${lbl} of supply</button>`).join('')}
+      <span class="dim" style="font-size:11.5px">${g.nodes.length} wallets &middot; ${g.links.length} link${g.links.length === 1 ? '' : 's'}</span>
+    </div>`;
+    const holder = document.createElement('div');
+    box.appendChild(holder);
+    holder.appendChild(bubbleMap(g.nodes, g.links, {
+      cap: 40, fmt: v => qty(v) + ' ' + t.symbol,
+      onPick: acct => { show('wallet', acct); $('#walletInput').value = acct; lookupWallet(acct); },
+    }));
+    box.querySelectorAll('[data-detail]').forEach(b => b.onclick = () => { mapDetail = Number(b.dataset.detail); drawMap(); });
+  };
+
+  try {
+    await drawMap();
   } catch { $('#tokBubbles').innerHTML = '<div class="chart-empty">Could not trace transfers.</div>'; }
 }
 
