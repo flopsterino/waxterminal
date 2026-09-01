@@ -511,7 +511,7 @@ function renderOverview() {
     g.share = tvl > 0 ? SIZE / (tvl + SIZE) : 1;
     // With no deposit there is nothing to dilute and no pool too small to take
     // it, so the constraint only applies once an amount is entered.
-    g.tooSmall = farmFilters.size > 0 && g.share > 0.33;
+    g.tooSmall = g.share > 0.33;      // at the overview's own reference size
     // Emissions outrunning the pool: the rate is real and the token cannot
     // survive it. Worth seeing, not worth ranking first.
     g.runaway = g.pool?.tvlReal > 0 && g.rewardRealDay > g.pool.tvlReal * 0.5;
@@ -997,8 +997,6 @@ const CSV_COLS = {
     { h: 'reward_per_day_sellable_usd', v: g => g.rewardRealDay },
     { h: 'staked_usd', v: g => g.stakedUsd }, { h: 'staked_sellable_usd', v: g => g.stakedReal },
     { h: 'apr_pct', v: g => g.apr }, { h: 'apr_sellable_pct', v: g => g.aprReal },
-    { h: 'apr_at_your_size_pct', v: g => g.aprAt },
-    { h: 'your_share_of_pool', v: g => g.share },
     { h: 'runway_days', v: g => (isFinite(g.runwayDays) ? g.runwayDays : null) },
     { h: 'apr_status', v: g => g.aprStatus },
   ],
@@ -1319,7 +1317,7 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1, size: 0,
+const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
 let groups = [];
 
@@ -1364,16 +1362,6 @@ function wireFarms() {
     e.target.setAttribute('aria-pressed', String(farmFilters.expired));
     groups._key = null; renderFarms();
   };
-  const sizeInput = $('#depositSize');
-  const applySize = v => {
-    const n = Math.max(0, Number(v) || 0);
-    farmFilters.size = n;
-    document.querySelectorAll('[data-size]').forEach(x => x.setAttribute('aria-pressed', String(Number(x.dataset.size) === n)));
-    renderFarms();
-  };
-  let sizeTimer;
-  sizeInput.oninput = () => { clearTimeout(sizeTimer); sizeTimer = setTimeout(() => applySize(sizeInput.value), 250); };
-  document.querySelectorAll('[data-size]').forEach(b => b.onclick = () => { sizeInput.value = b.dataset.size; applySize(b.dataset.size); });
   $('#fLive').style.display = 'none';                 // groups are live-only by construction
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
@@ -1429,11 +1417,7 @@ function renderFarms() {
   }
   const rows = filteredGroups();
   for (const g of rows) {
-    g.share = poolShare(g, farmFilters.size);
-    g.aprAt = aprAtSize(g, farmFilters.size);
-    // Past a third of the pool you are not joining a market, you are becoming
-    // one. Those rank below everything you could actually enter.
-    g.tooSmall = g.share > 0.33;
+    g.aprAt = g.aprReal ?? g.apr;
   }
   // A missing value is not a small one. Sorting nulls as -Infinity put every
   // farm we cannot value at the top of a descending APR sort, which is the
@@ -1452,7 +1436,7 @@ function renderFarms() {
   lastRendered.farms = rows;
 
   const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
-  const enterableAll = rows.filter(g => !g.tooSmall && g.aprAt != null);
+  const enterableAll = rows.filter(g => g.aprAt != null);
   const best = enterableAll.length ? Math.max(...enterableAll.map(g => g.aprAt)) : null;
   const median = enterableAll.length
     ? [...enterableAll].map(g => g.aprAt).sort((a, b) => a - b)[Math.floor(enterableAll.length / 2)]
@@ -1514,13 +1498,9 @@ function renderFarms() {
     // differ enough to matter — that gap IS the size of the farm.
     // Show the move, not the destination. "62% → 43%" says what adding your
     // money does to the rate; a lone diluted number just looks like a worse farm.
-    const moved = farmFilters.size > 0 && g.aprReal != null && g.aprAt != null && g.aprReal > g.aprAt * 1.02;
-    const aprCell = g.tooSmall
-      ? `<span class="dim" title="This pool holds ${usd(g.pool?.tvlReal || 0)}. Adding ${usd(farmFilters.size)} would make you ${(g.share * 100).toFixed(0)}% of it — you would mostly be trading against yourself.">too small for that</span>`
-      : g.aprAt != null
-        ? (moved
-            ? `<span class="aprmove"><span class="was">${pct(g.aprReal)}</span><span class="arrow">&rarr;</span><span class="apr">${pct(g.aprAt)}</span></span>`
-            : `<span class="apr">${pct(g.aprAt)}</span>`)
+    const rate = g.aprReal ?? g.apr;
+    const aprCell = rate != null
+        ? `<span class="apr">${pct(rate)}</span>`
         : `<span class="dim" title="${esc(aprWhy(g.aprStatus))}">${
             g.aprStatus === 'unpriceable' ? 'reward unpriced'
             : g.aprStatus === 'no_stake' ? 'nobody staked'
