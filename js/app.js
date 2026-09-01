@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -1752,7 +1752,7 @@ async function renderWalletResources(account) {
       const byId = new Map(all.map(m => [m.id, m]));
       box.innerHTML = `<div class="section"><h3>Open orders <span class="dim">&mdash; resting on Alcor's book until filled or cancelled</span></h3>
         <div class="card"><div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-          <thead><tr><th></th><th>Market</th><th class="r">Price</th><th class="r">Size</th><th class="r">Placed</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Market</th><th class="r">Price</th><th class="r">Size</th><th class="r">Placed</th></tr></thead>
           <tbody>${orders.map(o => {
             const m = byId.get(o.marketId);
             return `<tr>
@@ -1761,22 +1761,10 @@ async function renderWalletResources(account) {
               <td class="r num">${qty(o.price)}</td>
               <td class="r num">${qty(o.quote)}${m ? ' <span class="sub">' + esc(m.quote.symbol) + '</span>' : ''}</td>
               <td class="r num dim">${ago(new Date(o.at).toISOString())}</td>
-              <td class="r"><button class="chip" data-cancel="${o.marketId}|${o.id}|${o.side}">cancel</button></td>
             </tr>`;
           }).join('')}</tbody></table></div>
-          <div id="obCancelOut" style="margin-top:10px"></div>
-          <p class="sub" style="margin:10px 0 0">${orders.length} open &middot; cancelling returns what you sent.</p>
+          <p class="sub" style="margin:10px 0 0">${orders.length} open. Cancel them on Alcor.</p>
         </div></div>`;
-      box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
-        const [marketId, orderId, side] = b.dataset.cancel.split('|');
-        const out2 = $('#obCancelOut');
-        out2.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
-        try {
-          const tx = await wallet.transact(buildCancelOrder({ marketId, orderId, side, me: account }).actions);
-          out2.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Cancelled.</b> What you sent is back in your wallet.
-            <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
-        } catch (e) { out2.innerHTML = txError(e); }
-      });
     } catch { box.innerHTML = ''; }
   })();
 
@@ -3881,61 +3869,8 @@ async function renderOrderBook(boxId, tokenId, symbol) {
           <tbody>${side(asks, 'obask') || '<tr><td colspan="4" class="dim">nobody selling</td></tr>'}</tbody></table></div></div>
     </div>
 
-    <div class="card" style="margin-top:12px;background:var(--surface-2)"><h3>Place an order</h3>
-      <div class="toolbar" style="margin:0">
-        <button class="chip" id="obBuy" aria-pressed="true">Buy ${esc(symbol)}</button>
-        <button class="chip" id="obSell">Sell ${esc(symbol)}</button>
-      </div>
-      <div class="filters" style="display:grid;gap:8px;margin:10px 0 0">
-        <label>Amount of ${esc(symbol)}<input id="obAmt" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
-        <label>Price in WAX each<input id="obPrice" type="number" step="any" min="0" placeholder="${b.best.bid != null ? qty(b.best.bid) : '0'}" inputmode="decimal"></label>
-      </div>
-      <p class="sub" id="obNote" style="margin:9px 0 0"></p>
-      <div id="obOut" style="margin-top:10px"></div>
-      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obGo">Review</button></div>
-    </div>
-    <p class="sub" style="margin:10px 0 0">Market #${market.id}${market.feeBps ? ` &middot; ${(market.feeBps / 100).toFixed(2)}% fee` : ' &middot; no fee'} &middot; fills at your price, or waits.</p>`;
+    <p class="sub" style="margin:10px 0 0">Read-only &mdash; place and cancel on Alcor. Market #${market.id}${market.feeBps ? ` &middot; ${(market.feeBps / 100).toFixed(2)}% fee` : ' &middot; no fee'} </p>`;
 
-  let buying = true;
-  const tok = state.tokens.get(tokenId) || { symbol, contract: tokenId.split('@')[1], decimals: 8 };
-  const waxTok = state.tokens.get(WAX) || { symbol: 'WAX', contract: 'eosio.token', decimals: 8 };
-  const note = $('#obNote');
-  const paint = () => {
-    const amt = Number($('#obAmt').value) || 0, px = Number($('#obPrice').value) || 0;
-    const total = amt * px;
-    note.innerHTML = !(amt > 0 && px > 0)
-      ? `Best bid ${b.best.bid != null ? qty(b.best.bid) : '—'}, best ask ${b.best.ask != null ? qty(b.best.ask) : '—'} WAX. Buying below the best ask, or selling above the best bid, means waiting.`
-      : buying
-        ? `Offer <b>${qty(total)} WAX</b> for <b>${qty(amt)} ${esc(symbol)}</b>${b.best.ask != null && px >= b.best.ask ? ' — at or above the best ask, so it should fill immediately' : ' — rests until someone sells into it'}.`
-        : `Offer <b>${qty(amt)} ${esc(symbol)}</b> for <b>${qty(total)} WAX</b>${b.best.bid != null && px <= b.best.bid ? ' — at or below the best bid, so it should fill immediately' : ' — rests until someone buys it'}.`;
-  };
-  paint();
-  $('#obAmt').oninput = paint; $('#obPrice').oninput = paint;
-  $('#obBuy').onclick = () => { buying = true; $('#obBuy').setAttribute('aria-pressed', 'true'); $('#obSell').setAttribute('aria-pressed', 'false'); paint(); };
-  $('#obSell').onclick = () => { buying = false; $('#obSell').setAttribute('aria-pressed', 'true'); $('#obBuy').setAttribute('aria-pressed', 'false'); paint(); };
-
-  $('#obGo').onclick = async () => {
-    const out = $('#obOut');
-    const amt = Number($('#obAmt').value) || 0, px = Number($('#obPrice').value) || 0;
-    if (!(amt > 0) || !(px > 0)) { out.innerHTML = '<div class="err">Enter an amount and a price.</div>'; return; }
-    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-    const total = amt * px;
-    const built = buying
-      ? buildLimitOrder({ give: { ...waxTok, amount: total }, want: { ...tok, amount: amt }, me: wallet.account() })
-      : buildLimitOrder({ give: { ...tok, amount: amt }, want: { ...waxTok, amount: total }, me: wallet.account() });
-    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      ${buying ? `Send <b>${qty(total)} WAX</b> and ask for <b>${qty(amt)} ${esc(symbol)}</b>` : `Send <b>${qty(amt)} ${esc(symbol)}</b> and ask for <b>${qty(total)} WAX</b>`}, at ${qty(px)} WAX each.
-      <br><span class="dim">Rests on chain until it fills or you cancel. What you send leaves your wallet now.</span>
-      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obSign">Sign and place</button></div></div>`;
-    $('#obSign').onclick = async () => {
-      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
-      try {
-        const tx = await wallet.transact(built.actions, { verify: true });
-        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Placed.</b> It rests until filled or cancelled — your open orders are on My wallet.
-          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
-      } catch (e) { out.innerHTML = txError(e); }
-    };
-  };
 }
 
 // ---------------------------------------------------------- TOKEN DETAIL ----
