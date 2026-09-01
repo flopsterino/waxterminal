@@ -296,6 +296,7 @@ async function boot() {
     redrawCurrent();
   };
   $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
+  $('#farmBack').onclick = () => show(lastView || 'farms');
   $('#poolBack').onclick = () => show(lastView || 'pools');
   $('#tokBack').onclick = () => show(lastView || 'tokens');
 
@@ -422,6 +423,7 @@ function redrawCurrent() {
     const [view, arg] = location.hash.replace(/^#/, '').split('/');
     if (view === 'token' && arg) return void openToken(decodeURIComponent(arg));
     if (view === 'pool' && arg) return void openPool(decodeURIComponent(arg));
+    if (view === 'farm' && arg) return void openFarm(decodeURIComponent(arg));
     if (view === 'account' && arg) { const a = decodeURIComponent(arg); show('wallet', a); $('#walletInput').value = a; return void lookupWallet(a); }
     if (lastView === 'pools') renderPools();
     else if (lastView === 'tokens') renderTokens();
@@ -462,6 +464,7 @@ function routeFromHash() {
     show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
   }
   if (view === 'compound' && arg) { const a = decodeURIComponent(arg); show('compound'); $('#compInput').value = a; runCompound(a); return true; }
+  if (view === 'farm' && arg) { openFarm(decodeURIComponent(arg)); return true; }
   if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
   if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'compound'].includes(view)) {
     show(view);
@@ -1520,7 +1523,9 @@ function renderFarms() {
     </tr>`;
   }).join('') || '<tr><td colspan="9" class="empty">No farms match.</td></tr>';
   fillMarks($('#farmTable tbody'));
-  $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
+  // A farm row opens the farm. It used to open the pool, which answers a
+  // different question and threw away everything specific to the farm.
+  $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.pool));
 }
 
 // Exact APR for the rows on screen. The denominator is the UNION of positions
@@ -4055,6 +4060,10 @@ async function openToken(id) {
     ${promoteBox('t', id, t.symbol)}`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
+  for (const id of ['#poolFarmGo', '#poolFarmBtn']) {
+    const b = $(id);
+    if (b) b.onclick = () => openFarm(`${p.dex}:${p.id}`);
+  }
   wirePromote();
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
@@ -4088,7 +4097,7 @@ async function openToken(id) {
           <td data-apr="${esc(g.key)}"><span class="dim">…</span></td>
           <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>`;
-    $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.fpool));
+    $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.fpool));
   }
 
   // ---- decimals, straight off the row we already have ----------------------
@@ -4618,6 +4627,173 @@ async function openToken(id) {
 }
 
 
+// Why a rate is missing, which is more useful than an em dash.
+const aprWhy = st => st === 'no_stake' ? 'nobody has staked, so there is no rate yet'
+  : st === 'thin' ? 'too little staked to divide by'
+  : st === 'unpriceable' ? 'the reward has no price this terminal will stand behind'
+  : st === 'ended' ? 'this farm has finished'
+  : 'not computed yet';
+
+// ---------------------------------------------------------- FARM DETAIL -----
+// A farm is not a pool. It has an end date, a creator, a pot split across
+// incentives that each pay a different token at a different rate, and a set of
+// stakers sharing it — none of which fits in a card on the pool page, which is
+// why clicking a farm used to land somewhere that answered a different question.
+async function openFarm(key) {
+  const g = farmGroups().find(x => x.key === key);
+  if (!g) return;
+  show('farm', key);
+  const p = g.pool;
+  const out = $('#farmDetail');
+  const now = Date.now();
+
+  // Per incentive, because that is the unit a farm is actually funded in: two
+  // incentives on one pool can pay different tokens, at different rates, ending
+  // on different days.
+  const rows = [...g.farms].sort((a, b) => (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0));
+  const live = rows.filter(f => f.periodFinish > now);
+  const potDay = rows.reduce((s, f) => s + (f.rewardUsdDay || 0), 0);
+  const liveDay = live.reduce((s, f) => s + (f.rewardUsdDay || 0), 0);
+  const endsAt = live.length ? Math.max(...live.map(f => f.periodFinish)) : null;
+  const soonest = live.length ? Math.min(...live.map(f => f.periodFinish)) : null;
+  const stakers = Math.max(0, ...rows.map(f => f.numStakes || 0));
+
+  const days = ms => (ms == null ? null : Math.max(0, (ms - now) / 86400e3));
+  const forHowLong = d => d == null ? '—'
+    : d < 1 ? `${Math.round(d * 24)}h`
+    : d < 60 ? `${Math.round(d)} days`
+    : `${(d / 30).toFixed(1)} months`;
+
+  out.innerHTML = `
+    <h2 class="vt">${p ? pairLinks(p) : esc(g.poolId)} <span class="badge ${g.dex}">${g.dex}</span>
+      ${live.length ? `<span class="pill good">${live.length} live</span>` : '<span class="pill">ended</span>'}</h2>
+    <p class="vs">${p ? `${(p.feeBps / 100).toFixed(2)}% fee tier &middot; ` : ''}${poolLink(g.dex, g.poolId, 'the pool')} holds ${usd(p?.tvlReal)}.</p>
+
+    <div class="stats">
+      <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
+      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null ? 'on what a deposit could get back out' : g.apr != null ? 'on face value' : aprWhy(g.aprStatus)}</span></div>
+      <div class="stat"><span class="v">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${stakers} position${stakers === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${forHowLong(days(soonest))}</span><span class="k">until the first ends</span><span class="sub">${endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : endsAt ? new Date(endsAt).toISOString().slice(0, 10) : 'nothing running'}</span></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px"><h3>What it pays</h3>
+      <div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+        <thead><tr><th>Reward</th><th class="r">Per day</th><th class="r">Value / day</th><th class="r">Share of the pot</th><th class="r">Ends</th><th>Funded by</th></tr></thead>
+        <tbody>${rows.map(f => {
+          const ended = f.periodFinish <= now;
+          return `<tr class="${ended ? 'dim' : ''}">
+            <td><span data-pm="${esc(f.rewardToken)}|${esc(f.rewardSymbol)}"></span> <b>${tokLink(f.rewardToken, f.rewardSymbol)}</b>
+              ${ended ? '<span class="pill">ended</span>' : ''}</td>
+            <td class="r num">${qty(f.rewardPerDay)} <span class="sub">${esc(f.rewardSymbol)}</span></td>
+            <td class="r num">${f.rewardUsdDay ? usd(f.rewardUsdDay) : '<span class="dim">unpriced</span>'}</td>
+            <td class="r num dim">${potDay > 0 && f.rewardUsdDay ? (f.rewardUsdDay / potDay * 100).toFixed(0) + '%' : '—'}</td>
+            <td class="r num ${ended ? '' : 'dim'}">${f.periodFinish ? (ended ? new Date(f.periodFinish).toISOString().slice(0, 10) : forHowLong(days(f.periodFinish))) : 'open'}</td>
+            <td class="mono dim">${f.creator ? acctLink(f.creator) : '—'}</td>
+          </tr>`;
+        }).join('')}</tbody></table></div>
+      ${rows.some(f => !f.rewardUsdDay) ? '<p class="sub" style="margin:9px 0 0">An unpriced reward is real but not counted in the totals above.</p>' : ''}
+    </div>
+
+    <div class="grid g2">
+      <div class="card"><h3>What you would earn</h3>
+        <div class="toolbar" style="margin:0 0 10px">
+          <span class="sizesel"><label for="farmSize">If I add</label>
+            <span class="amt"><span class="cur">$</span><input id="farmSize" type="number" min="0" step="any" placeholder="1000" inputmode="decimal"></span>
+          </span>
+          ${[100, 1000, 10000].map(v => `<button class="chip" data-fsize="${v}">${v >= 1000 ? v / 1000 + 'k' : v}</button>`).join('')}
+        </div>
+        <div id="farmEarn"></div>
+      </div>
+      <div class="card"><h3>The pot, by reward</h3><div id="farmSplit"></div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>Getting in</h3>
+      <div id="farmMine"></div>
+    </div>`;
+
+  fillMarks(out);
+
+  $('#farmSplit')?.appendChild(rows.filter(f => f.rewardUsdDay > 0).length
+    ? donut(rows.filter(f => f.rewardUsdDay > 0).map(f => ({ label: f.rewardSymbol, value: f.rewardUsdDay })), { fmt: usd, top: 8 })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Nothing here can be priced.' }));
+
+  // Your money joins the pot, so the rate you get is not the rate on the board.
+  const earn = () => {
+    const size = num($('#farmSize').value) || 0;
+    const box = $('#farmEarn');
+    const staked = g.stakedReal ?? g.stakedUsd ?? 0;
+    if (!(size > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Type an amount to see what it earns here.</p>'; return; }
+    if (!(liveDay > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Nothing live is paying, so a deposit earns nothing from this farm.</p>'; return; }
+    const share = size / (staked + size);
+    const perDay = liveDay * share;
+    box.innerHTML = `<div class="dests">
+        <div class="dest in"><span class="lbl">Your share of the farm</span>
+          <span class="amt">${(share * 100).toFixed(share >= 0.1 ? 1 : 2)}%</span>
+          <span class="det">${usd(size)} against ${usd(staked)} already staked</span></div>
+        <div class="dest out"><span class="lbl">Yours per day</span>
+          <span class="amt">${usd(perDay)}</span>
+          <span class="det">${usd(perDay * 30)} a month &middot; ${pct(perDay * 365 / size * 100)} APR</span></div>
+      </div>
+      <div class="tablewrap" style="border:0;margin-top:10px"><table style="font-size:12px"><tbody>
+        ${rows.filter(f => f.periodFinish > now && f.rewardPerDay > 0).map(f => `<tr>
+          <td><b>${esc(f.rewardSymbol)}</b></td>
+          <td class="r num">${qty(f.rewardPerDay * share)} <span class="sub">a day</span></td>
+          <td class="r num dim">${f.rewardUsdDay ? usd(f.rewardUsdDay * share) : '—'}</td>
+        </tr>`).join('')}
+      </tbody></table></div>`;
+  };
+  $('#farmSize').oninput = earn;
+  out.querySelectorAll('[data-fsize]').forEach(b => b.onclick = () => { $('#farmSize').value = b.dataset.fsize; earn(); });
+  earn();
+
+  renderFarmMine(g).catch(() => {});
+}
+
+// Where you stand in this farm, and the way in. A farm page that cannot tell
+// you whether you are already in it is a brochure.
+async function renderFarmMine(g) {
+  const box = $('#farmMine');
+  const me = wallet.account();
+  if (!me) {
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">Connect a wallet to see whether you are in this farm.</p>
+      <a class="btn" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Add liquidity on ${g.dex === 'alcor' ? 'Alcor' : 'the venue'} &nearr;</a>`;
+    return;
+  }
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Looking for your position…</span></div>';
+  let mine = [];
+  try {
+    const all = await walletPositionsFast(me);
+    mine = all.filter(x => String(x.pool.id) === String(g.poolId) && x.pool.dex === g.dex);
+  } catch {}
+
+  if (!mine.length) {
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">You have no position in this pool yet, so nothing to stake.</p>
+      <div class="toolbar" style="margin:0">
+        <button class="btn" id="farmOpen">Open a position</button>
+        <a class="plink" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Pool &nearr;</a>
+      </div>`;
+    $('#farmOpen').onclick = () => { show('compound'); $('#compInput').value = me; renderNewPosition(me); };
+    return;
+  }
+
+  const joined = await stakedIncentives(mine.map(x => x.posId)).catch(() => new Map());
+  const liveIds = new Set(g.farms.filter(f => f.periodFinish > Date.now()).map(f => String(f.id)));
+  box.innerHTML = `<div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+      <thead><tr><th>Position</th><th class="r">Value</th><th class="r">In range</th><th>Staked here</th><th></th></tr></thead>
+      <tbody>${mine.map(x => {
+        const ids = (joined.get(String(x.posId)) || []).filter(id => liveIds.has(id));
+        const missing = [...liveIds].filter(id => !(joined.get(String(x.posId)) || []).includes(id));
+        return `<tr>
+          <td class="mono">#${x.posId}</td>
+          <td class="r num">${usd(x.valueUsd)}</td>
+          <td class="r"><span class="pill ${x.inRange ? 'good' : 'bad'}">${x.inRange ? 'yes' : 'no'}</span></td>
+          <td>${ids.length ? `<span class="src farm">${ids.length} of ${liveIds.size}</span>` : '<span class="dim">not staked</span>'}</td>
+          <td class="r">${missing.length ? `<button class="btn" data-joinfarm="${x.posId}" data-inc="${missing.map(esc).join(',')}">Join</button>` : ''}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`;
+  wireJoinFarm(box, me);
+}
+
 // ---------------------------------------------------------- POOL DETAIL -----
 async function openPool(key) {
   const [dex, id] = key.split(':');
@@ -4633,7 +4809,7 @@ async function openPool(key) {
       <span id="poolStar"></span>
       <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
       <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
-      ${farms.length ? `<a class="btn ghost" href="${farmUrl(p)}" target="_blank" rel="noopener">Go to the farm &nearr;</a>` : ''}
+      ${farms.length ? `<button class="btn" id="poolFarmBtn">See the farm</button>` : ''}
     </div>
     <div class="stats">
       <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">exit value</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
@@ -4644,7 +4820,7 @@ async function openPool(key) {
       <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>
       <div class="stat"><span class="v">${farms.length}</span><span class="k">live farms</span></div>
     </div>
-    ${farms.length ? `<div class="card" style="margin-bottom:12px"><h3>Farms on this pool</h3>
+    ${farms.length ? `<div class="card" style="margin-bottom:12px"><h3>Farms on this pool <button class="chip" id="poolFarmGo" style="margin-left:auto">See the farm</button></h3>
       ${farms.map(f => `<div style="display:flex;gap:10px;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
         <span><span class="mono">${qty(f.rewardPerDay)}</span> <b>${tokLink(f.rewardToken, f.rewardSymbol)}</b> / day</span>
         <span class="num dim">${usd(f.rewardUsdDay)} &middot; ends ${f.periodFinish ? new Date(f.periodFinish).toISOString().slice(0, 10) : 'open'}</span>
