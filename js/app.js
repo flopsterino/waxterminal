@@ -794,7 +794,7 @@ function wirePromote() {
     $('#promoSign').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const r = await wallet.transact(built.actions);
+        const r = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Promoted.</b> Live on the front page for ${days} days.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { out.innerHTML = txError(e); }
@@ -1111,12 +1111,34 @@ function renderPools() {
 
 // --------------------------------------------------------------- TOKENS -----
 // Same argument as the pools table: what trades, not what sits.
-const tokFilters = { q: '', solidOnly: true, sort: 'vol24', dir: -1 };
+const tokFilters = { q: '', solidOnly: true, sort: 'vol24', dir: -1, lens: 'all' };
+// A lens is a question, not a sort order: each one also decides which tokens can
+// answer it. "Gainers" ranked over tokens with no comparable price yesterday is
+// a list of nulls, and "trending" over tokens with no week behind them is a list
+// of whatever first traded this morning.
+const LENSES = {
+  all:      { sort: 'vol24' },
+  trending: { sort: 'heat',     where: t => t.heat != null,
+              note: 'Trading above its own weekly run rate — the multiple, not the amount, so a small token having a big day is not buried under the same eight names.' },
+  gainers:  { sort: 'change24', where: t => t.change24 != null && t.change24 > 0 },
+  losers:   { sort: 'change24', dir: 1, where: t => t.change24 != null && t.change24 < 0 },
+  new:      { sort: 'bornAt',   where: t => t.bornAt != null,
+              note: 'Newest first, by the day the first pool for it appeared. New is where both the best entries and the worst rugs are.' },
+  volume:   { sort: 'vol24',    where: t => t.vol24 > 0 },
+};
 let tokRows = null;
 
 function wireTokens() {
   wireCsv('#view-tokens .toolbar', '#tokCount', 'wax-tokens', 'tokens');
   $('#tokSearch').oninput = e => { tokFilters.q = e.target.value.trim().toLowerCase(); renderTokens(); };
+  document.querySelectorAll('#tokLens [data-lens]').forEach(b => b.onclick = () => {
+    tokFilters.lens = b.dataset.lens;
+    const l = LENSES[tokFilters.lens];
+    tokFilters.sort = l.sort;
+    tokFilters.dir = l.dir ?? -1;
+    document.querySelectorAll('#tokLens [data-lens]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    renderTokens();
+  });
   $('#fTokSolid').onclick = e => {
     tokFilters.solidOnly = !tokFilters.solidOnly;
     e.target.setAttribute('aria-pressed', String(tokFilters.solidOnly));
@@ -1136,6 +1158,8 @@ function renderTokens() {
     // takes $1.03. The old rule showed 88 tokens where 225 have a real market.
     if (tokFilters.solidOnly && !(t.price != null && t.tvl >= 10)) return false;
     if (tokFilters.q && !`${t.symbol} ${t.contract}`.toLowerCase().includes(tokFilters.q)) return false;
+    const lens = LENSES[tokFilters.lens];
+    if (lens?.where && !lens.where(t)) return false;
     return true;
   });
   rows.sort((a, b) => {
@@ -1175,6 +1199,7 @@ function renderTokens() {
     { k: 'symbol', label: 'Token' },
     { k: 'price', label: 'Price', r: true, s: true },
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
+    { k: 'change24', label: '24h', r: true, s: true },
     { k: 'vol24', label: 'Volume 24h', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
     { k: 'taxBps', label: 'Transfer tax', r: true, s: true },
@@ -1182,6 +1207,7 @@ function renderTokens() {
     { k: 'pools', label: 'Pools', r: true, s: true },
     { k: 'bornAt', label: 'First seen', r: true, s: true },
   ];
+  if (tokFilters.lens === 'trending') cols.splice(6, 0, { k: 'heat', label: 'vs its week', r: true, s: true });
   const thead = $('#tokTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${tokFilters.sort === c.k ? ` <span class="dir">${tokFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
   thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
@@ -1189,6 +1215,19 @@ function renderTokens() {
     if (tokFilters.sort === k) tokFilters.dir *= -1; else { tokFilters.sort = k; tokFilters.dir = -1; }
     renderTokens();
   });
+
+  const lens = LENSES[tokFilters.lens];
+  const hrs = state.prevAt ? (state.loadedAt - state.prevAt) / 3600e3 : null;
+  const lensNote = $('#tokLensNote');
+  if (lensNote) {
+    // "24h" is whatever the gap between the last two snapshots actually was,
+    // and rounding that to a flat 24 is the kind of small lie that makes every
+    // number beside it suspect.
+    const span = hrs ? `Change is measured against the snapshot ${hrs.toFixed(1)}h earlier.` : 'No earlier snapshot to compare prices against yet.';
+    lensNote.innerHTML = lens.note ? `${esc(lens.note)} <span class="dim">${esc(span)}</span>`
+      : (/gainers|losers/.test(tokFilters.lens) ? `<span class="dim">${esc(span)}</span>` : '');
+    lensNote.hidden = !lensNote.innerHTML;
+  }
 
   const tokHidden = tokRows.length - rows.length;
   $('#tokCount').innerHTML = capNote(rows.length, cap('tokens'), 'tokens')
@@ -1200,7 +1239,11 @@ function renderTokens() {
         <span class="sub">${esc(t.contract)}</span>${trustChip(t.id)}</td>
       <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
       <td class="r num">${usd(t.tvl)}</td>
+      <td class="r num ${t.change24 == null ? 'dim' : t.change24 >= 0 ? 'pos' : 'neg'}" title="${t.change24 == null
+        ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was $${t.priceWas < 0.01 ? t.priceWas.toPrecision(3) : t.priceWas.toFixed(4)}`}">${
+        t.change24 == null ? '—' : (t.change24 >= 0 ? '+' : '') + t.change24.toFixed(1) + '%'}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
+      ${tokFilters.lens === 'trending' ? `<td class="r num" title="${usd(t.vol24)} today against ${usd((t.vol7d || 0) / 7)} a day over the week">${t.heat.toFixed(1)}&times;</td>` : ''}
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num ${t.taxBps > 0 ? 'neg' : 'dim'}" title="${t.taxBps > 0
         ? `Every transfer of ${esc(t.symbol)} costs ${(t.taxBps / 100).toFixed(2)}%${t.burnBps > 0 ? `, of which ${(t.burnBps / 100).toFixed(2)}% is burned` : ''}. A route through it pays this at each hop.`
@@ -1215,7 +1258,7 @@ function renderTokens() {
       })()}</td>
       <td class="r num dim">${t.pools}</td>
       <td class="r num dim">${age(t.bornAt)}</td>
-    </tr>`).join('') || '<tr><td colspan="9" class="empty">No tokens match.</td></tr>';
+    </tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No tokens match.</td></tr>`;
   fillMarks($('#tokTable tbody'));
   fillStars($('#tokTable tbody'));
   $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
@@ -1631,7 +1674,7 @@ async function renderWalletResources(account) {
     $('#pwSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const tx = await wallet.transact(built.actions);
+        const tx = await wallet.transact(built.actions, { verify: true });
         box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Powered up.</b> CPU and NET should be available within a block.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { box.innerHTML = txError(e); }
@@ -1652,7 +1695,7 @@ async function renderWalletResources(account) {
     $('#unSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const tx = await wallet.transact(built.actions);
+        const tx = await wallet.transact(built.actions, { verify: true });
         box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Unstaked.</b> ${qty(built.total)} WAX is in the refund queue for three days.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { box.innerHTML = txError(e); }
@@ -1742,7 +1785,11 @@ async function renderWalletResources(account) {
 // is not an error worth alarming anyone about.
 const txError = e => {
   const m = String(e?.message || e);
-  return `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+  if (/cancel|reject|declin/i.test(m)) return '<div class="err">You declined the signature — nothing happened.</div>';
+  if (e?.simulated) return `<div class="err"><b>Stopped before sending.</b> A node ran this and it would have failed:
+    <br><span class="mono" style="font-size:11.5px">${esc(m)}</span>
+    <br><span class="sub">Nothing was broadcast, so it cost you no CPU or NET.</span></div>`;
+  return `<div class="err">${esc(m)}</div>`;
 };
 
 // ---- staked WAX ------------------------------------------------------------
@@ -1874,7 +1921,7 @@ async function renderWalletFarms(account) {
     if (!farms.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected.</div>'; return; }
     box.innerHTML = `<div class="loading" style="margin-top:10px"><span class="spinner"></span><span>Waiting for your wallet — claiming ${farms.length} farm${farms.length === 1 ? '' : 's'}…</span></div>`;
     try {
-      const r = await wallet.transact(buildWaxdaoClaims({ account, farms }));
+      const r = await wallet.transact(buildWaxdaoClaims({ account, farms }), { verify: true });
       box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft);margin-top:10px"><b>Claimed.</b> ${farms.length} farm${farms.length === 1 ? '' : 's'} paid out to your wallet.
         <br><span class="mono" style="font-size:11px">${r.id.slice(0, 16)}…</span></div>`;
     } catch (e) {
@@ -2055,7 +2102,7 @@ function wireJoinFarm(root, account) {
       if (wallet.account() !== account) { alert(`Connected as ${wallet.account()}, but this position belongs to ${account}.`); return; }
       btn.disabled = true; btn.textContent = 'Waiting for your wallet…';
       try {
-        const tx = await wallet.transact(buildRestake({ position: { posId: btn.dataset.joinfarm }, incentiveIds: ids, me: account }).actions);
+        const tx = await wallet.transact(buildRestake({ position: { posId: btn.dataset.joinfarm }, incentiveIds: ids, me: account }).actions, { verify: true });
         box.className = 'pc-farm done';
         box.innerHTML = `<div><b>Staked into ${ids.length} farm${ids.length === 1 ? '' : 's'}.</b>
           <span class="sub">Rewards accrue from this block. <a class="mono" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></span></div>`;
@@ -2360,16 +2407,19 @@ async function showCompound(btn, pos) {
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
 
-  let harvest, plan;
+  let harvest;
   try {
     harvest = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
-    plan = planCompound({
-      pool: pos.pool, position: pos, basket: harvest.basket,
-      feeBps,
-      sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64),
-    });
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
 
+  paintPlan();
+
+  function paintPlan() {
+  const plan = planCompound({
+    pool: pos.pool, position: pos, basket: harvest.basket,
+    feeBps, noSwap,
+    sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64),
+  });
   const b = plan;
   // Three nested cards and a four-tile stat grid, dropped inside a card that is
   // itself half of a two-column grid. Every box drew its own border and nothing
@@ -2401,18 +2451,31 @@ async function showCompound(btn, pos) {
       <div class="planhead">
         <span class="from">${usd(b.grossUsd)}</span>
         <span class="arrow">&rarr;</span>
-        <span class="to">${usd(b.netUsd)}</span>
-        <span class="note">back into the band${b.feeUsd > 0 ? ` &middot; ${usd(b.feeUsd)} fee` : ''} &middot; ${b.swaps.length ? 3 : 2} signatures</span>
+        <span class="to">${usd(b.depositUsd)}</span>
+        <span class="note">back into the band${b.feeUsd > 0 && b.depositUsd > 0 ? ` &middot; ${usd(b.depositUsd * (feeBps / 10000))} fee` : ''} &middot; ${b.swaps.length ? 3 : 2} signatures</span>
       </div>
 
       <div class="prows">${rewardRows}</div>
 
+      <label class="swapsw">
+        <input type="checkbox" id="wnoswap-${pos.posId}"${noSwap ? ' checked' : ''}>
+        <span><b>Don't sell anything</b>
+          <span class="sub">Put back only the balanced pair the harvest already contains. Whatever is left over stays in your wallet instead of being swapped into the other side.</span></span>
+      </label>
+
       <div class="planline">
         <span class="k">Convert</span>
-        <span>${b.swaps.length
-          ? b.swaps.map(x => `<b>${esc(x.from)}</b>&nbsp;&rarr;&nbsp;<b>${esc(x.to)}</b> <span class="dim">${usd(x.usd)}</span>`).join(', ')
-          : '<span class="dim">nothing &mdash; the harvest already matches the band</span>'}</span>
+        <span>${b.noSwap
+          ? '<span class="dim">nothing &mdash; selling is off</span>'
+          : b.swaps.length
+            ? b.swaps.map(x => `<b>${esc(x.from)}</b>&nbsp;&rarr;&nbsp;<b>${esc(x.to)}</b> <span class="dim">${usd(x.usd)}</span>`).join(', ')
+            : '<span class="dim">nothing &mdash; the harvest already matches the band</span>'}</span>
       </div>
+      ${b.leftoverUsd > 0 ? `<div class="planline">
+        <span class="k">Stays put</span>
+        <span>${b.leftover.filter(l => l.usd > 0).map(l => `<b>${esc(l.symbol)}</b> <span class="dim">${usd(l.usd)}</span>`).join(', ')}
+          <span class="dim">&mdash; in your wallet, unsold</span></span>
+      </div>` : ''}
       <div class="planline">
         <span class="k">Lands at</span>
         <span>${(b.finalA / (b.finalA + b.finalB) * 100 || 0).toFixed(1)} / ${(b.finalB / (b.finalA + b.finalB) * 100 || 0).toFixed(1)}
@@ -2426,6 +2489,12 @@ async function showCompound(btn, pos) {
       <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
       <div class="runbox" id="wbox-${pos.posId}"></div>
     </div>`;
+
+  // Switching it re-plans: the deposit, the swaps, the signature count and the
+  // fee all change, and showing the old numbers under a new setting is worse
+  // than not offering the setting.
+  const sw = box.querySelector(`#wnoswap-${pos.posId}`);
+  if (sw) sw.onchange = () => { noSwap = sw.checked; saveNoSwap(noSwap); paintPlan(); };
 
   // This panel used to end at "the transaction your wallet would sign" and stop
   // there, so the only way to actually compound was to leave the page.
@@ -2442,17 +2511,16 @@ async function showCompound(btn, pos) {
     const runbox = box.querySelector(`#wbox-${pos.posId}`);
     if (!claimBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to skip.</div>'; return; }
     if (!planBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Nothing set to compound &mdash; set at least one reward to compound.</div>'; return; }
-    const entry = (claimBasket.length === harvest.basket.length && planBasket.length === harvest.basket.length)
-      ? { pos, harvest, plan }
-      : {
-        pos,
-        harvest: { ...harvest, basket: claimBasket },
-        plan: planCompound({ pool: pos.pool, position: pos, basket: planBasket, feeBps, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }),
-      };
+    const entry = {
+      pos,
+      harvest: { ...harvest, basket: claimBasket },
+      plan: planCompound({ pool: pos.pool, position: pos, basket: planBasket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }),
+    };
     go.disabled = true;
     await runOne(runbox, entry, feeBps, feeAccount);
     go.disabled = false;
   };
+  }
 }
 
 // ---------------------------------------------------------- WALLET LINK -----
@@ -2515,6 +2583,13 @@ function wireConnect() {
 // reload in that window used to lose the thread entirely. The step that has
 // been reached is written down, so an interrupted compound can be finished
 // rather than quietly abandoned.
+// Whether compounding is allowed to sell. Remembered, because someone who does
+// not want to be selling their own farm token this week does not want to be
+// asked again on every position.
+const NOSWAP_KEY = 'wt.compound.noswap';
+let noSwap = (() => { try { return localStorage.getItem(NOSWAP_KEY) === '1'; } catch { return false; } })();
+const saveNoSwap = v => { try { localStorage.setItem(NOSWAP_KEY, v ? '1' : '0'); } catch {} };
+
 const RESUME_KEY = 'wt.compound.pending';
 const loadResume = () => { try { return JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; } };
 const saveResume = v => { try { v ? localStorage.setItem(RESUME_KEY, JSON.stringify(v)) : localStorage.removeItem(RESUME_KEY); } catch {} };
@@ -2563,7 +2638,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null) {
       if (!actions.length) throw new Error('Nothing claimable to harvest.');
       await press(0, 'Sign 1 of 3 — claim', 'Your wallet will ask you to collect the fees and rewards. Nothing is swapped or spent.');
       render(0, 'Waiting for your wallet…');
-      const r1 = await wallet.transact(actions);
+      const r1 = await wallet.transact(actions, { verify: true });
       r1id = r1.id;
       // From here the harvest is loose in the wallet. If anything interrupts
       // this, it has to be finishable.
@@ -2582,7 +2657,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null) {
     if (sw.actions.length) {
       await press(1, 'Sign 2 of 3 — convert', `Convert ${sw.swaps.filter(x => !x.skipped).map(x => `${x.from}→${x.to}`).join(', ')} — only what you just claimed.`);
       render(1, 'Waiting for your wallet…');
-      await wallet.transact(sw.actions);
+      await wallet.transact(sw.actions, { verify: true });
       await new Promise(r => setTimeout(r, 2500));
     } else {
       steps[1].skipped = 'Nothing to convert — the harvest already arrived in the two tokens this position holds.';
@@ -2590,17 +2665,20 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null) {
 
     // ---- 3. redeposit ---------------------------------------------------
     render(2, 'Sizing the deposit from what actually landed…');
-    // What the plan said the harvest is worth, in token terms — the cap the
-    // redeposit checks itself against.
+    // What the plan intends to put back, in token terms — the cap the redeposit
+    // checks itself against. It comes from the plan's own deposit figures, not
+    // from the harvest total: in no-swap mode those differ by whatever is being
+    // deliberately left in the wallet, and sizing against the harvest would put
+    // the leftover back in through the cap.
     const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
     const expected = {
-      a: pxA > 0 ? (plan.netUsd * plan.ratio.shareA) / pxA : 0,
-      b: pxB > 0 ? (plan.netUsd * plan.ratio.shareB) / pxB : 0,
+      a: pxA > 0 ? plan.depositA / pxA : 0,
+      b: pxB > 0 ? plan.depositB / pxB : 0,
     };
-    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected });
+    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected, exact: !!plan.noSwap });
     await press(2, 'Sign 3 of 3 — put it back', `Add ${qty(dep.depA)} ${pos.pool.symA} and ${qty(dep.depB)} ${pos.pool.symB} back into your range.`);
     render(2, 'Waiting for your wallet…');
-    const r2 = await wallet.transact(dep.actions);
+    const r2 = await wallet.transact(dep.actions, { verify: true });
     saveResume(null);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
@@ -2616,7 +2694,9 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null) {
     render(0, null, {
       err: declined
         ? (r1id ? 'You declined that signature. What you already claimed is in your wallet — reopen this position to finish putting it back.' : 'You declined the signature — nothing happened.')
-        : `Transaction failed: ${m}`,
+        : e?.simulated
+          ? `Stopped before sending — a node ran this and it would have failed: ${m}. Nothing was broadcast, so it cost you no CPU or NET.`
+          : `Transaction failed: ${m}`,
     });
   }
 }
@@ -2652,6 +2732,20 @@ function wireCompound() {
     renderNewPosition(who);
   };
   $('#compInput').onkeydown = e => { if (e.key === 'Enter') runCompound(e.target.value.trim()); };
+  const ns = $('#compNoSwap');
+  if (ns) {
+    ns.setAttribute('aria-checked', String(noSwap));
+    ns.onclick = () => {
+      noSwap = !noSwap;
+      saveNoSwap(noSwap);
+      ns.setAttribute('aria-checked', String(noSwap));
+      // Every position on the page has to be re-planned: the deposit, the swaps
+      // and the signature count all change. Positions come from Alcor's index
+      // in one call, so this is a few seconds rather than a sweep.
+      const who = $('#compInput').value.trim();
+      if (who) runCompound(who);
+    };
+  }
   $('#compDemo')?.remove();
 }
 
@@ -2684,7 +2778,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
       // Off means claim only; the vote is left exactly as it is, decay and all.
       fallbackProxy: autoVoteOn() ? (CFG?.commercial?.stakeProxy || '') : '',
     });
-    const r1 = await wallet.transact(claim.actions);
+    const r1 = await wallet.transact(claim.actions, { verify: true });
 
     if (claimOnly) {
       box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
@@ -2710,7 +2804,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
     if (!back.actions.length) throw new Error('Nothing left to stake after the claim.');
 
     render(1, 'Waiting for your wallet — staking it back…');
-    const r2 = await wallet.transact(back.actions);
+    const r2 = await wallet.transact(back.actions, { verify: true });
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
       <b>Compounded.</b> Claimed ${qty(claimed)} WAX and staked ${qty(back.staked)} of it back${back.fee > 0 ? `, ${qty(back.fee)} WAX fee` : ''}.
@@ -2848,7 +2942,7 @@ function renderNewPosition(account) {
     $('#npConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const r = await wallet.transact(built.actions);
+        const r = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Opened.</b> Load your positions to see it.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
@@ -2925,7 +3019,7 @@ function renderAddLiquidity(box, pos, account) {
     $('#addConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const r = await wallet.transact(built.actions);
+        const r = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Added.</b> Reload your positions to see the new size.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
@@ -2985,7 +3079,7 @@ function renderRemoveLiquidity(box, pos, account) {
     $('#rmConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const r = await wallet.transact(built.actions);
+        const r = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Withdrawn.</b> ${pct === 100 ? 'The position is closed.' : `${pct}% taken out.`} Reload to refresh.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
@@ -3039,7 +3133,7 @@ async function runCompound(account, resume = null) {
       try {
         const h = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
         pos.farm = farmGap(pos, state.farms, h.incentiveIds || []);
-        return { pos, harvest: h, plan: planCompound({ pool: pos.pool, position: pos, basket: h.basket, feeBps, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }) };
+        return { pos, harvest: h, plan: planCompound({ pool: pos.pool, position: pos, basket: h.basket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }) };
       } catch { return { pos, harvest: { basket: [] }, plan: null }; }
     }));
     plans.push(...chunk);
@@ -3137,6 +3231,14 @@ async function runCompound(account, resume = null) {
   }
   html += '</div>';
 
+  if (noSwap) {
+    html += `<div class="cta" style="margin-top:14px">
+      <div><b>Selling is off.</b> Each position puts back only the balanced pair its harvest already contains
+        &mdash; ${usd(plans.reduce((a, x) => a + (x.plan?.leftoverUsd || 0), 0))} across these positions stays in your wallet instead of being swapped.
+        <span class="sub">It is not lost: it sits there and funds the next compound, when the other side has caught up.</span></div>
+    </div>`;
+  }
+
   html += `<div class="card" style="margin-top:14px"><h3>How this executes</h3>
     <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">Claim, convert, redeposit &mdash; up to three signatures, and convert is skipped when nothing needs converting. Only the harvest is used; no contract holds your funds.</p>
     
@@ -3203,7 +3305,7 @@ async function runCompound(account, resume = null) {
     const run = claimBasket.length === entry.harvest.basket.length && planBasket.length === entry.harvest.basket.length ? entry : {
       pos: entry.pos,
       harvest: { ...entry.harvest, basket: claimBasket },
-      plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket: planBasket, feeBps, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
+      plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket: planBasket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
     };
     b.disabled = true;
     await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), run, feeBps, feeAccount);
@@ -3564,7 +3666,7 @@ async function renderOrderBook(boxId, tokenId, symbol) {
     $('#obSign').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const tx = await wallet.transact(built.actions);
+        const tx = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Placed.</b> It rests until filled or cancelled — your open orders are on My wallet.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { out.innerHTML = txError(e); }

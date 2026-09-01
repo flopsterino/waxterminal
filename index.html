@@ -71,6 +71,15 @@
     <h2 class="vt">Tokens</h2>
     <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell in one go before moving the price 1%. It measures how thick a market is, not whether a project is sound — a good token can be small.</p>
     <div class="stats" id="tokStats"></div>
+    <div class="subtabs" id="tokLens" role="tablist">
+      <button class="chip" data-lens="all" aria-pressed="true">All</button>
+      <button class="chip" data-lens="trending" title="Trading well above its own weekly run rate, not simply trading the most">Trending</button>
+      <button class="chip" data-lens="gainers">Gainers</button>
+      <button class="chip" data-lens="losers">Losers</button>
+      <button class="chip" data-lens="new" title="Ranked by the first pool anyone made for it">New</button>
+      <button class="chip" data-lens="volume">Top volume</button>
+    </div>
+    <p class="vs" id="tokLensNote" hidden style="margin-top:-4px"></p>
     <div class="toolbar">
       <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
       <button class="chip" id="fTokSolid" aria-pressed="true" title="Has a price this terminal will stand behind, and pooled value behind that price">Tradeable only</button>
@@ -158,6 +167,7 @@
       <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="compGo">Load my positions</button>
       <button class="btn" id="newPosGo">Open a new position</button>
+      <button class="chip" id="compNoSwap" role="switch" aria-checked="false" title="Put back only the balanced pair a harvest already contains, instead of selling the long side to buy the short one">Don't sell anything</button>
     </div>
     <div id="newPos"></div>
     <div id="compOut"></div>

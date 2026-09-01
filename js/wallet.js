@@ -80,13 +80,119 @@ export async function disconnect() {
 export const account = () => (session ? String(session.actor) : null);
 
 // One signature, N actions. Returns the transaction id the chain accepted.
-export async function transact(actions, { broadcast = true } = {}) {
-  if (!session) throw new Error('No wallet connected');
-  const result = await session.transact({ actions }, { broadcast });
+// ----------------------------------------------------------- simulation ----
+// Sign, run it against a node WITHOUT broadcasting, and only send it if the
+// node executed it cleanly.
+//
+// `compute_transaction` runs a transaction speculatively and returns the traces
+// it would have produced. It cannot be used before signing — public WAX nodes
+// answer an unsigned transaction with "Missing signatures", tested on greymass,
+// eosusa and waxsweden — but it accepts a signed one: fed a transaction lifted
+// out of a recent block it got all the way to "duplicate transaction", which is
+// the signature check passing.
+//
+// So the order is sign, simulate, broadcast. The signature is not the expensive
+// part; landing a transaction that reverts is. A revert still bills CPU and NET
+// against the account, and on a three-signature compound the one that fails is
+// the last one, after the harvest is already loose in the wallet.
+import { RPC_HOSTS } from './chain.js';
+
+const hex = u8 => [...u8].map(b => b.toString(16).padStart(2, '0')).join('');
+
+// One host, one attempt, and the body is read whatever the status: a 500 here
+// usually carries the assertion message that explains the revert, and throwing
+// it away would leave "it failed" as the entire diagnosis.
+async function rpc(endpoint, body, host) {
+  const res = await fetch(`${host}/v1/chain/${endpoint}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+  });
+  let json = null;
+  try { json = await res.json(); } catch {}
+  return { ok: res.ok, status: res.status, json };
+}
+
+// The readable half of an EOSIO error, which is buried three levels down and
+// is the only part anyone can act on.
+export function chainError(json) {
+  const d = json?.error?.details;
+  if (Array.isArray(d) && d.length) {
+    // The first detail is the outermost frame; the last is usually the actual
+    // assertion that fired.
+    const msg = d.find(x => /assertion failure|required|insufficient|balance|overdrawn/i.test(x.message || ''))?.message
+      || d[d.length - 1]?.message || d[0]?.message;
+    return String(msg).replace(/^assertion failure with message:\s*/i, '');
+  }
+  return json?.error?.what || json?.message || null;
+}
+
+function packed(result) {
+  const ser = result.resolved?.serializedTransaction ?? result.resolved?.transaction?.serialized;
+  if (!ser) return null;
   return {
-    id: String(result.resolved?.transaction?.id ?? result.response?.transaction_id ?? ''),
-    result,
+    signatures: (result.signatures || []).map(String),
+    compression: 0,
+    packed_context_free_data: '',
+    packed_trx: hex(ser),
   };
+}
+
+export async function transact(actions, { broadcast = true, verify = false } = {}) {
+  if (!session) throw new Error('No wallet connected');
+
+  if (!verify || !broadcast) {
+    const result = await session.transact({ actions }, { broadcast });
+    return {
+      id: String(result.resolved?.transaction?.id ?? result.response?.transaction_id ?? ''),
+      result,
+    };
+  }
+
+  const result = await session.transact({ actions }, { broadcast: false });
+  const tx = packed(result);
+  const id = String(result.resolved?.transaction?.id ?? '');
+  // If the signed bytes cannot be recovered there is nothing to simulate, and
+  // refusing to send at all would be worse than sending unverified.
+  if (!tx) {
+    const r = await session.transact({ actions });
+    return { id: String(r.resolved?.transaction?.id ?? r.response?.transaction_id ?? ''), result: r, verified: false };
+  }
+
+  let simulated = null;
+  for (const host of RPC_HOSTS.slice(0, 3)) {
+    let r;
+    try { r = await rpc('compute_transaction', { transaction: tx }, host); }
+    catch { continue; }                       // host unreachable: try the next
+    if (r.ok) { simulated = r.json; break; }
+    // A duplicate means this exact transaction is already on chain, which is a
+    // success and not a reason to refuse.
+    const msg = chainError(r.json) || '';
+    if (/duplicate transaction/i.test(msg)) { simulated = null; break; }
+    // Anything the node calls a client error is the transaction's fault, and
+    // sending it would burn the account's CPU and NET to reach the same answer.
+    if (r.status >= 400 && r.json?.error) {
+      const e = new Error(msg || `Simulation failed (${r.status})`);
+      e.simulated = true;
+      throw e;
+    }
+  }
+
+  const sent = await rpcAny('push_transaction', tx);
+  return { id: String(sent.transaction_id || id), result, simulated, verified: true };
+}
+
+// Broadcast, walking the host list on network failure only.
+async function rpcAny(endpoint, body) {
+  let last = null;
+  for (const host of RPC_HOSTS) {
+    let r;
+    try { r = await rpc(endpoint, body, host); } catch (e) { last = e; continue; }
+    if (r.ok) return r.json;
+    const msg = chainError(r.json) || `HTTP ${r.status}`;
+    if (/duplicate transaction/i.test(msg)) return r.json || {};
+    throw new Error(msg);
+  }
+  throw last || new Error(`${endpoint}: no host answered`);
 }
 
 export const authorization = () => [{ actor: account(), permission: String(session.permission) }];

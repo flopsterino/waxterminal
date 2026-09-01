@@ -82,7 +82,17 @@ await new Promise(r => setTimeout(r, seconds * 1000));
 // Panels that only exist after a click cannot be checked from a first paint.
 // Any number of --click=<selector> arguments are dispatched in order, each
 // followed by a settle, so a plan panel or a sub-tab can be opened and read.
-for (const arg of process.argv.slice(3).filter(a => a.startsWith('--click='))) {
+for (const arg of process.argv.slice(3).filter(a => /^--(click|toggle)=/.test(a))) {
+  if (arg.startsWith('--toggle=')) {
+    const sel = arg.slice('--toggle='.length);
+    const el = document.querySelector(sel);
+    if (!el) { console.error(`[toggle] no match for ${sel}`); continue; }
+    el.checked = !el.checked;
+    el.dispatchEvent(new window.Event('change', { bubbles: true }));
+    if (typeof el.onchange === 'function') await el.onchange(new window.Event('change'));
+    await new Promise(r => setTimeout(r, 3000));
+    continue;
+  }
   const sel = arg.slice('--click='.length);
   const el = document.querySelector(sel);
   if (!el) { console.error(`[click] no match for ${sel}`); continue; }

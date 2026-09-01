@@ -317,8 +317,21 @@ const farmRows = state.farms.filter(f => !f.ended).map(f => ({
   sr: round(f.stakedReal, 2), rr: round(f.rewardRealDay, 6), ar: round(f.aprReal, 3), so: f.rewardSolid ? 1 : 0,
 }));
 
+// The previous run's prices, read out of the file this one is about to replace.
+// That makes a 24h change exact rather than reconstructed, and costs no calls.
+let prev = null, prevAt = null;
+try {
+  const old = JSON.parse(await readFile(new URL('pools.json', OUT), 'utf8'));
+  if (old?.prices?.length && old.at) {
+    prev = old.prices.map(r => [r[0], r[1]]);
+    prevAt = old.at;
+  }
+} catch { /* first run has nothing to compare against */ }
+console.log(prev ? `previous prices: ${prev.length} from ${new Date(prevAt).toISOString()}` : 'no previous snapshot to compare against');
+
 await writeFile(new URL('pools.json', OUT), JSON.stringify({
   at: Date.now(),
+  prevAt, prevPrices: prev,
   waxUsd: round(state.waxUsd, 10),
   counts: {
     alcor: state.pools.filter(p => p.dex === 'alcor').length,

@@ -169,7 +169,7 @@ function venueTaxOf(tokenId) {
   return state.depth?.get(tokenId)?.venueTaxBps ?? 0;
 }
 
-export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = '', before, expected = null, me = account(), auth = null }) {
+export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = '', before, expected = null, exact = false, me = account(), auth = null }) {
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 
@@ -193,12 +193,22 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
   // delta becomes the whole wallet and this would sweep it into the pool. So the
   // deposit is also capped against what the plan said the harvest was worth.
   // Anything far past that is a measurement error, not a windfall.
+  //
+  // The 3x slack is for the ordinary path, where the plan and the harvest are
+  // meant to be the same thing and the gap is only measurement error. With
+  // selling switched off they are deliberately different — the plan deposits a
+  // fraction of what is in the wallet — so 3x stops being tolerance and starts
+  // being a leak: it would sweep three times the intended amount, and addliquid
+  // parks whatever the band cannot use inside swap.alcor rather than handing it
+  // back, which is worse than leaving it in the wallet where the holder wanted
+  // it. So an exact plan gets an exact cap.
   if (expected) {
-    const capA = expected.a * 3, capB = expected.b * 3;
+    const slack = exact ? 1.02 : 3;
+    const capA = expected.a * slack, capB = expected.b * slack;
     if (capA > 0 && balA > capA) balA = capA;
     if (capB > 0 && balB > capB) balB = capB;
     if ((capA > 0 && balA >= capA) || (capB > 0 && balB >= capB)) {
-      console.warn('[compound] harvest delta exceeded the plan by 3x; capped', { balA, balB, expected });
+      console.warn(`[compound] harvest delta exceeded the plan by ${slack}x; capped`, { balA, balB, expected });
     }
   }
 

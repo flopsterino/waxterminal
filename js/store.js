@@ -65,7 +65,7 @@ export async function clearCache() {
 }
 
 // ------------------------------------------------------------------ load ----
-export const state = { pools: [], farms: [], prices: new Map(), tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), snapshotPools: new Map(), counts: null, facing: new Map(), volumeAt: null };
+export const state = { pools: [], farms: [], prices: new Map(), prevPrices: new Map(), prevAt: null, tokens: new Map(), loadedAt: 0, waxUsd: null, stale: false, hosts: [], shardsFailed: 0, fromSnapshot: false, depth: new Map(), solidTokens: new Set(), snapshotFarms: new Map(), snapshotPools: new Map(), counts: null, facing: new Map(), volumeAt: null };
 
 function normaliseAlcor(rows, tokens) {
   const out = [];
@@ -377,6 +377,10 @@ async function loadSnapshot() {
     state.depth.set(id, { exit, ratio, solid: !!solid, nominal, realisable: nominal * ratio, taxBps, burnBps, venueTaxBps });
     if (solid) state.solidTokens.add(id);
   }
+  // Yesterday's prices, so a 24h change is a subtraction rather than a guess.
+  state.prevPrices = new Map((d.prevPrices || []).map(([id, usd]) => [id, usd]));
+  state.prevAt = d.prevAt ?? null;
+
   state.farms = (d.farms || []).map(f => ({
     dex: f.d, id: f.i, poolDex: f.pd, poolId: f.pi, pool: byId.get(`${f.pd}:${f.pi}`),
     rewardToken: f.rt, rewardSymbol: f.rs, rewardPerDay: f.rp, rewardUsdDay: f.ru,
@@ -1282,7 +1286,7 @@ export function tokenTable() {
       r = {
         id, symbol: t.symbol, contract: t.contract,
         price: state.prices.get(id)?.usd ?? null,
-        tvl: 0, tvlNominal: 0, vol24: 0, pools: 0, venues: new Set(),
+        tvl: 0, tvlNominal: 0, vol24: 0, vol7d: 0, pools: 0, venues: new Set(),
         exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0, depth1: 0, bornAt: null,
         taxBps: d?.taxBps ?? 0, burnBps: d?.burnBps ?? 0, venueTaxBps: d?.venueTaxBps ?? 0,
       };
@@ -1303,6 +1307,7 @@ export function tokenTable() {
       // credited in full. That is the convention every DEX tracker uses, and it
       // means token volumes deliberately do not sum to venue volume.
       r.vol24 += p.vol24 || 0;
+      r.vol7d += p.vol7d || 0;
       // Depth adds across pools — you can split an order — but only up to what
       // can actually leave. Summing 57 buzzingarden pools gave LADYZ $13,324 of
       // "depth" against a $6,220 exit, because moving it 1% in one pool moves it
@@ -1317,6 +1322,20 @@ export function tokenTable() {
   for (const r of rows.values()) {
     const d = state.depth.get(r.id);
     if (d && !d.anchored && isFinite(d.exit)) r.depth1 = Math.min(r.depth1, d.exit);
+
+    // 24h change, from the price this token had in the previous snapshot. A
+    // token that was not priced then has no change — which is not the same as
+    // zero, and must not be sorted as though it were.
+    const was = state.prevPrices.get(r.id);
+    r.change24 = (was > 0 && r.price > 0) ? (r.price / was - 1) * 100 : null;
+    r.priceWas = was ?? null;
+
+    // Trending is not "traded the most" — that is the same eight tokens every
+    // day. It is trading unusually MUCH FOR ITSELF: today against its own
+    // weekly run rate. A token needs a real day behind it to qualify, or every
+    // token whose first-ever trade happened today scores infinity.
+    const weekly = r.vol7d > 0 ? r.vol7d / 7 : 0;
+    r.heat = (weekly > 0 && r.vol24 >= 50) ? r.vol24 / weekly : null;
   }
   return [...rows.values()];
 }

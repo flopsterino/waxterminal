@@ -105,7 +105,19 @@ export async function harvestFor(position, pool, { prices, tokens }) {
 // never swapped, because swapping them would pay fees to arrive where they are.
 // Whatever is foreign is then split across the two sides in proportion to what
 // each side is still short, which usually removes the need for a final trim.
-export function planCompound({ pool, position, basket, feeBps = 0, sqrtP }) {
+// `noSwap` compounds only what already fits.
+//
+// The default plan converts the whole basket into the band's ratio, and on a
+// lopsided harvest that means selling most of one reward to buy the other: a
+// $5 CHEESE / $2 WAXWBTC claim into a 50/50 band sells $1.50 of CHEESE. Every
+// compounding holder doing that on the same schedule is real, self-inflicted
+// selling pressure on the token they are farming.
+//
+// So there is a second, quieter shape: put back the largest balanced pair the
+// harvest already contains, and leave the remainder in the wallet. Nothing is
+// sold, nothing is lost — the leftover is simply not deposited, and it funds
+// the next compound.
+export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap = false }) {
   const ratio = depositRatio(sqrtP, position.tickLower, position.tickUpper);
 
   const priced = basket.filter(b => b.priced && b.usd > 0);
@@ -139,6 +151,48 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP }) {
   const swaps = [];
   let needA = targetA - haveA, needB = targetB - haveB;
 
+  // ---- the quiet path: deposit what already fits, sell nothing -------------
+  if (noSwap) {
+    // The band wants shareA:shareB. Without a swap the deposit is capped by
+    // whichever side is proportionally shorter — a side the band does not want
+    // at all (share 0) cannot be the constraint, so it is skipped rather than
+    // dividing by zero.
+    const capA = ratio.shareA > 0 ? haveA / ratio.shareA : Infinity;
+    const capB = ratio.shareB > 0 ? haveB / ratio.shareB : Infinity;
+    const total = Math.min(capA, capB);
+    const depA = isFinite(total) ? total * ratio.shareA : 0;
+    const depB = isFinite(total) ? total * ratio.shareB : 0;
+    // Everything not deposited stays where it is: the unswapped side, and every
+    // foreign reward, which without a swap can never become a pool token.
+    const left = [];
+    if (haveA - depA > DUST_USD) left.push({ symbol: pool.symA, tokenId: pool.tokenA, usd: haveA - depA });
+    if (haveB - depB > DUST_USD) left.push({ symbol: pool.symB, tokenId: pool.tokenB, usd: haveB - depB });
+    for (const f of foreign) left.push({ symbol: f.symbol, tokenId: f.tokenId, usd: f.usd, foreign: true });
+    const depositUsd = depA + depB;
+
+    const actions = [
+      ...(basket.some(b => b.source === 'fees') ? [{ name: 'collect', contract: ALCOR, note: `uncollected ${pool.symA}/${pool.symB} fees` }] : []),
+      ...[...new Set(basket.filter(b => b.incentiveId).map(b => b.incentiveId))].map(id => ({ name: 'getreward', contract: ALCOR, note: `incentive #${id}` })),
+      ...(depositUsd > 0 ? [{ name: 'addliquid', contract: ALCOR, note: `back into ticks ${position.tickLower}…${position.tickUpper}` }] : []),
+      ...(depositUsd > 0 && feeBps > 0 ? [{ name: 'transfer', contract: 'fee', note: `${(feeBps / 100).toFixed(2)}% service fee` }] : []),
+    ];
+
+    return {
+      noSwap: true, ratio, grossUsd, feeUsd, netUsd,
+      targetA: depA, targetB: depB, finalA: depA, finalB: depB,
+      depositA: depA, depositB: depB, depositUsd,
+      leftover: left, leftoverUsd: left.reduce((s, x) => s + x.usd, 0),
+      swaps: [], alreadyRight: priced.filter(b => isA(b) || isB(b)), unpriced, foreign,
+      actions,
+      needsSplit: actions.length > 14,
+      viable: ratio.inRange && depositUsd > 0.05,
+      reason: !ratio.inRange ? 'Position is out of range — compounding into a band the price has left just parks more capital idle.'
+        : depositUsd <= 0.05
+          ? `Without swapping there is no balanced pair to put back — this harvest is ${haveA > haveB ? pool.symA : pool.symB} on one side only. Turn swapping on, or let it build up.`
+          : null,
+    };
+  }
+
   // Foreign assets first, largest first so the big decisions are made while both
   // deficits are still meaningful.
   for (const f of foreign.sort((x, y) => y.usd - x.usd)) {
@@ -167,8 +221,13 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP }) {
   ];
 
   return {
-    ratio, grossUsd, feeUsd, netUsd,
+    noSwap: false, ratio, grossUsd, feeUsd, netUsd,
     targetA, targetB, finalA: haveA, finalB: haveB,
+    // What the redeposit is sized against. Named explicitly rather than
+    // recomputed from netUsd at the call site, so the two modes cannot drift.
+    depositA: haveA, depositB: haveB, depositUsd: haveA + haveB,
+    leftover: unpriced.map(b => ({ symbol: b.symbol, tokenId: b.tokenId, usd: 0, unpriced: true })),
+    leftoverUsd: 0,
     swaps, alreadyRight, unpriced, foreign,
     actions,
     // WAX transactions are bounded by CPU/NET, not just action count; past this
