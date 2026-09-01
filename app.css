@@ -128,7 +128,7 @@ td.r, th.r { text-align: right; }
 /* The signature element: a position's tick band with the market price on it. */
 .rangebar { position: relative; height: 22px; min-width: 150px; background: var(--surface-2);
   border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
-.rangebar .band { position: absolute; top: 0; bottom: 0; background: var(--accent-soft); border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+.rangebar .band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--c3) 16%, transparent); border-left: 2px solid var(--c3); border-right: 2px solid var(--c3); }
 .rangebar .band.out { background: var(--surface-3); border-color: var(--line-2); }
 .rangebar .px { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); }
 .rangebar .px.out { background: var(--bad); }
@@ -165,8 +165,8 @@ td.r, th.r { text-align: right; }
   white-space: nowrap; }
 .pill.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); background: var(--good-soft); }
 .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: var(--bad-soft); }
-.pill.warn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
-.pill.accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.pill.warn { color: var(--c4); border-color: color-mix(in srgb, var(--c4) 45%, transparent); background: transparent; }
+.pill.accent { color: var(--ink-2); border-color: var(--line-2); background: var(--surface-2); }
 
 /* The pair's composition. One bar, because 52/48 is a shape. */
 .pc-split { display: flex; height: 7px; border-radius: 999px; overflow: hidden; background: var(--line); }
@@ -757,14 +757,24 @@ body { overflow-x: hidden; }
 
 /* Two named modes rather than a checkbox: the choice decides where the money
    lands, so both outcomes are spelled out and neither is the small print. */
+.modeblock { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 11px; background: var(--surface-2); }
+.modeblock > .lbl { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); margin-bottom: 7px; }
 .modesel { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.modesel .mode { text-align: left; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r);
-  background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; display: block; }
+/* A tinted box does not read as "pick one" — a radio does. The dot is the only
+   accent here; the selected card is a raised neutral surface, so the eye finds
+   the choice without the whole panel turning yellow. */
+.modesel .mode { text-align: left; padding: 9px 11px 9px 30px; position: relative;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  color: var(--ink); cursor: pointer; font: inherit; display: block; }
+.modesel .mode::before { content: ''; position: absolute; left: 10px; top: 11px;
+  width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--line-2); background: var(--ground); }
+.modesel .mode.on::before { border-color: var(--accent); background: var(--accent);
+  box-shadow: inset 0 0 0 2.5px var(--surface); }
 .modesel .mode b { display: block; font-size: 12.5px; margin-bottom: 2px; }
 .modesel .mode span { display: block; font-size: 11px; color: var(--muted); line-height: 1.45; }
 .modesel .mode:hover { border-color: var(--line-2); }
-.modesel .mode.on { border-color: var(--accent); background: var(--accent-soft); }
-.modesel .mode.on b { color: var(--accent-ink, var(--ink)); }
+.modesel .mode.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 @media (max-width: 560px) { .modesel { grid-template-columns: 1fr; } }
 
 /* Where the harvest actually lands, in the amounts the holder is looking for.
@@ -775,7 +785,11 @@ body { overflow-x: hidden; }
 .dest .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
 .dest .amt { font-family: var(--font-data); font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
 .dest .det { font-family: var(--font-data); font-size: 11px; color: var(--muted); line-height: 1.4; }
-.dest.in { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+/* Informational, not an action: a neutral raised surface. The pool box is
+   marked by a rule down its edge rather than a fill, so the two destinations
+   read as a pair instead of one shouting. */
+.dest.in { border-left: 3px solid var(--c3); background: var(--surface-2); }
+.dest.out { border-left: 3px solid var(--line-2); background: var(--surface-2); }
 .dest.out.empty .amt, .dest.out.empty .det { color: var(--muted); font-weight: 400; }
 @media (max-width: 560px) { .dests { grid-template-columns: 1fr; } }
 
@@ -785,3 +799,21 @@ body { overflow-x: hidden; }
 .modechips .chip:first-child { border-radius: var(--r) 0 0 var(--r); }
 .modechips .chip:last-child { border-radius: 0 var(--r) var(--r) 0; margin-left: -1px; }
 .modechips .chip[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; z-index: 1; }
+
+/* ------------------------------------------------- fees vs farm rewards --- */
+/* Two kinds of income that behave differently: a fee accrues from trades
+   crossing your band whether or not you did anything, a farm reward is paid by
+   an incentive you had to stake into. They were the same grey footnote. One
+   colour each, used identically everywhere they appear. */
+.src { display: inline-block; font-size: 10px; font-weight: 650; letter-spacing: .02em;
+  padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+.src.fee  { color: var(--c1); background: color-mix(in srgb, var(--c1) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c1) 35%, transparent); }
+.src.farm { color: var(--c3); background: color-mix(in srgb, var(--c3) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c3) 35%, transparent); }
+.srcstat { border-left: 3px solid var(--line-2); padding-left: 10px; }
+.srcstat.fee  { border-left-color: var(--c1); }
+.srcstat.farm { border-left-color: var(--c3); }
+
+/* A fact about the position, not a refusal. */
+.note.warn { border-left: 3px solid var(--c4); background: var(--surface-2); }

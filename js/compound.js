@@ -190,11 +190,10 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
       swaps: [], alreadyRight: priced.filter(b => isA(b) || isB(b)), unpriced, foreign,
       actions,
       needsSplit: actions.length > 14,
-      viable: ratio.inRange && depositUsd > 0.05,
-      reason: !ratio.inRange ? 'Position is out of range — compounding into a band the price has left just parks more capital idle.'
-        : depositUsd <= 0.05
-          ? `Without swapping there is no balanced pair to put back — this harvest is ${haveA > haveB ? pool.symA : pool.symB} on one side only. Turn swapping on, or let it build up.`
-          : null,
+      viable: depositUsd > 0,
+      warn: !ratio.inRange ? 'Out of range — the price has left this band, so what you add earns nothing until it comes back.' : null,
+      reason: depositUsd > 0 ? null
+        : `Without swapping there is no balanced pair to put back — this harvest is ${haveA > haveB ? pool.symA : pool.symB} on one side only. Switch to "with swapping", or let it build up.`,
     };
   }
 
@@ -238,9 +237,9 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
     // WAX transactions are bounded by CPU/NET, not just action count; past this
     // the builder should split rather than let it fail on chain.
     needsSplit: actions.length > 14,
-    viable: ratio.inRange && netUsd > 0.05,
-    reason: !ratio.inRange ? 'Position is out of range — compounding into a band the price has left just parks more capital idle.'
-      : netUsd <= 0.05 ? 'Nothing meaningful to harvest yet.' : null,
+    viable: netUsd > 0,
+    warn: !ratio.inRange ? 'Out of range — the price has left this band, so what you add earns nothing until it comes back.' : null,
+    reason: netUsd > 0 ? null : 'Nothing has accrued yet — there is nothing to claim.',
   };
 }
 

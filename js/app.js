@@ -1868,8 +1868,8 @@ async function renderEarned(account) {
   out.innerHTML = `
     <div class="stats">
       <div class="stat"><span class="v">${usdExact(s.usd)}</span><span class="k">collected all time</span><span class="sub">${s.claims.toLocaleString()} payouts over ${span} days</span></div>
-      <div class="stat"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span><span class="sub">Alcor incentives</span></div>
-      <div class="stat"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span><span class="sub">collected from your ranges</span></div>
+      <div class="stat srcstat farm"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span><span class="sub">paid by incentives you staked into</span></div>
+      <div class="stat srcstat fee"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span><span class="sub">paid by trades through your ranges</span></div>
       ${kind('waxdao') + kind('pepperstake') > 0 ? `<div class="stat"><span class="v">${usdExact(kind('waxdao') + kind('pepperstake'))}</span><span class="k">WaxDAO &amp; PepperStake</span></div>` : ''}
       <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">across the whole period, not the last week</span></div>
     </div>
@@ -2507,7 +2507,7 @@ async function showCompound(btn, pos) {
       <span class="s">${esc(x.symbol)}</span>
       <span class="a">${qty(x.amount)}</span>
       <span class="u">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token — it cannot be swapped, so it can only go to your wallet">unpriced</span>'}</span>
-      <span class="w">${esc(x.source === 'fees' ? 'LP fees' : x.source)}${inPool(x) ? '' : ' &middot; not a token in this pool'}</span>
+      <span class="w"><span class="src ${x.source === 'fees' ? 'fee' : 'farm'}">${x.source === 'fees' ? 'LP fee' : 'Farm reward'}</span>${x.source === 'fees' ? '' : ` <span class="dim">${esc(x.source)}</span>`}${inPool(x) ? '' : ' <span class="dim">&middot; not a token in this pool</span>'}</span>
       <select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
         ${x.priced ? opt('compound', '&rarr; into the pool') : ''}
         ${opt('keep', '&rarr; to my wallet')}
@@ -2518,6 +2518,7 @@ async function showCompound(btn, pos) {
   box.innerHTML = `
     <div class="plan">
       ${!b.viable ? `<div class="err">${esc(b.reason)}</div>` : ''}
+      ${b.warn ? `<div class="note warn">${esc(b.warn)}</div>` : ''}
 
       <div class="planhead">
         <span class="from">${usd(b.grossUsd)}</span>
@@ -2528,6 +2529,8 @@ async function showCompound(btn, pos) {
 
       <div class="prows">${rewardRows}</div>
 
+      <div class="modeblock">
+      <span class="lbl">Choose one</span>
       <div class="modesel" role="radiogroup" aria-label="How to compound">
         <button type="button" class="mode${noSwap ? '' : ' on'}" data-mode="swap" data-pos="${pos.posId}" role="radio" aria-checked="${!noSwap}">
           <b>With swapping</b>
@@ -2537,6 +2540,7 @@ async function showCompound(btn, pos) {
           <b>Without swapping</b>
           <span>Puts back only the part that already fits. Nothing is sold &mdash; the rest is claimed straight into your wallet.</span>
         </button>
+      </div>
       </div>
 
       <div class="dests">
@@ -3278,7 +3282,7 @@ async function runCompound(account, resume = null) {
           <option value="compound" selected>&rarr; into the pool</option>
           <option value="keep">&rarr; to my wallet</option>
         </select>
-        <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm')}${inPool(b) ? '' : ' &middot; not in this pool'}</span>
+        <span class="src ${b.source === 'fees' ? 'fee' : 'farm'}">${b.source === 'fees' ? 'LP fee' : 'Farm reward'}</span>${inPool(b) ? '' : ' <span class="sub">not in this pool</span>'}
       </span>`).join(' ');
     html += `<div class="card">
       <div class="ph" style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
