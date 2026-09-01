@@ -2832,7 +2832,6 @@ function wireCompound() {
     const who = $('#compInput').value.trim();
     if (who) runCompound(who);
   });
-  }
   $('#compDemo')?.remove();
 }
 
@@ -3465,8 +3464,20 @@ async function renderLeaders() {
   $('#ldStats').innerHTML = `
     <div class="stat"><span class="v">${(sc.accounts || 0).toLocaleString()}</span><span class="k">liquidity providers</span><span class="sub">across ${(sc.pools || 0).toLocaleString()} pools</span></div>
     <div class="stat"><span class="v">${(sc.positions || 0).toLocaleString()}</span><span class="k">positions read</span><span class="sub">each one's fees rebuilt from chain</span></div>
-    <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts</span></div>
+    <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts${sc.swapsUnvalued ? ` &middot; ${sc.swapsUnvalued.toLocaleString()} more this terminal will not price` : ''}</span></div>
     <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span><span class="sub">rebuilt nightly</span></div>`;
+
+  // Liquidity nobody owns. Positions transferred to the burn account keep
+  // earning fees — the pool cannot tell the difference — and nobody can ever
+  // collect them. It topped the fees board until it was taken off it, which is
+  // a finding rather than a leader.
+  const bn = d.burned;
+  $('#ldBurn').innerHTML = bn && bn.n
+    ? `<b>${usdExact(bn.f)} of fees has accrued to liquidity that was burned.</b>
+       ${bn.n.toLocaleString()} positions worth ${usdExact(bn.v)} sit at <span class="mono">eosio.null</span>, still earning and permanently uncollectable.
+       They are counted in every pool total on this site and left off the boards below, because no account is doing well here.`
+    : '';
+  $('#ldBurn').hidden = !(bn && bn.n);
 
   document.querySelectorAll('#ldTabs [data-board]').forEach(b =>
     b.setAttribute('aria-pressed', String(b.dataset.board === ldBoard)));

@@ -45,6 +45,12 @@ try {
   HIDDEN = new Set(theme?.commercial?.leaderboardHidden || []);
 } catch {}
 
+// Positions sent to the burn account. They still earn fees — the pool cannot
+// tell the difference — and nobody can ever collect them, so they topped the
+// fees board while belonging to no one. Reported as a fact of its own instead
+// of ranked as though an account were doing well.
+const BURN = new Set(['eosio.null', 'nulls.alcor']);
+
 // A few at a time. These are public nodes shared with everything else on this
 // machine, and a nightly job has no reason to be in a hurry.
 async function mapLimit(items, limit, fn) {
@@ -158,7 +164,7 @@ console.log('walking a day of swaps…');
 const since = Date.now() - 24 * 3600e3;
 const traders = new Map();
 const poolById = new Map(state.pools.filter(p => p.dex === 'alcor').map(p => [String(p.id), p]));
-let before = new Date().toISOString(), pages = 0, swaps = 0, volume = 0;
+let before = new Date().toISOString(), pages = 0, swaps = 0, volume = 0, unpriced = 0, unknownPool = 0, oldestSeen = null;
 
 while (pages < 120) {
   let d;
@@ -174,30 +180,37 @@ while (pages < 120) {
     const ts = new Date(a.timestamp.endsWith('Z') ? a.timestamp : a.timestamp + 'Z').getTime();
     if (ts < since) { reachedEnd = true; break; }
     const dat = a.act?.data;
-    const pool = poolById.get(String(dat?.poolId));
-    if (!pool || !dat) continue;
+    if (!dat) continue;
+    const pool = poolById.get(String(dat.poolId));
+    // A pool this terminal does not carry, or one whose sides it will not price,
+    // cannot be valued — and counting the swap at zero would quietly deflate
+    // every trader's total. Counted separately and said out loud instead.
+    if (!pool) { unknownPool++; continue; }
     // Value the leg we can price, preferring the side with a price we trust.
     const A = parseAsset(dat.tokenA || '0 X'), B = parseAsset(dat.tokenB || '0 X');
     const usd = pool.priceUsdA ? Math.abs(A.amount) * pool.priceUsdA
       : pool.priceUsdB ? Math.abs(B.amount) * pool.priceUsdB : 0;
-    if (!(usd > 0)) continue;
+    if (!(usd > 0)) { unpriced++; continue; }
     const who = dat.sender;
     let t = traders.get(who);
     if (!t) { t = { account: who, usd: 0, swaps: 0, pools: new Set() }; traders.set(who, t); }
     t.usd += usd; t.swaps++; t.pools.add(String(pool.id));
     swaps++; volume += usd;
   }
+  oldestSeen = new Date((acts[acts.length - 1].timestamp).replace(/Z?$/, 'Z')).getTime();
   const last = acts[acts.length - 1].timestamp;
   before = last.endsWith('Z') ? last : last + 'Z';
   if (reachedEnd) break;
   if (pages % 20 === 0) console.log(`  ${pages} pages, ${swaps} swaps`);
 }
-console.log(`  ${swaps} swaps, $${Math.round(volume).toLocaleString()} in 24h, ${traders.size} accounts`);
+const valued = swaps / (swaps + unpriced + unknownPool || 1);
+console.log(`  ${swaps} swaps valued, $${Math.round(volume).toLocaleString()} in 24h, ${traders.size} accounts`
+  + ` (${unpriced} unpriceable, ${unknownPool} in pools not carried — ${(valued * 100).toFixed(1)}% of swaps valued)`);
 
 // ------------------------------------------------------------------ output --
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : Math.round(v * 10 ** d) / 10 ** d);
 const publish = (rows, key, map) => rows
-  .filter(r => !HIDDEN.has(r.account))
+  .filter(r => !HIDDEN.has(r.account) && !BURN.has(r.account))
   .sort((a, b) => b[key] - a[key])
   .slice(0, TOP)
   .map(map);
@@ -214,14 +227,21 @@ const farmers = publish([...lp.values()].filter(r => r.stakedUsd > 1), 'stakedUs
 const movers = publish([...traders.values()], 'usd',
   r => ({ a: r.account, v: round(r.usd), n: r.swaps, p: r.pools.size }));
 
+const burned = [...lp.values()].filter(r => BURN.has(r.account))
+  .reduce((a, r) => ({ valueUsd: a.valueUsd + r.valueUsd, feesUsd: a.feesUsd + r.feesUsd, positions: a.positions + r.positions }),
+    { valueUsd: 0, feesUsd: 0, positions: 0 });
+
 await writeFile(new URL('leaders.json', OUT), JSON.stringify({
   at: Date.now(),
+  burned: { v: round(burned.valueUsd), f: round(burned.feesUsd, 2), n: burned.positions },
   scope: {
     pools: pools.length,
     positions: positionsSeen,
     accounts: lp.size,
     traders: traders.size,
     swaps, volumeUsd: round(volume),
+    swapsUnvalued: unpriced + unknownPool,
+    windowHours: round((Date.now() - Math.max(since, oldestSeen || since)) / 3600e3, 1),
     hidden: HIDDEN.size,
   },
   providers, earners, farmers, movers,
