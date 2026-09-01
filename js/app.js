@@ -19,11 +19,11 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
 import { pepperStakes, buildPepperClaim } from './pepperstake.js';
-import { balanceOf } from './chain.js';
+import { balanceOf, getAllRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, promotionMemo, activePromotions } from './promote.js';
-import { sqrtPriceFromX64, depositRatio } from './math.js';
+import { sqrtPriceFromX64, depositRatio, amountsForLiquidity } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
 const nf = (v, d = 2) => (v == null || !isFinite(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -201,12 +201,24 @@ const trxUrl = id => `https://waxblock.io/transaction/${id}`;
 const blockUrl = n => `https://waxblock.io/block/${n}`;
 // Rendered as a span rather than an anchor: the row it sits in is often itself
 // clickable, and a nested <a> steals that click on touch.
-const acctLink = name => `<span class="acct-link" data-acct="${esc(name)}" title="See what ${esc(name)} holds">${esc(name)}</span>`;
+// Three kinds of name, one way to write each. Anywhere a token, a pool or an
+// account is mentioned it can be clicked through to, so the chain runs in every
+// direction: farm to pool to token to holder to that holder's wallet, and back
+// out through the pools they are in.
+const acctLink = name => `<span class="xlink acct-link" data-acct="${esc(name)}" title="See what ${esc(name)} holds">${esc(name)}</span>`;
+const tokLink = (id, label = null) => `<span class="xlink" data-tokid="${esc(id)}" title="Open ${esc(label || String(id).split('@')[0])}">${esc(label || String(id).split('@')[0])}</span>`;
+const poolLink = (dex, id, label) => `<span class="xlink" data-poolkey="${esc(dex)}:${esc(id)}" title="Open this pool">${label}</span>`;
+const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)}`;
 
-// One delegated handler for every account name on the page, however it got
-// there — tables are rewritten constantly and rebinding each time is how a
-// click quietly stops working.
+// One delegated handler for every one of them, however it got on the page —
+// tables are rewritten constantly and rebinding each time is how a click
+// quietly stops working. Most specific first: a token name inside a pool row
+// should open the token, not the pool.
 document.addEventListener('click', e => {
+  const t = e.target.closest?.('[data-tokid]');
+  if (t && t.dataset.tokid) { e.stopPropagation(); openToken(t.dataset.tokid); return; }
+  const k = e.target.closest?.('[data-poolkey]');
+  if (k) { e.stopPropagation(); openPool(k.dataset.poolkey); return; }
   const el = e.target.closest?.('[data-acct]');
   if (!el) return;
   e.stopPropagation();
@@ -1112,7 +1124,7 @@ function renderPools() {
     return `
     <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
       <td class="rank">${i + 1}<span data-star="p|${esc(p.dex)}:${esc(String(p.id))}|${esc(p.symA)}/${esc(p.symB)}"></span></td>
-      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairName(p)}</span>
+      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairLinks(p)}</span>
         <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
         <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
       <td class="r num" title="What this pool could actually pay out, priced through routes that reach a bridged dollar. ${usd(p.tvl)} at face value.">${usd(p.tvlReal)}<span class="nominal">${usd(p.tvl)} face</span></td>
@@ -1460,7 +1472,7 @@ function renderFarms() {
   $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
-         <span class="pairbig">${pairName(g.pool)}</span>
+         <span class="pairbig">${pairLinks(g.pool)}</span>
          <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>
          ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}. The rate is real; the token cannot survive it.">burning out</span>` : ''}`
       : `<span class="dim">${esc(g.poolId)}</span>`;
@@ -1476,7 +1488,7 @@ function renderFarms() {
     const chips = list.slice(0, 3).map(([tok, r]) =>
         `<span class="rew" title="${qty(r.perDay)} ${esc(r.symbol)} per day${r.usdDay ? ' · ' + usd(r.usdDay) : ''}">
            <span data-pm="${esc(tok)}|${esc(r.symbol)}"></span>
-           <b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
+           <b>${qty(r.perDay)}</b>&nbsp;${tokLink(tok, r.symbol)}</span>`).join('')
       + (list.length > 3 ? `<span class="rew more" title="${list.slice(3).map(([, r]) => qty(r.perDay) + ' ' + r.symbol).join(', ')}">+${list.length - 3}</span>` : '');
     // Show what you would get, with the headline underneath only when the two
     // differ enough to matter — that gap IS the size of the farm.
@@ -2360,8 +2372,8 @@ function positionCard(p, mine = false) {
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
-        <div class="pc-pair">${pairName(pool)}<span class="venue alcor">Alcor</span></div>
-        <div class="pc-meta">#${p.posId} &middot; ${(pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(share >= 1 ? 1 : 2)}% of the pool` : ''}</div>
+        <div class="pc-pair">${pairLinks(pool)}<span class="venue alcor">Alcor</span></div>
+        <div class="pc-meta">${poolLink(pool.dex, pool.id, '#' + p.posId)} &middot; ${(pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(share >= 1 ? 1 : 2)}% of the pool` : ''}</div>
       </div>
       <div class="pc-val">
         <span class="v">${usdExact(p.valueUsd)}</span>
@@ -2394,7 +2406,7 @@ function positionCard(p, mine = false) {
 
     ${f && f.missing.length ? `<div class="pc-farm">
       <div><b>${f.aprMissing != null ? `${pct(f.aprMissing)} APR` : `${f.missing.length} farm${f.missing.length === 1 ? '' : 's'}`} you are not collecting</b>
-        <span class="sub">${f.missing.map(x => esc(x.rewardSymbol)).join(' + ')} ${f.missing.length === 1 ? 'is' : 'are'} paid to staked positions only${f.missedUsdDay > 0 ? ` &mdash; about ${usd(f.missedUsdDay)} a day at this size` : ''}</span></div>
+        <span class="sub">${f.missing.map(x => tokLink(x.rewardToken, x.rewardSymbol)).join(' + ')} ${f.missing.length === 1 ? 'is' : 'are'} paid to staked positions only${f.missedUsdDay > 0 ? ` &mdash; about ${usd(f.missedUsdDay)} a day at this size` : ''}</span></div>
       ${mine ? `<button class="btn" data-joinfarm="${p.posId}" data-inc="${f.missing.map(x => esc(x.id)).join(',')}">Join the farm</button>` : ''}
     </div>` : ''}
 
@@ -2415,7 +2427,7 @@ function tacoCard(p) {
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
-        <div class="pc-pair">${pairName(pool)}<span class="venue taco">Taco</span></div>
+        <div class="pc-pair">${pairLinks(pool)}<span class="venue taco">Taco</span></div>
         <div class="pc-meta">${qty(p.balance)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
       </div>
       <div class="pc-val"><span class="v">${usdExact(p.valueUsd)}</span></div>
@@ -3458,7 +3470,7 @@ async function runCompound(account, resume = null) {
       </div>
       ${pos.farm?.missing.length ? `<div class="pc-farm" style="margin-bottom:10px">
         <div><b>${pos.farm.aprMissing != null ? `${pct(pos.farm.aprMissing)} APR` : `${pos.farm.missing.length} farm${pos.farm.missing.length === 1 ? '' : 's'}`} you are not collecting</b>
-          <span class="sub">${pos.farm.missing.map(x => esc(x.rewardSymbol)).join(' + ')} goes to staked positions only${pos.farm.missedUsdDay > 0 ? ` &mdash; about ${usd(pos.farm.missedUsdDay)} a day at this size` : ''}.</span></div>
+          <span class="sub">${pos.farm.missing.map(x => tokLink(x.rewardToken, x.rewardSymbol)).join(' + ')} goes to staked positions only${pos.farm.missedUsdDay > 0 ? ` &mdash; about ${usd(pos.farm.missedUsdDay)} a day at this size` : ''}.</span></div>
         <button class="btn" data-joinfarm="${pos.posId}" data-inc="${pos.farm.missing.map(x => esc(x.id)).join(',')}">Join the farm</button>
       </div>` : ''}
       ${harvest.basket.length ? `
@@ -3760,8 +3772,8 @@ async function renderActivity() {
       return `<tr><td class="num dim"><a href="${trxUrl(s.trx)}" target="_blank" rel="noopener" title="Open this transaction on waxblock">${ago(s.ts)} &nearr;</a></td>
         <td${s.pool ? ` class="clickable" data-pool="${esc(s.pool.dex)}:${esc(String(s.pool.id))}"` : ''}>${s.pool ? `<span class="pair">${pairName(s.pool)}</span> <span class="venue ${esc(s.pool.dex)}">${esc(venueName[s.pool.dex] || s.pool.dex)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
         <td class="mono">${acctLink(s.trader)}</td>
-        <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${esc(inA ? s.symA : s.symB)}</span></td>
-        <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${esc(inA ? s.symB : s.symA)}</span></td>
+        <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${s.pool ? tokLink(inA ? s.pool.tokenA : s.pool.tokenB, inA ? s.symA : s.symB) : esc(inA ? s.symA : s.symB)}</span></td>
+        <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${s.pool ? tokLink(inA ? s.pool.tokenB : s.pool.tokenA, inA ? s.symB : s.symA) : esc(inA ? s.symB : s.symA)}</span></td>
         <td class="r num">${usd(s.volumeReal ?? s.volumeUsd)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 
@@ -4100,7 +4112,7 @@ async function openToken(id) {
     <thead><tr><th>Pool</th><th>Venue</th><th class="r">Fee</th><th class="r">Pooled</th><th class="r">24h</th></tr></thead>
     <tbody>${pools.slice(0, cap('pools')).map(p => `
       <tr data-pool="${esc(p.dex)}:${esc(String(p.id))}" style="cursor:pointer">
-        <td>${esc(p.symA)}/${esc(p.symB)}</td>
+        <td>${pairLinks(p)}</td>
         <td class="dim">${esc(p.dex)}</td>
         <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
         <td class="r num" title="${usd(p.tvl)} at face value">${usd(p.tvlReal)}</td>
@@ -4113,8 +4125,8 @@ async function openToken(id) {
       <thead><tr><th>Pool</th><th>Pays</th><th class="r">Per day</th><th class="r">Staked</th><th class="r">APR</th><th>Trend</th><th class="r">Runway</th></tr></thead>
       <tbody>${farms.slice(0, cap('farms')).sort((a, b) => (b.rewardRealDay || 0) - (a.rewardRealDay || 0)).map(g => `
         <tr data-fpool="${esc(g.key)}" style="cursor:pointer">
-          <td>${g.pool ? `${esc(g.pool.symA)}/${esc(g.pool.symB)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
-          <td>${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 4).map(esc).join(', ')}</td>
+          <td>${g.pool ? `${pairLinks(g.pool)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
+          <td>${[...new Map(g.rewards.map(r => [r.token, r.symbol]))].slice(0, 4).map(([tk, sym]) => tokLink(tk, sym)).join(', ')}</td>
           <td class="r num">${usd(g.rewardRealDay)}</td>
           <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
           <td class="r num">${g.aprReal != null ? pct(g.aprReal) : '<span class="dim">—</span>'}</td>
@@ -4660,7 +4672,7 @@ async function openPool(key) {
   const farms = state.farms.filter(f => f.poolDex === dex && f.poolId === id && !f.ended);
 
   $('#poolDetail').innerHTML = `
-    <h2 class="vt">${pairName(p)} <span class="badge ${p.dex}">${p.dex}</span> <span class="dim" style="font-weight:400">#${esc(p.id)}</span></h2>
+    <h2 class="vt">${pairLinks(p)} <span class="badge ${p.dex}">${p.dex}</span> <span class="dim" style="font-weight:400">#${esc(p.id)}</span></h2>
     <p class="vs">${(p.feeBps / 100).toFixed(2)}% fee tier on ${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'TacoSwap' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}${p.bornAt ? ` &middot; first seen ${age(p.bornAt)} ago` : ''}</p>
     <div class="toolbar" style="margin-bottom:16px">
       <span id="poolStar"></span>
@@ -4672,14 +4684,14 @@ async function openPool(key) {
       <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">exit value</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span>${p.turnover > 0 ? `<span class="sub">${p.turnover.toFixed(2)}× its own liquidity</span>` : ''}</div>
       <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
-      <div class="stat"><span class="v">${qty(p.priceAB)}</span><span class="k">${esc(p.symB)} per ${esc(p.symA)}</span></div>
-      <div class="stat"><span class="v">${qty(p.reserveA)}</span><span class="k">${esc(p.symA)} in pool</span><span class="sub">${usd(p.priceUsdA ? p.reserveA * p.priceUsdA : null)}</span></div>
-      <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${esc(p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>
+      <div class="stat"><span class="v">${qty(p.priceAB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} per ${tokLink(p.tokenA, p.symA)}</span></div>
+      <div class="stat"><span class="v">${qty(p.reserveA)}</span><span class="k">${tokLink(p.tokenA, p.symA)} in pool</span><span class="sub">${usd(p.priceUsdA ? p.reserveA * p.priceUsdA : null)}</span></div>
+      <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>
       <div class="stat"><span class="v">${farms.length}</span><span class="k">live farms</span></div>
     </div>
     ${farms.length ? `<div class="card" style="margin-bottom:12px"><h3>Farms on this pool</h3>
       ${farms.map(f => `<div style="display:flex;gap:10px;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
-        <span><span class="mono">${qty(f.rewardPerDay)}</span> <b>${esc(f.rewardSymbol)}</b> / day</span>
+        <span><span class="mono">${qty(f.rewardPerDay)}</span> <b>${tokLink(f.rewardToken, f.rewardSymbol)}</b> / day</span>
         <span class="num dim">${usd(f.rewardUsdDay)} &middot; ends ${f.periodFinish ? new Date(f.periodFinish).toISOString().slice(0, 10) : 'open'}</span>
       </div>`).join('')}</div>` : ''}
     <div class="grid g2">
@@ -4690,6 +4702,8 @@ async function openPool(key) {
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>
+    ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
+      <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
 
   wirePromote();
@@ -4759,6 +4773,46 @@ async function openPool(key) {
         <p class="sub" style="margin:9px 0 0">${sw.length.toLocaleString()} trades, back to ${ago(new Date(sw.at(-1).ts).toISOString())}. Traders are on the token page.</p>`;
     }).catch(e => { $('#poolSwaps').innerHTML = `<div class="empty">Feed unavailable: ${esc(e.message)}</div>`; });
   }
+
+  // The rung that was missing from the chain: a pool knew its tokens and its
+  // farms, and said nothing about the people whose money is in it.
+  if (p.dex === 'alcor' && $('#poolLPs')) renderPoolLPs(p).catch(() => {});
+}
+
+async function renderPoolLPs(p) {
+  const box = $('#poolLPs');
+  let rows;
+  try { rows = await getAllRows('swap.alcor', p.id, 'positions'); }
+  catch { box.innerHTML = '<div class="empty">Could not read the positions table.</div>'; return; }
+
+  const sqrtP = p.sqrtX64 ? sqrtPriceFromX64(p.sqrtX64) : null;
+  if (!sqrtP) { box.innerHTML = ''; return; }
+  const by = new Map();
+  let total = 0;
+  for (const r of rows) {
+    if (!(Number(r.liquidity) > 0)) continue;
+    const { amountA, amountB } = amountsForLiquidity(r.liquidity, sqrtP, r.tickLower, r.tickUpper);
+    const v = (amountA / 10 ** p.decA) * (p.priceUsdA || 0) + (amountB / 10 ** p.decB) * (p.priceUsdB || 0);
+    const inRange = p.tick > r.tickLower && p.tick < r.tickUpper;
+    const cur = by.get(r.owner) || { account: r.owner, usd: 0, n: 0, live: 0 };
+    cur.usd += v; cur.n++; if (inRange) cur.live++;
+    by.set(r.owner, cur);
+    total += v;
+  }
+  const list = [...by.values()].sort((a, b) => b.usd - a.usd);
+  if (!list.length) { box.innerHTML = '<div class="empty">Nobody holds liquidity in this pool right now.</div>'; return; }
+
+  box.innerHTML = `<div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px">
+    <thead><tr><th></th><th>Wallet</th><th class="r">Value</th><th class="r">Share</th><th class="r">Positions</th><th class="r">In range</th></tr></thead>
+    <tbody>${list.slice(0, 30).map((x, i) => `<tr>
+      <td class="rank">${i + 1}</td>
+      <td class="mono">${acctLink(x.account)}</td>
+      <td class="r num">${usd(x.usd)}</td>
+      <td class="r num dim">${total > 0 ? (x.usd / total * 100).toFixed(1) + '%' : '—'}</td>
+      <td class="r num dim">${x.n}</td>
+      <td class="r num ${x.live ? '' : 'dim'}">${x.live} of ${x.n}</td>
+    </tr>`).join('')}</tbody></table></div>
+    <p class="sub" style="margin:9px 0 0">${list.length} wallet${list.length === 1 ? '' : 's'}, ${usd(total)} at face value.</p>`;
 }
 
 document.addEventListener('DOMContentLoaded', () => {

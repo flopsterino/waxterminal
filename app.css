@@ -844,3 +844,7 @@ body { overflow-x: hidden; }
 .prow.fixed { background: var(--surface-2); }
 .dest-fixed { grid-area: sel; font-size: 11.5px; color: var(--muted); white-space: nowrap;
   font-family: var(--font-data); }
+
+/* Anything that leads somewhere else looks the same wherever it appears. */
+.xlink { cursor: pointer; border-bottom: 1px dotted var(--line-2); }
+.xlink:hover { color: var(--accent); border-bottom-color: var(--accent); }
