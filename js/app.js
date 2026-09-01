@@ -1955,6 +1955,19 @@ async function renderFarmAccrual(account, positions, joined) {
         if (u) u.textContent = usd4(amt * t.price);
       }
     });
+    // The same rows drive the figure on each position card, so a card and the
+    // counter above it can never disagree.
+    const perPos = new Map();
+    for (const r of rows) {
+      if (r.price == null) continue;
+      perPos.set(r.posId, (perPos.get(r.posId) || 0) + pendingAt(r, now) * r.price);
+    }
+    document.querySelectorAll('[data-farmpend]').forEach(elp => {
+      const v = perPos.get(elp.dataset.farmpend);
+      elp.textContent = v > 0 ? usd4(v) : '—';
+      elp.classList.toggle('dim', !(v > 0));
+    });
+
     const tot = $('#accTotal'), rt = $('#accRate');
     if (tot) tot.textContent = anyPriced ? usd4(usd) : '—';
     if (rt) rt.textContent = perSec > 0
@@ -2400,6 +2413,7 @@ function positionCard(p, mine = false) {
 
     <div class="pc-figs">
       ${fig('Fees waiting', usd(p.feesUsd), p.feesUsd > 0 ? 'accent' : 'dim')}
+      ${fig('Farm rewards', `<span data-farmpend="${p.posId}" class="dim">&mdash;</span>`, '')}
       ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim')}
       ${fig('Top up at', `${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}`)}
     </div>
@@ -3668,13 +3682,13 @@ async function renderLeaders() {
   out.innerHTML = `<div class="tablewrap"><table><thead><tr>
       <th class="r" style="width:44px"></th><th>Account</th>
       ${cfg.cols.map(c => `<th class="r">${esc(c[1])}</th>`).join('')}
-    </tr></thead><tbody>${rows.map((r, i) => `<tr class="clickable" data-acct-row="${esc(r.a)}">
+    </tr></thead><tbody>${rows.map((r, i) => `<tr>
       <td class="rank">${i + 1}</td>
-      <td><span class="pairbig">${esc(r.a)}</span></td>
+      <td class="mono">${acctLink(r.a)}</td>
       ${cfg.cols.map(c => `<td class="r num${r[c[0]] ? '' : ' dim'}">${r[c[0]] ? esc(String(c[2](r[c[0]]))) : '—'}</td>`).join('')}
     </tr>`).join('')}</tbody></table></div>`;
 
-  out.querySelectorAll('tr[data-acct-row]').forEach(tr => tr.onclick = () => { show('wallet', tr.dataset.acctRow); $('#walletInput').value = tr.dataset.acctRow; lookupWallet(tr.dataset.acctRow); });
+  // The name itself is the link; the row no longer needs its own binding.
 }
 
 function wireLeaders() {
