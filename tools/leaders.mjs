@@ -28,7 +28,7 @@
 
 import { writeFile, readFile } from 'node:fs/promises';
 import { loadCore, state } from '../js/store.js';
-import { getRows, getAllRows, hyperion } from '../js/chain.js';
+import { getAllRows, getAllRowsSharded, hyperion } from '../js/chain.js';
 import { amountsForLiquidity, sqrtPriceFromX64, feesOwed, parseAsset } from '../js/math.js';
 
 const OUT = new URL('../data/', import.meta.url);
@@ -78,8 +78,28 @@ console.log(`  ${stakedIn.size} staked positions`);
 // merely still being attached to something that finished in March.
 const liveIncentives = new Set(state.farms.filter(f => f.poolDex === 'alcor' && f.periodFinish > Date.now()).map(f => String(f.id)));
 
-const pools = state.pools.filter(p => p.dex === 'alcor' && p.tvl > 0 && p.sqrtX64);
-console.log(`reading positions in ${pools.length} pools…`);
+// A floor, because `tvl > 0` on a live read is 9,777 pools — two table calls
+// each, twenty thousand requests at public nodes shared with everything else
+// running on this machine. Measured on the pooled value: a $10 floor keeps
+// 100.0% of it and drops two thirds of the pools. Anything a farm runs on is
+// kept regardless of size, or the farming board would have holes in it.
+const MIN_TVL = 10;
+const farmedPools = new Set(state.farms.filter(f => f.poolDex === 'alcor').map(f => String(f.poolId)));
+const pools = state.pools.filter(p => p.dex === 'alcor' && p.sqrtX64
+  && (p.tvl >= MIN_TVL || farmedPools.has(String(p.id))));
+
+// The fee-growth counters live on the raw pool row, which the normalised pool
+// does not carry. Fetching that row per pool is 614 extra keyed reads for a
+// table that answers in twelve sharded ones — and it was most of why the first
+// run took six minutes.
+const rawPools = new Map();
+try {
+  const maxId = Math.max(...pools.map(p => Number(p.id))) + 1000;
+  for (const r of await getAllRowsSharded(ALCOR, ALCOR, 'pools', maxId, { shard: 1000 })) {
+    rawPools.set(String(r.id), r);
+  }
+} catch (e) { console.error('raw pools:', e.message); }
+console.log(`reading positions in ${pools.length} pools (${rawPools.size} fee-growth rows)…`);
 
 const lp = new Map();       // account -> totals
 const touch = a => {
@@ -90,17 +110,15 @@ const touch = a => {
 
 let scanned = 0, positionsSeen = 0;
 await mapLimit(pools, 4, async p => {
-  let positions = [], ticks = new Map(), raw = null;
+  let positions = [], ticks = new Map();
+  const raw = rawPools.get(String(p.id)) || null;
   try {
-    const [pr, tr, po] = await Promise.all([
+    const [pr, tr] = await Promise.all([
       getAllRows(ALCOR, p.id, 'positions'),
       getAllRows(ALCOR, p.id, 'ticks'),
-      getRows(ALCOR, ALCOR, 'pools', { limit: 1, lower: p.id }),
     ]);
     positions = pr;
     for (const t of tr) ticks.set(Number(t.id), t);
-    const row = po.rows?.[0];
-    if (row && String(row.id) === String(p.id)) raw = row;
   } catch { return; }
 
   const s = sqrtPriceFromX64(p.sqrtX64);

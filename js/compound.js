@@ -164,10 +164,15 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
     const depB = isFinite(total) ? total * ratio.shareB : 0;
     // Everything not deposited stays where it is: the unswapped side, and every
     // foreign reward, which without a swap can never become a pool token.
+    // Amounts as well as dollars: a panel that has to explain where money goes
+    // is not helped by "$0.90" when the holder is looking for "220 WAX".
+    const share = (usdPart, wholeUsd, wholeAmt) => (wholeUsd > 0 ? wholeAmt * (usdPart / wholeUsd) : 0);
+    const amtA = priced.filter(isA).reduce((s, b) => s + b.amount, 0);
+    const amtB = priced.filter(isB).reduce((s, b) => s + b.amount, 0);
     const left = [];
-    if (haveA - depA > DUST_USD) left.push({ symbol: pool.symA, tokenId: pool.tokenA, usd: haveA - depA });
-    if (haveB - depB > DUST_USD) left.push({ symbol: pool.symB, tokenId: pool.tokenB, usd: haveB - depB });
-    for (const f of foreign) left.push({ symbol: f.symbol, tokenId: f.tokenId, usd: f.usd, foreign: true });
+    if (haveA - depA > DUST_USD) left.push({ symbol: pool.symA, tokenId: pool.tokenA, usd: haveA - depA, amount: share(haveA - depA, haveA, amtA) });
+    if (haveB - depB > DUST_USD) left.push({ symbol: pool.symB, tokenId: pool.tokenB, usd: haveB - depB, amount: share(haveB - depB, haveB, amtB) });
+    for (const f of foreign) left.push({ symbol: f.symbol, tokenId: f.tokenId, usd: f.usd, amount: f.amount, foreign: true });
     const depositUsd = depA + depB;
 
     const actions = [

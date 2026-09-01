@@ -2528,29 +2528,42 @@ async function showCompound(btn, pos) {
 
       <div class="prows">${rewardRows}</div>
 
-      <label class="swapsw">
-        <input type="checkbox" id="wnoswap-${pos.posId}"${noSwap ? ' checked' : ''}>
-        <span><b>Don't sell anything</b>
-          <span class="sub">Put back only the balanced pair the harvest already contains. Whatever is left over stays in your wallet instead of being swapped into the other side.</span></span>
-      </label>
+      <div class="modesel" role="radiogroup" aria-label="How to compound">
+        <button type="button" class="mode${noSwap ? '' : ' on'}" data-mode="swap" data-pos="${pos.posId}" role="radio" aria-checked="${!noSwap}">
+          <b>With swapping</b>
+          <span>Sells the long side of the harvest to reach the ratio this band needs. All of it goes back into the pool.</span>
+        </button>
+        <button type="button" class="mode${noSwap ? ' on' : ''}" data-mode="noswap" data-pos="${pos.posId}" role="radio" aria-checked="${noSwap}">
+          <b>Without swapping</b>
+          <span>Puts back only the part that already fits. Nothing is sold &mdash; the rest is claimed straight into your wallet.</span>
+        </button>
+      </div>
+
+      <div class="dests">
+        <div class="dest in">
+          <span class="lbl">Back into the pool</span>
+          <span class="amt">${usdExact(b.depositUsd)}</span>
+          <span class="det">${[
+            b.depositA > 0 && pos.pool.priceUsdA > 0 ? `${qty(b.depositA / pos.pool.priceUsdA)} ${esc(pos.pool.symA)}` : '',
+            b.depositB > 0 && pos.pool.priceUsdB > 0 ? `${qty(b.depositB / pos.pool.priceUsdB)} ${esc(pos.pool.symB)}` : '',
+          ].filter(Boolean).join(' + ') || 'nothing fits without swapping'}</span>
+        </div>
+        <div class="dest out${b.leftoverUsd > 0 ? '' : ' empty'}">
+          <span class="lbl">Into your wallet</span>
+          <span class="amt">${b.leftoverUsd > 0 ? usdExact(b.leftoverUsd) : '&mdash;'}</span>
+          <span class="det">${b.leftoverUsd > 0
+            ? b.leftover.filter(l => l.usd > 0).map(l => `${qty(l.amount)} ${esc(l.symbol)}`).join(' + ')
+            : 'all of it goes back into the pool'}</span>
+        </div>
+      </div>
 
       <div class="planline">
-        <span class="k">Convert</span>
+        <span class="k">Sells</span>
         <span>${b.noSwap
-          ? '<span class="dim">nothing &mdash; selling is off</span>'
+          ? '<span class="pos">nothing</span>'
           : b.swaps.length
-            ? b.swaps.map(x => `<b>${esc(x.from)}</b>&nbsp;&rarr;&nbsp;<b>${esc(x.to)}</b> <span class="dim">${usd(x.usd)}</span>`).join(', ')
-            : '<span class="dim">nothing &mdash; the harvest already matches the band</span>'}</span>
-      </div>
-      ${b.leftoverUsd > 0 ? `<div class="planline">
-        <span class="k">Stays put</span>
-        <span>${b.leftover.filter(l => l.usd > 0).map(l => `<b>${esc(l.symbol)}</b> <span class="dim">${usd(l.usd)}</span>`).join(', ')}
-          <span class="dim">&mdash; in your wallet, unsold</span></span>
-      </div>` : ''}
-      <div class="planline">
-        <span class="k">Lands at</span>
-        <span>${(b.finalA / (b.finalA + b.finalB) * 100 || 0).toFixed(1)} / ${(b.finalB / (b.finalA + b.finalB) * 100 || 0).toFixed(1)}
-          <span class="dim">against ${(b.ratio.shareA * 100).toFixed(1)} / ${(b.ratio.shareB * 100).toFixed(1)} this band needs</span></span>
+            ? b.swaps.map(x => `<b>${usd(x.usd)}</b> of ${esc(x.from)} &rarr; ${esc(x.to)}`).join(', ')
+            : '<span class="pos">nothing &mdash; the harvest already matches the band</span>'}</span>
       </div>
       <div class="planline">
         <span class="k">Signs</span>
@@ -2564,8 +2577,11 @@ async function showCompound(btn, pos) {
   // Switching it re-plans: the deposit, the swaps, the signature count and the
   // fee all change, and showing the old numbers under a new setting is worse
   // than not offering the setting.
-  const sw = box.querySelector(`#wnoswap-${pos.posId}`);
-  if (sw) sw.onchange = () => { noSwap = sw.checked; saveNoSwap(noSwap); paintPlan(); };
+  box.querySelectorAll(`[data-mode][data-pos="${pos.posId}"]`).forEach(b2 => b2.onclick = () => {
+    const want = b2.dataset.mode === 'noswap';
+    if (want === noSwap) return;
+    noSwap = want; saveNoSwap(noSwap); paintPlan();
+  });
 
   // This panel used to end at "the transaction your wallet would sign" and stop
   // there, so the only way to actually compound was to leave the page.
@@ -2803,19 +2819,19 @@ function wireCompound() {
     renderNewPosition(who);
   };
   $('#compInput').onkeydown = e => { if (e.key === 'Enter') runCompound(e.target.value.trim()); };
-  const ns = $('#compNoSwap');
-  if (ns) {
-    ns.setAttribute('aria-checked', String(noSwap));
-    ns.onclick = () => {
-      noSwap = !noSwap;
-      saveNoSwap(noSwap);
-      ns.setAttribute('aria-checked', String(noSwap));
-      // Every position on the page has to be re-planned: the deposit, the swaps
-      // and the signature count all change. Positions come from Alcor's index
-      // in one call, so this is a few seconds rather than a sweep.
-      const who = $('#compInput').value.trim();
-      if (who) runCompound(who);
-    };
+  const paintModes = () => document.querySelectorAll('#view-compound [data-pagemode]').forEach(b =>
+    b.setAttribute('aria-checked', String((b.dataset.pagemode === 'noswap') === noSwap)));
+  paintModes();
+  document.querySelectorAll('#view-compound [data-pagemode]').forEach(b => b.onclick = () => {
+    const want = b.dataset.pagemode === 'noswap';
+    if (want === noSwap) return;
+    noSwap = want; saveNoSwap(noSwap); paintModes();
+    // Every position has to be re-planned: the deposit, what is sold and the
+    // signature count all change. Positions come from Alcor's index in one
+    // call, so this is seconds rather than a sweep.
+    const who = $('#compInput').value.trim();
+    if (who) runCompound(who);
+  });
   }
   $('#compDemo')?.remove();
 }

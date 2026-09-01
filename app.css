@@ -754,3 +754,34 @@ body { overflow-x: hidden; }
 /* Leaderboards: the rank is the anchor, so it stays fixed-width and quiet. */
 #ldOut .rank { color: var(--muted); font-family: var(--font-data); font-size: 12px; text-align: right; }
 #ldOut tr.clickable:hover .pairbig { color: var(--accent); }
+
+/* Two named modes rather than a checkbox: the choice decides where the money
+   lands, so both outcomes are spelled out and neither is the small print. */
+.modesel { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modesel .mode { text-align: left; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; display: block; }
+.modesel .mode b { display: block; font-size: 12.5px; margin-bottom: 2px; }
+.modesel .mode span { display: block; font-size: 11px; color: var(--muted); line-height: 1.45; }
+.modesel .mode:hover { border-color: var(--line-2); }
+.modesel .mode.on { border-color: var(--accent); background: var(--accent-soft); }
+.modesel .mode.on b { color: var(--accent-ink, var(--ink)); }
+@media (max-width: 560px) { .modesel { grid-template-columns: 1fr; } }
+
+/* Where the harvest actually lands, in the amounts the holder is looking for.
+   Switching mode changes these numbers, which is the only explanation the
+   choice needs. */
+.dests { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dest { border: 1px solid var(--line); border-radius: var(--r); padding: 9px 11px; display: flex; flex-direction: column; gap: 2px; }
+.dest .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.dest .amt { font-family: var(--font-data); font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+.dest .det { font-family: var(--font-data); font-size: 11px; color: var(--muted); line-height: 1.4; }
+.dest.in { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+.dest.out.empty .amt, .dest.out.empty .det { color: var(--muted); font-weight: 400; }
+@media (max-width: 560px) { .dests { grid-template-columns: 1fr; } }
+
+/* The page-level twin of .modesel: two chips, exactly one lit. */
+.modechips { display: inline-flex; gap: 0; }
+.modechips .chip { border-radius: 0; }
+.modechips .chip:first-child { border-radius: var(--r) 0 0 var(--r); }
+.modechips .chip:last-child { border-radius: 0 var(--r) var(--r) 0; margin-left: -1px; }
+.modechips .chip[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; z-index: 1; }

@@ -187,7 +187,10 @@
       <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="compGo">Load my positions</button>
       <button class="btn" id="newPosGo">Open a new position</button>
-      <button class="chip" id="compNoSwap" role="switch" aria-checked="false" title="Put back only the balanced pair a harvest already contains, instead of selling the long side to buy the short one">Don't sell anything</button>
+      <span class="modechips" role="radiogroup" aria-label="How to compound">
+        <button class="chip" data-pagemode="swap" role="radio" aria-checked="true" title="Sells the long side of each harvest to reach the ratio the band needs; all of it goes back into the pool">Compound with swapping</button>
+        <button class="chip" data-pagemode="noswap" role="radio" aria-checked="false" title="Puts back only the part that already fits; nothing is sold and the rest is claimed into your wallet">Compound without swapping</button>
+      </span>
     </div>
     <div id="newPos"></div>
     <div id="compOut"></div>
