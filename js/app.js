@@ -2906,9 +2906,12 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
   let r1id = resume?.claimTx ?? '';
 
   try {
+    const me = wallet.account();
+    if (!me) throw new Error('No wallet connected — connect one and try again.');
+
     // ---- the whole thing, in one ---------------------------------------
     if (oneShot) {
-      const one = buildOneShot({ pool: pos.pool, position: pos, basket: harvest.basket, plan, feeBps, feeAccount });
+      const one = buildOneShot({ pool: pos.pool, position: pos, basket: harvest.basket, plan, feeBps, feeAccount, me });
       render(0, 'Waiting for your wallet…');
       const r = await wallet.transact(one.actions, { verify: true });
       saveResume(null);
@@ -2926,7 +2929,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
         before = await readBalances(pos.pool, basketIds);
         await press(0, 'Claim and convert', 'Your wallet will ask once. Only what you just claimed is converted.');
       }
-      const cs = buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
+      const cs = buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan, me });
       render(0, 'Waiting for your wallet…');
       const r1 = await wallet.transact(cs.actions, { verify: true });
       r1id = r1.id;
@@ -2943,7 +2946,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
       a: pxA > 0 ? plan.depositA / pxA : 0,
       b: pxB > 0 ? plan.depositB / pxB : 0,
     };
-    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected, exact: !!plan.noSwap });
+    const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected, exact: !!plan.noSwap, me });
     await press(1, 'Put it back', `Add ${qty(dep.depA)} ${pos.pool.symA} and ${qty(dep.depB)} ${pos.pool.symB} back into your range.`);
     render(1, 'Waiting for your wallet…');
     const r2 = await wallet.transact(dep.actions, { verify: true });

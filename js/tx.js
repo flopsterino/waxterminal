@@ -22,6 +22,18 @@ const dec = (v, d) => {
 };
 export const asset = (amount, symbol, decimals) => `${dec(amount, decimals)} ${symbol}`;
 
+// account() returns null, not undefined, when nothing is connected — and a
+// default parameter only fills in for undefined. So `me = account()` yields
+// null, passes explicitly into the next builder where the same default cannot
+// rescue it either, and the first anyone hears of it is the ABI encoder
+// refusing to serialise a name field: "Found null for non-optional type: name".
+// A true message about entirely the wrong thing.
+const signer = me => {
+  const who = me ?? account();
+  if (!who) throw new Error('No wallet connected — connect one and try again.');
+  return String(who);
+};
+
 const tokenMeta = id => state.tokens.get(id) || { symbol: id.split('@')[0], contract: id.split('@')[1], decimals: 8 };
 const priceOf = id => state.prices.get(id)?.usd ?? null;
 
@@ -65,6 +77,7 @@ export function findPath(fromToken, toToken, { maxHops = 3 } = {}) {
 // `me`/`auth` are overridable so the action set can be built and validated
 // against the chain's serialiser without a wallet attached.
 export function buildHarvest({ pool, position, basket, plan, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
 
@@ -97,6 +110,7 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
 // --------------------------------------------------------- transaction 2 ----
 // Swap what actually arrived into the ratio the band needs, then deposit it.
 export function buildSwaps({ pool, plan, harvested, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
   const swaps = [];
@@ -174,6 +188,7 @@ function venueTaxOf(tokenId) {
 }
 
 export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = '', before, expected = null, exact = false, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
 
@@ -293,6 +308,7 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
 // A restake step appended to the flow would be an extra signature that changes
 // nothing.
 export function buildRestake({ position, incentiveIds, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   return incentiveIds.map(id => ({
     account: ALCOR, name: 'stake', authorization: auth,
@@ -317,6 +333,7 @@ const WAX_DECIMALS = 8;
 // almost always paired with it. Skipped when they have never voted, because
 // there is no existing choice to re-cast and this must never pick one for them.
 export function buildVoteClaim({ account: me = account(), proxy = '', producers = [], fallbackProxy = '', auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
 
@@ -344,6 +361,7 @@ export function buildStakeBack({
   claimed, cpuWeight = 1, netWeight = 0,
   account: me = account(), feeBps = 0, feeAccount = '', auth = null,
 }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   if (!(claimed > 0)) return { actions: [], staked: 0, fee: 0 };
 
@@ -403,6 +421,7 @@ export function buildAddLiquidity({
   pool, tickLower, tickUpper, amountA, amountB,
   me = account(), auth = null, slippage = LIQ_SLIPPAGE,
 }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
   const actions = [];
@@ -447,6 +466,7 @@ export function buildRemoveLiquidity({
   pool, position, fraction = 1, expectedA = 0, expectedB = 0,
   me = account(), auth = null, slippage = LIQ_SLIPPAGE,
 }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
   const share = Math.max(0, Math.min(1, fraction));
@@ -480,6 +500,7 @@ export function buildRemoveLiquidity({
 // The memo is not a form to fill in; it is an implementation detail of a
 // payment the page can just make.
 export function buildPromotion({ kind, id, days, terms, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const amount = Math.max(0, days) * terms.perDay;
   if (!(amount > 0)) return { actions: [], amount: 0 };
@@ -510,6 +531,7 @@ export function buildPromotion({ kind, id, days, terms, me = account(), auth = n
 const CHEESE_POWERUP = 'cheesepowerz';
 
 export function buildPowerup({ amount, target, token, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   if (!(amount > 0)) return { actions: [] };
   return {
@@ -531,6 +553,7 @@ export function buildPowerup({ amount, target, token, me = account(), auth = nul
 // which is the chain's rule and not something a UI can soften — so it is said
 // plainly rather than buried.
 export function buildUnstake({ cpu = 0, net = 0, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   if (!(cpu > 0) && !(net > 0)) return { actions: [] };
   return {
@@ -549,6 +572,7 @@ export function buildUnstake({ cpu = 0, net = 0, me = account(), auth = null }) 
 // Collect a refund that has matured. The chain releases it automatically in
 // most cases, but a stuck one needs asking, and there is no harm in asking.
 export function buildRefund({ me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   return { actions: [{ account: SYSTEM, name: 'refund', authorization: auth, data: { owner: me } }] };
 }
@@ -556,6 +580,7 @@ export function buildRefund({ me = account(), auth = null }) {
 // Voting, on its own rather than as a side effect of claiming. A proxy and a
 // producer list are mutually exclusive on chain: setting one clears the other.
 export function buildVote({ proxy = '', producers = [], me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   return {
     actions: [{
@@ -570,6 +595,7 @@ const CLAIM_MARGIN = 0.995;
 // Claim and deposit in a single transaction. No swap, so every number in it is
 // known before it is signed.
 export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAccount = '', me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
   if (!actions.length) throw new Error('Nothing claimable to harvest.');
@@ -644,6 +670,7 @@ export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAcco
 // just delivered. Sized from the plan and shaded down, because the transfer
 // executes against whatever actually arrived.
 export function buildClaimAndSwap({ pool, position, basket, plan, harvested = null, me = account(), auth = null }) {
+  me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
   if (!actions.length) throw new Error('Nothing claimable to harvest.');
