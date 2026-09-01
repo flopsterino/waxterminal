@@ -3,7 +3,7 @@
     "name": "WAX Terminal",
     "tagline": "Pools, farms and liquidity across WAX",
     "wordmark": null,
-    "favicon": "◩"
+    "favicon": "\u25e9"
   },
   "links": [
     {
@@ -33,7 +33,8 @@
       "slots": 8,
       "memoPrefix": "promote"
     },
-    "stakeProxy": "waxcommunity"
+    "stakeProxy": "waxcommunity",
+    "zapFeeBps": 50
   },
   "features": {
     "pools": true,

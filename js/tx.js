@@ -9,6 +9,7 @@
 // =============================================================================
 
 import { state } from './store.js';
+import { depositRatio } from './math.js';
 import { balanceOf } from './chain.js';
 import { authorization, account, hasSession } from './wallet.js';
 
@@ -692,4 +693,159 @@ export function buildClaimAndSwap({ pool, position, basket, plan, harvested = nu
   const scaled = { ...plan, swaps: plan.swaps.map(x => ({ ...x, usd: x.usd * CLAIM_MARGIN })) };
   const sw = buildSwaps({ pool, plan: scaled, harvested, me, auth });
   return { actions: [...actions, ...sw.actions], swaps: sw.swaps };
+}
+
+// ============================================================================
+// ZAP IN — one token becomes a position.
+//
+// Someone holding only WAX who wants to be in a CHEESE/HOLE band has to do
+// four things by hand today: work out the ratio the band needs, sell the right
+// fraction, deposit both sides, then stake. Each one is a place to get the
+// arithmetic wrong, and getting it wrong means a reverted transaction or a
+// deposit that sits lopsided.
+//
+// The split is the whole problem. A band is not 50/50 — depositRatio gives the
+// value split it wants at the current price — and the swap's output is not
+// knowable until it executes. So this is two signatures, for the same reason
+// the compound is: sell, look at what arrived, then deposit that.
+//
+//   1  fee, then swap the part the band needs of the other token
+//   2  deposit what actually landed, and stake it
+//
+// The fee is taken first and in the token they brought, so it never depends on
+// how the swap turned out.
+export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps = 0, sqrtP }) {
+  const ratio = depositRatio(sqrtP, tickLower, tickUpper);
+  const from = tokenMeta(fromToken);
+  const pFrom = priceOf(fromToken);
+  const isA = fromToken === pool.tokenA;
+  const isB = fromToken === pool.tokenB;
+  if (!isA && !isB) return { ok: false, reason: 'Zap in with one of the two tokens this pool holds.' };
+  if (!(amount > 0)) return { ok: false, reason: 'Enter an amount.' };
+
+  const fee = amount * (feeBps / 10000);
+  const net = amount - fee;
+
+  // What fraction has to become the other token. A band sitting entirely on one
+  // side wants none of it, and then there is nothing to sell.
+  const wantOther = isA ? ratio.shareB : ratio.shareA;
+  const toSwap = net * wantOther;
+  const keep = net - toSwap;
+
+  const otherToken = isA ? pool.tokenB : pool.tokenA;
+  const pOther = priceOf(otherToken);
+  const expectOther = (pFrom && pOther) ? (toSwap * pFrom) / pOther : null;
+
+  return {
+    ok: true, ratio, fromToken, otherToken,
+    symFrom: from.symbol, symOther: tokenMeta(otherToken).symbol,
+    amount, fee, net, toSwap, keep, expectOther,
+    usd: pFrom ? amount * pFrom : null,
+    // Nothing to sell means the deposit is one-sided, which addliquid handles:
+    // it takes what the band can use and leaves the rest in the internal balance.
+    needsSwap: toSwap > 0,
+  };
+}
+
+// Transaction 1: pay the fee, then sell the part that has to change token.
+export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth = null }) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const from = tokenMeta(plan.fromToken), to = tokenMeta(plan.otherToken);
+  const actions = [];
+
+  if (feeAccount && plan.fee > 0 && parseFloat(dec(plan.fee, from.decimals)) > 0) {
+    actions.push({
+      account: from.contract, name: 'transfer', authorization: auth,
+      data: { from: me, to: feeAccount, quantity: asset(plan.fee, from.symbol, from.decimals), memo: 'zap fee' },
+    });
+  }
+
+  if (plan.needsSwap) {
+    const path = findPath(plan.fromToken, plan.otherToken);
+    if (!path || !path.length) throw new Error(`No route from ${from.symbol} to ${to.symbol}.`);
+    if (!(plan.expectOther > 0)) throw new Error('Cannot price this pair well enough to size the swap.');
+    const minOut = plan.expectOther * (1 - SLIPPAGE);
+    if (parseFloat(dec(plan.toSwap, from.decimals)) <= 0) throw new Error(`Below one ${from.symbol} unit to swap.`);
+    if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${to.symbol} unit.`);
+    actions.push({
+      account: from.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: ALCOR,
+        quantity: asset(plan.toSwap, from.symbol, from.decimals),
+        memo: `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, to.symbol, to.decimals)}@${to.contract}#0`,
+      },
+    });
+  }
+  return { actions };
+}
+
+// Transaction 2: deposit what actually landed, and stake it if asked.
+//
+// `before` is the balance of both sides read before the swap ran, so the
+// difference is what the zap produced and nothing else — the same measurement
+// the compound uses, for the same reason: never deposit money someone already
+// held.
+export async function buildZapDeposit({
+  pool, tickLower, tickUpper, plan, before, incentiveIds = [], me = account(), auth = null,
+}) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
+  const [nowA, nowB] = await Promise.all([
+    balanceOf(me, ta.contract, ta.symbol),
+    balanceOf(me, tb.contract, tb.symbol),
+  ]);
+
+  const isA = plan.fromToken === pool.tokenA;
+  // The side they brought fell by what was spent; the side they bought rose.
+  // Both are capped at what the plan says, so a balance held beforehand can
+  // never be swept in.
+  let depA = isA ? Math.min(plan.keep, nowA) : Math.max(0, nowA - (before.get(pool.tokenA) ?? 0));
+  let depB = isA ? Math.max(0, nowB - (before.get(pool.tokenB) ?? 0)) : Math.min(plan.keep, nowB);
+  if (plan.expectOther > 0) {
+    const cap = plan.expectOther * 1.05;
+    if (isA) depB = Math.min(depB, cap); else depA = Math.min(depA, cap);
+  }
+  if (!(depA > 0) && !(depB > 0)) throw new Error('Nothing arrived to deposit.');
+
+  const netOf = (amt, id) => amt * (1 - (venueTaxOf(id) / 10000));
+  const askA = netOf(depA, pool.tokenA), askB = netOf(depB, pool.tokenB);
+
+  const actions = [];
+  if (parseFloat(dec(depA, pool.decA)) > 0) actions.push({
+    account: ta.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(depA, pool.symA, pool.decA), memo: 'deposit' },
+  });
+  if (parseFloat(dec(depB, pool.decB)) > 0) actions.push({
+    account: tb.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(depB, pool.symB, pool.decB), memo: 'deposit' },
+  });
+  actions.push({
+    account: ALCOR, name: 'addliquid', authorization: auth,
+    data: {
+      poolId: Number(pool.id), owner: me,
+      tokenADesired: asset(askA, pool.symA, pool.decA),
+      tokenBDesired: asset(askB, pool.symB, pool.decB),
+      tickLower, tickUpper,
+      // Zero for the reason it is zero everywhere a deposit is sized from real
+      // balances: the pool takes whichever side binds and leaves the rest.
+      tokenAMin: asset(0, pool.symA, pool.decA),
+      tokenBMin: asset(0, pool.symB, pool.decB),
+      deadline: 0,
+    },
+  });
+
+  // Staking needs the position id, which does not exist until addliquid has
+  // run in this same transaction. `stakelastpos` is what the contract provides
+  // for exactly that, and it takes the incentive alone — the owner comes from
+  // the authorization. Checked against its ABI and two real uses on chain.
+  for (const id of incentiveIds) {
+    actions.push({
+      account: ALCOR, name: 'stakelastpos', authorization: auth,
+      data: { incentiveId: Number(id) },
+    });
+  }
+
+  return { actions, depA, depB, staking: incentiveIds.length };
 }

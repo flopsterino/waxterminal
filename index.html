@@ -22,7 +22,6 @@
     <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
     <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My wallet</button>
-    <button role="tab" data-view="compound" aria-selected="false">Liquidity</button>
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   <button role="tab" data-view="leaders" aria-selected="false">Leaders</button>
   </nav>
@@ -123,6 +122,7 @@
     <div class="walletbar">
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
+      <button class="btn ghost" id="walletNewPos">Open a position</button>
     </div>
     <p class="vs" id="walletReadonly" hidden style="color:var(--muted)"></p>
     <div class="subtabs" id="walletTabs" role="tablist">
@@ -133,6 +133,7 @@
     </div>
 
     <div class="wpane" data-wpane="balances">
+      <div id="newPos"></div>
       <div id="walletBalances"></div>
       <div id="walletOrders"></div>
       <div id="walletOut"></div>
@@ -186,23 +187,6 @@
       <span class="dim" id="actMeta" style="font-size:12px"></span>
     </div>
     <div id="activityOut"></div>
-  </section>
-
-  <!-- --------------------------------------------------------- COMPOUND -->
-  <section class="view" id="view-compound">
-    <h2 class="vt">Liquidity</h2>
-    <p class="vs">Add, take some out, collect, or compound. Only the harvest is ever used.</p>
-    <div class="walletbar">
-      <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
-      <button class="btn" id="compGo">Load my positions</button>
-      <button class="btn" id="newPosGo">Open a new position</button>
-      <span class="modechips" role="radiogroup" aria-label="How to compound">
-        <button class="chip" data-pagemode="swap" role="radio" aria-checked="true" title="Sells the long side of each harvest to reach the ratio the band needs; all of it goes back into the pool">Compound with swapping</button>
-        <button class="chip" data-pagemode="noswap" role="radio" aria-checked="false" title="Puts back only the part that already fits; nothing is sold and the rest is claimed into your wallet">Compound without swapping</button>
-      </span>
-    </div>
-    <div id="newPos"></div>
-    <div id="compOut"></div>
   </section>
 
   <!-- ----------------------------------------------------- TOKEN DETAIL -->
