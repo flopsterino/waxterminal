@@ -4,7 +4,7 @@
 // =============================================================================
 
 import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
-import { harvestFor, planCompound, stakedIncentives, farmGap } from './compound.js';
+import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
@@ -88,6 +88,20 @@ const sigfig = v => {
 };
 const usdExact = v => (v == null || !isFinite(v)) ? '—'
   : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Four decimals, because two of them cannot show a number moving by a
+// thousandth of a cent a second — which is the whole point of showing it move.
+const usd4 = v => (v == null || !isFinite(v)) ? '—'
+  : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+// Six decimals is plenty for WAX and not nearly enough for WAXWBTC: it printed
+// 0.0000 beside $0.0162, which reads as owning nothing worth 1.6 cents. Below
+// what six decimals can show, precision takes over.
+const qtyFine = v => {
+  if (v == null || !isFinite(v)) return '—';
+  if (v === 0) return '0';
+  if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  if (v >= 1e-6) return v.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 8 });
+  return v.toPrecision(3);
+};
 const pct = v => (v == null || !isFinite(v)) ? '—' : (v >= 1000 ? '>999%' : v.toFixed(1) + '%');
 const ago = t => {
   const s = (Date.now() - new Date(t + (String(t).endsWith('Z') ? '' : 'Z')).getTime()) / 1000;
@@ -410,6 +424,9 @@ function show(v, arg = null) {
   // A view the partner turned off is not a view.
   if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
   if (v !== 'pool' && v !== 'token' && v !== 'account') lastView = v;
+  // A once-a-second recompute has no business running behind a page nobody is
+  // looking at, and it holds every incentive row it read alive with it.
+  if (v !== 'wallet') stopAccrual();
   hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
@@ -1847,6 +1864,91 @@ async function renderWalletStake(account, feeBps, feeAccount) {
 // The terminal could say what was waiting to be collected and nothing about
 // what had been collected — which is the wrong half. Measured on a real
 // account: $5.54 of LP fees on show, $91.56 of farm rewards invisible.
+// ---- farm rewards, accruing ------------------------------------------------
+// Farm rewards are not a balance that changes when something happens. They
+// accrue every second by a formula, and the chain only writes the number down
+// when someone claims — so a table can only ever show you a stale figure.
+//
+// The rows are read once and the amount is recomputed from the clock, which
+// costs nothing and shows the thing as it actually is: a number going up. A
+// farm that has ended stops, because a counter still climbing on a finished
+// farm is a lie that compounds every second it stays on screen.
+let accrualTimer = null;
+function stopAccrual() { if (accrualTimer) { clearInterval(accrualTimer); accrualTimer = null; } }
+
+async function renderFarmAccrual(account, positions, joined) {
+  const out = $('#walletAccrual');
+  if (!out) return;
+  stopAccrual();
+
+  const staked = positions.filter(p => (joined.get(String(p.posId)) || []).length);
+  if (!staked.length) { out.innerHTML = ''; return; }
+
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading what your farms owe you…</span></div>';
+  let rows;
+  try { rows = await pendingFarms(staked, joined, { prices: state.prices }); }
+  catch { out.innerHTML = ''; return; }
+  if (!rows.length) { out.innerHTML = ''; return; }
+
+  // Same token from two farms on the same pool is one thing you are owed, not
+  // two — measured on chain, pool 4356 pays ASSETS from two separate incentives.
+  const byToken = new Map();
+  for (const r of rows) {
+    const t = byToken.get(r.tokenId) || { tokenId: r.tokenId, symbol: r.symbol, price: r.price, rows: [], live: 0 };
+    t.rows.push(r);
+    if (Date.now() < r.endsAt) t.live++;
+    byToken.set(r.tokenId, t);
+  }
+  const tokens = [...byToken.values()];
+  const ended = rows.filter(r => Date.now() >= r.endsAt).length;
+
+  out.innerHTML = `<div class="card accrual">
+    <h3>Farm rewards waiting <span class="dim">&mdash; accruing as you watch</span></h3>
+    <div class="acc-head">
+      <span class="acc-total" id="accTotal">—</span>
+      <span class="acc-rate" id="accRate"></span>
+    </div>
+    <div class="acc-rows">${tokens.map((t, i) => `
+      <div class="acc-row">
+        <span data-pm="${esc(t.tokenId)}|${esc(t.symbol)}"></span>
+        <span class="sym">${esc(t.symbol)}</span>
+        <span class="amt" data-acc="${i}">—</span>
+        <span class="usd" data-accusd="${i}">${t.price == null ? '<span class="dim">unpriced</span>' : ''}</span>
+        <span class="src ${t.live ? 'farm' : ''}">${t.live ? `${t.live} live farm${t.live === 1 ? '' : 's'}` : 'ended'}</span>
+      </div>`).join('')}</div>
+    ${ended ? `<p class="sub" style="margin:9px 0 0">${ended} of these farms ${ended === 1 ? 'has' : 'have'} ended &mdash; what they owe you is still claimable, it just stops growing.</p>` : ''}
+    <div class="toolbar" style="margin:11px 0 0"><button class="btn" id="accGo">Claim or compound these</button></div>
+  </div>`;
+
+  fillMarks(out);
+  $('#accGo').onclick = () => { show('compound'); $('#compInput').value = account; runCompound(account); };
+
+  // The tick. Everything below is arithmetic on rows already in memory.
+  const paint = () => {
+    const now = Date.now();
+    let usd = 0, perSec = 0, anyPriced = false;
+    tokens.forEach((t, i) => {
+      const amt = t.rows.reduce((a, r) => a + pendingAt(r, now), 0);
+      const rate = t.rows.reduce((a, r) => a + accrualPerSec(r, now), 0);
+      const el = out.querySelector(`[data-acc="${i}"]`);
+      if (el) el.textContent = qtyFine(amt);
+      if (t.price != null) {
+        anyPriced = true;
+        usd += amt * t.price; perSec += rate * t.price;
+        const u = out.querySelector(`[data-accusd="${i}"]`);
+        if (u) u.textContent = usd4(amt * t.price);
+      }
+    });
+    const tot = $('#accTotal'), rt = $('#accRate');
+    if (tot) tot.textContent = anyPriced ? usd4(usd) : '—';
+    if (rt) rt.textContent = perSec > 0
+      ? `+${usd4(perSec * 86400)} a day &middot; ${usd4(perSec * 3600)} an hour`.replace('&middot;', '·')
+      : 'not growing — every farm here has ended';
+  };
+  paint();
+  accrualTimer = setInterval(paint, 1000);
+}
+
 async function renderEarned(account) {
   const out = $('#walletEarned');
   if (!out) return;
@@ -2308,6 +2410,7 @@ function tacoCard(p) {
 async function lookupWallet(account) {
   if (!account) return;
   walletShown = account;
+  stopAccrual();          // a counter for the previous account must not keep running
   // Each section answers its own question and loads on its own schedule; the
   // position sweep is the slowest of them and should not hold up a balance.
   const feeAccount = CFG?.commercial?.feeAccount || '';
@@ -2352,6 +2455,9 @@ async function lookupWallet(account) {
   try {
     const joined = await stakedIncentives(res.alcor.map(p => p.posId));
     for (const p of res.alcor) p.farm = farmGap(p, state.farms, joined.get(String(p.posId)) || []);
+    // The staking map is already here, so the accrual costs one read per farm
+    // rather than a second sweep.
+    renderFarmAccrual(account, res.alcor, joined).catch(() => {});
   } catch { /* the cards render without it */ }
 
   const totalUsd = all.reduce((s, p) => s + (p.valueUsd || 0), 0);
@@ -2496,22 +2602,35 @@ async function showCompound(btn, pos) {
   // it is offering something that will not happen — it defaults to the wallet.
   const inPool = x => x.tokenId === pos.pool.tokenA || x.tokenId === pos.pool.tokenB;
   const rewardRows = harvest.basket.map((x, bi) => {
-    const def = x.priced ? 'compound' : 'keep';
+    // A dropdown on a row whose destination the mode has already decided is
+    // theatre. Without swapping, a reward the pool does not hold cannot go into
+    // the pool by any route — it goes to the wallet, and offering a choice
+    // there is offering something that will not happen. So the control appears
+    // only where the answer is genuinely still open:
+    //
+    //   with swapping      every row is a real choice
+    //   without swapping   pool tokens are a choice; everything else is fixed
+    //
+    // Which leaves the one case worth keeping: a third token you would rather
+    // not have sold, on a compound that is otherwise selling.
+    const fixed = (!x.priced) || (noSwap && !inPool(x));
+    const def = x.priced && !fixed ? 'compound' : 'keep';
     const opt = (v, t) => `<option value="${v}"${v === def ? ' selected' : ''}>${t}</option>`;
-    // Two destinations, not three. "Leave it accruing" was a third option that
-    // amounted to the same outcome as taking it to the wallet, minus actually
-    // having it — claiming costs one action, and whether anything gets SOLD is
-    // the switch below, not this.
     return `
-    <label class="prow">
+    <label class="prow${fixed ? ' fixed' : ''}">
       <span class="s">${esc(x.symbol)}</span>
       <span class="a">${qty(x.amount)}</span>
       <span class="u">${x.priced ? usd(x.usd) : '<span class="dim" title="No pool deep enough to price this token — it cannot be swapped, so it can only go to your wallet">unpriced</span>'}</span>
       <span class="w"><span class="src ${x.source === 'fees' ? 'fee' : 'farm'}">${x.source === 'fees' ? 'LP fee' : 'Farm reward'}</span>${x.source === 'fees' ? '' : ` <span class="dim">${esc(x.source)}</span>`}${inPool(x) ? '' : ' <span class="dim">&middot; not a token in this pool</span>'}</span>
-      <select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
-        ${x.priced ? opt('compound', '&rarr; into the pool') : ''}
-        ${opt('keep', '&rarr; to my wallet')}
-      </select>
+      ${fixed
+        ? `<span class="dest-fixed" title="${x.priced
+            ? 'Not a token this pool holds, and nothing is being sold — so it can only go to your wallet'
+            : 'No pool deep enough to price this token, so it cannot be swapped into the band'}">&rarr; your wallet</span>
+           <input type="hidden" class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}" value="keep">`
+        : `<select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
+            ${opt('compound', '&rarr; into the pool')}
+            ${opt('keep', '&rarr; to my wallet')}
+          </select>`}
     </label>`;
   }).join('');
 

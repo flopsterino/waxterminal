@@ -314,3 +314,72 @@ export function farmGap(position, farms, joinedIds = []) {
     }, 0),
   };
 }
+
+// ------------------------------------------------------- live accrual ------
+// Farm rewards are not a balance that updates when something happens — they
+// accrue every second, by a formula, and the chain only writes them down when
+// someone claims. Which means the pending amount is computable at any instant
+// from rows that were read once:
+//
+//   rewardPerToken = stored + (elapsed * rewardRateE18) / totalStakingWeight
+//   earned         = weight * (rewardPerToken - userPaid) / 1e18 + rewards
+//
+// `elapsed` is the only term that moves. So one read gives a figure that can be
+// recomputed as often as the page likes, for nothing, and shown ticking upward
+// — which is what farming actually looks like and what no table can show.
+//
+// Returns the raw rows alongside the amounts so the caller can re-evaluate
+// `pendingReward` against a later clock without going back to chain.
+export async function pendingFarms(positions, joined, { prices, concurrency = 6 } = {}) {
+  const jobs = [];
+  for (const pos of positions) {
+    for (const iid of (joined.get(String(pos.posId)) || [])) jobs.push({ pos, iid });
+  }
+
+  const out = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= jobs.length) return;
+      const { pos, iid } = jobs[i];
+      try {
+        const [inc, stakeRes] = await Promise.all([
+          incentiveById(iid),
+          getRows(ALCOR, String(iid), 'stakes', { limit: 1, lower: pos.posId }),
+        ]);
+        if (!inc) continue;
+        const stake = stakeRes.rows?.[0];
+        if (!stake || String(stake.posId) !== String(pos.posId)) continue;
+        const q = String(inc.reward.quantity);
+        const sym = q.split(/\s+/)[1];
+        const decimals = (q.split(' ')[0].split('.')[1] || '').length;
+        const tokenId = `${sym}@${inc.reward.contract}`;
+        out.push({
+          posId: String(pos.posId), pool: pos.pool, incentiveId: String(iid),
+          symbol: sym, tokenId, decimals,
+          price: prices.get(tokenId)?.usd ?? null,
+          // Everything pendingReward needs, kept so the page can re-tick.
+          inc, stake,
+          // Per second, for the whole farm and for this position's share. The
+          // second one is what a holder is actually earning.
+          ratePerSec: (Number(inc.rewardRateE18) / 1e18) / 10 ** decimals,
+          share: Number(inc.totalStakingWeight) > 0 ? Number(stake.stakingWeight) / Number(inc.totalStakingWeight) : 0,
+          endsAt: Number(inc.periodFinish) * 1000,
+        });
+      } catch { /* one unreadable incentive must not void the rest */ }
+    }
+  }));
+  return out;
+}
+
+// The amount owed right now, for a row from pendingFarms. Pure maths — call it
+// as often as you like.
+export const pendingAt = (row, now = Date.now()) =>
+  pendingReward(row.inc, row.stake, now / 1000) / 10 ** row.decimals;
+
+// What this position earns per second from this farm, while the farm is live.
+// After periodFinish it earns nothing, and a counter that keeps climbing on a
+// finished farm is a lie that compounds every second it stays on screen.
+export const accrualPerSec = (row, now = Date.now()) =>
+  (now < row.endsAt ? row.ratePerSec * row.share : 0);
