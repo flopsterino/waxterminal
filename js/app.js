@@ -2581,9 +2581,13 @@ async function showCompound(btn, pos) {
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
 
-  let harvest;
+  let harvest, preBalances = null;
   try {
     harvest = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
+    // Read now, while the panel is being drawn and nobody is waiting on a
+    // gesture. This is what makes "Compound now" one press instead of two.
+    preBalances = await readBalances(pos.pool, [...new Set(harvest.basket.map(b => b.tokenId))])
+      .catch(() => null);
   } catch (e) { box.innerHTML = `<div class="err">Could not build a plan: ${esc(e.message)}</div>`; return; }
 
   paintPlan();
@@ -2727,7 +2731,9 @@ async function showCompound(btn, pos) {
       plan: planCompound({ pool: pos.pool, position: pos, basket: planBasket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }),
     };
     go.disabled = true;
-    await runOne(runbox, entry, feeBps, feeAccount);
+    // Deliberately not awaited before this point: the click is the gesture the
+    // wallet popup needs, and an await here would spend it.
+    await runOne(runbox, entry, feeBps, feeAccount, null, preBalances);
     go.disabled = false;
   };
   }
@@ -2804,7 +2810,17 @@ const RESUME_KEY = 'wt.compound.pending';
 const loadResume = () => { try { return JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; } };
 const saveResume = v => { try { v ? localStorage.setItem(RESUME_KEY, JSON.stringify(v)) : localStorage.removeItem(RESUME_KEY); } catch {} };
 
-async function runOne(box, entry, feeBps, feeAccount, resume = null) {
+// `preBalances` is the whole point of the "Compound now" button being one click
+// rather than two. A browser only lets a page open a window during a user
+// gesture, and every `await` spends it — so reading balances inside the handler
+// meant the first signature arrived with the gesture already gone, and needed
+// its own second press to get a fresh one.
+//
+// Reading them while the plan is drawn instead means the click that says
+// "Compound now" IS the gesture for signature 1: nothing is awaited between the
+// two. Signatures 2 and 3 still ask, because they genuinely cannot be reached
+// without first measuring what the previous one produced.
+async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances = null) {
   const { pos, harvest, plan } = entry;
   const steps = [
     { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
@@ -2839,15 +2855,22 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null) {
   try {
     // ---- 1. claim -------------------------------------------------------
     if (!resume) {
-      render(0, 'Reading your balances…');
-      // Everything the claim could produce, measured first, so afterwards the
-      // difference is the harvest and nothing else.
-      before = await readBalances(pos.pool, basketIds);
-
       const { actions } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
       if (!actions.length) throw new Error('Nothing claimable to harvest.');
-      await press(0, 'Sign 1 of 3 — claim', 'Your wallet will ask you to collect the fees and rewards. Nothing is swapped or spent.');
-      render(0, 'Waiting for your wallet…');
+
+      // Everything the claim could produce, measured first, so afterwards the
+      // difference is the harvest and nothing else. Already in hand when the
+      // plan was drawn — which is what lets the next line run on the click that
+      // got us here.
+      if (preBalances) {
+        before = preBalances;
+        render(0, 'Waiting for your wallet…');
+      } else {
+        render(0, 'Reading your balances…');
+        before = await readBalances(pos.pool, basketIds);
+        await press(0, 'Sign 1 of 3 — claim', 'Your wallet will ask you to collect the fees and rewards. Nothing is swapped or spent.');
+        render(0, 'Waiting for your wallet…');
+      }
       const r1 = await wallet.transact(actions, { verify: true });
       r1id = r1.id;
       // From here the harvest is loose in the wallet. If anything interrupts
@@ -3342,7 +3365,12 @@ async function runCompound(account, resume = null) {
       try {
         const h = await harvestFor(pos, pos.pool, { prices: state.prices, tokens: state.tokens });
         pos.farm = farmGap(pos, state.farms, h.incentiveIds || []);
-        return { pos, harvest: h, plan: planCompound({ pool: pos.pool, position: pos, basket: h.basket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }) };
+        // Balances read here, with the plan, so pressing the button later is
+        // the gesture the wallet popup needs rather than one press before it.
+        const before = h.basket.length
+          ? await readBalances(pos.pool, [...new Set(h.basket.map(b => b.tokenId))]).catch(() => null)
+          : null;
+        return { pos, harvest: h, before, plan: planCompound({ pool: pos.pool, position: pos, basket: h.basket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(pos.pool.sqrtX64) }) };
       } catch { return { pos, harvest: { basket: [] }, plan: null }; }
     }));
     plans.push(...chunk);
@@ -3516,7 +3544,7 @@ async function runCompound(account, resume = null) {
       plan: planCompound({ pool: entry.pos.pool, position: entry.pos, basket: planBasket, feeBps, noSwap, sqrtP: sqrtPriceFromX64(entry.pos.pool.sqrtX64) }),
     };
     b.disabled = true;
-    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), run, feeBps, feeAccount);
+    await runOne(out.querySelector(`[data-runbox="${b.dataset.run}"]`), run, feeBps, feeAccount, null, entry.before);
     b.disabled = false;
   });
 }
