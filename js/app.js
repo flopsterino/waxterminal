@@ -5,6 +5,7 @@
 
 import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound, stakedIncentives, farmGap } from './compound.js';
+import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
@@ -1530,7 +1531,7 @@ function wireWallet() {
   // restoring a session pre-fills it with your own name, so the field showed
   // the account and then refused to look it up. Gate on what has actually been
   // rendered instead.
-  // Three panes, one lookup. Everything still loads together — the split is
+  // Four panes, one lookup. Everything still loads together — the split is
   // about not making someone scroll past their CPU meter to reach a balance,
   // not about loading less.
   $('#walletTabs')?.addEventListener('click', e => {
@@ -1839,6 +1840,69 @@ async function renderWalletStake(account, feeBps, feeAccount) {
 // makes you collect each period separately before a withdraw pays anything.
 // Someone away for six months is a hundred and eighty collect actions behind,
 // which is not one transaction — so the batch is bounded and says what is left.
+// ---- what this account has already been paid ------------------------------
+// The terminal could say what was waiting to be collected and nothing about
+// what had been collected — which is the wrong half. Measured on a real
+// account: $5.54 of LP fees on show, $91.56 of farm rewards invisible.
+async function renderEarned(account) {
+  const out = $('#walletEarned');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading what you have been paid…</span></div>';
+
+  let hist;
+  try { hist = await earningsHistory(account); }
+  catch (e) { out.innerHTML = `<div class="err">Could not read your payout history: ${esc(e.message)}</div>`; return; }
+
+  if (!hist.rows.length) {
+    out.innerHTML = `<div class="empty">No LP fees, farm rewards or WaxDAO claims found for <span class="mono">${esc(account)}</span>.</div>`;
+    return;
+  }
+
+  const s = summariseEarnings(hist.rows, state.prices);
+  const kind = k => s.kinds.get(k) || 0;
+  const span = s.firstAt ? Math.max(1, Math.round((Date.now() - s.firstAt) / 86400e3)) : 0;
+
+  out.innerHTML = `
+    <div class="stats">
+      <div class="stat"><span class="v">${usdExact(s.usd)}</span><span class="k">collected all time</span><span class="sub">${s.claims.toLocaleString()} payouts over ${span} days</span></div>
+      <div class="stat"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span><span class="sub">Alcor incentives</span></div>
+      <div class="stat"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span><span class="sub">collected from your ranges</span></div>
+      ${kind('waxdao') + kind('pepperstake') > 0 ? `<div class="stat"><span class="v">${usdExact(kind('waxdao') + kind('pepperstake'))}</span><span class="k">WaxDAO &amp; PepperStake</span></div>` : ''}
+      <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">across the whole period, not the last week</span></div>
+    </div>
+
+    <p class="vs">Valued at today's prices, which is what those rewards are worth <i>now</i> &mdash; not what they were worth on each of the ${s.series.length} days you were paid.
+      ${s.unpriced ? `${s.unpriced} payout${s.unpriced === 1 ? '' : 's'} could not be priced and ${s.unpriced === 1 ? 'is' : 'are'} left out of the totals.` : ''}
+      ${hist.truncated.length ? `<b>Only the most recent 1,000 ${hist.truncated.join(' and ')} payouts were read</b>, so the real total is higher.` : ''}</p>
+
+    <div class="grid g2">
+      <div class="card"><h3>Paid out over time</h3><div id="earnSeries"></div></div>
+      <div class="card"><h3>What you were paid in</h3><div id="earnTokens"></div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>Every token you have been paid</h3>
+      <div class="tablewrap"><table><thead><tr>
+        <th>Token</th><th class="r">Amount</th><th class="r">Worth now</th><th class="r">Payouts</th>
+      </tr></thead><tbody>${s.tokens.map(t => `<tr>
+        <td><span data-pm="${esc(t.tokenId)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span></td>
+        <td class="r num">${qty(t.amount)}</td>
+        <td class="r num ${t.priced ? '' : 'dim'}">${t.priced ? usdExact(t.usd) : 'unpriced'}</td>
+        <td class="r num dim">${t.claims}</td>
+      </tr>`).join('')}</tbody></table></div>
+    </div>`;
+
+  fillMarks(out);
+
+  // A cumulative line, because the question is "how much has this made me",
+  // and a daily bar answers "was yesterday good" instead.
+  let run = 0;
+  const cum = s.series.map(d => ({ x: new Date(d.day + 'T12:00:00Z').getTime(), y: (run += d.usd) }));
+  $('#earnSeries')?.appendChild(cum.length > 1
+    ? areaChart(cum, { height: 200, color: 'var(--c3)', fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), label: 'Cumulative payouts' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'One payout so far — a line needs two.' }));
+  $('#earnTokens')?.appendChild(donut(s.tokens.filter(t => t.usd > 0).map(t => ({ label: t.symbol, value: t.usd })), { fmt: usd, top: 6 }));
+}
+
 async function renderPepperClaims(account) {
   const out = $('#walletClaims');
   if (!out) return;
@@ -2249,6 +2313,7 @@ async function lookupWallet(account) {
   renderWalletStake(account, feeBps, feeAccount).catch(() => {});
   renderWalletFarms(account).catch(() => {});
   renderPepperClaims(account).catch(() => {});
+  renderEarned(account).catch(() => {});
   renderWalletBalances(account).catch(() => {});
 
   const out = $('#walletOut');
@@ -2430,6 +2495,10 @@ async function showCompound(btn, pos) {
   const rewardRows = harvest.basket.map((x, bi) => {
     const def = x.priced ? 'compound' : 'keep';
     const opt = (v, t) => `<option value="${v}"${v === def ? ' selected' : ''}>${t}</option>`;
+    // Two destinations, not three. "Leave it accruing" was a third option that
+    // amounted to the same outcome as taking it to the wallet, minus actually
+    // having it — claiming costs one action, and whether anything gets SOLD is
+    // the switch below, not this.
     return `
     <label class="prow">
       <span class="s">${esc(x.symbol)}</span>
@@ -2439,7 +2508,6 @@ async function showCompound(btn, pos) {
       <select class="pickmode" data-wpick="${pos.posId}" data-bi="${bi}">
         ${x.priced ? opt('compound', '&rarr; into the pool') : ''}
         ${opt('keep', '&rarr; to my wallet')}
-        ${opt('skip', "leave it, don't claim")}
       </select>
     </label>`;
   }).join('');
@@ -2506,11 +2574,11 @@ async function showCompound(btn, pos) {
       return;
     }
     const modes = new Map([...box.querySelectorAll(`[data-wpick="${pos.posId}"]`)].map(c => [Number(c.dataset.bi), c.value]));
-    const claimBasket = harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') !== 'skip');
+    // Everything is claimed; the choice is only where it lands.
+    const claimBasket = harvest.basket;
     const planBasket = harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') === 'compound');
     const runbox = box.querySelector(`#wbox-${pos.posId}`);
-    if (!claimBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to skip.</div>'; return; }
-    if (!planBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Nothing set to compound &mdash; set at least one reward to compound.</div>'; return; }
+    if (!planBasket.length) { runbox.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to go to your wallet &mdash; use Collect for that, it is one signature.</div>'; return; }
     const entry = {
       pos,
       harvest: { ...harvest, basket: claimBasket },
@@ -3191,7 +3259,6 @@ async function runCompound(account, resume = null) {
         <select class="pickmode" data-pick="${pos.posId}" data-bi="${bi}">
           <option value="compound" selected>&rarr; into the pool</option>
           <option value="keep">&rarr; to my wallet</option>
-          <option value="skip">leave it, don't claim</option>
         </select>
         <span class="sub">${esc(b.source === 'fees' ? 'LP fees' : 'farm')}${inPool(b) ? '' : ' &middot; not in this pool'}</span>
       </span>`).join(' ');
@@ -3211,7 +3278,7 @@ async function runCompound(account, resume = null) {
       </div>` : ''}
       ${harvest.basket.length ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
-        <p class="sub" style="margin:-2px 0 8px">Claiming is its own action, so leaving one unclaimed saves the CPU and it keeps accruing for next time.</p>
+        <p class="sub" style="margin:-2px 0 8px">Everything is claimed either way &mdash; this only decides where it lands. Whether anything is <i>sold</i> to get there is the switch on each position.</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
           <div><span class="dim">Already the right token</span><br><span class="mono">${[...new Set(plan.alreadyRight.map(b => b.symbol))].map(esc).join(', ') || '—'}</span></div>
@@ -3297,11 +3364,11 @@ async function runCompound(account, resume = null) {
     // The deposit is capped by what the plan says it is worth, so a kept reward
     // is claimed and then simply left in the wallet rather than swept back in.
     const modes = new Map([...out.querySelectorAll(`[data-pick="${b.dataset.run}"]`)].map(c => [Number(c.dataset.bi), c.value]));
-    const claimBasket = entry.harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') !== 'skip');
+    // Everything is claimed; the choice is only where it lands.
+    const claimBasket = entry.harvest.basket;
     const planBasket = entry.harvest.basket.filter((_, i) => (modes.get(i) ?? 'compound') === 'compound');
     const box = out.querySelector(`[data-runbox="${b.dataset.run}"]`);
-    if (!claimBasket.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to skip.</div>'; return; }
-    if (!planBasket.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing set to compound — use Collect if you only want to claim.</div>'; return; }
+    if (!planBasket.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Everything is set to go to your wallet — use Collect for that, it is one signature.</div>'; return; }
     const run = claimBasket.length === entry.harvest.basket.length && planBasket.length === entry.harvest.basket.length ? entry : {
       pos: entry.pos,
       harvest: { ...entry.harvest, basket: claimBasket },
