@@ -20,7 +20,16 @@ import { depositRatio, amountsForLiquidity } from './math.js';
 import { getAllRows, getRows } from './chain.js';
 
 const ALCOR = 'swap.alcor';
-const DUST_USD = 0.01;
+// A cent was an arbitrary opinion about what is worth moving, and it silently
+// cancelled the rebalancing swap on any harvest below it — so a small position
+// compounded off-ratio without ever being told why. Nobody asked this terminal
+// to decide what someone's money is worth.
+//
+// The only amount that cannot work is zero, and that is a fact about the chain
+// rather than a preference: below one satoshi an amount rounds to zero and the
+// action either does nothing or reverts. tx.js says so per token, where the
+// decimals are known and the reason can be named.
+const DUST_USD = 0;
 
 // Incentive rows are immutable enough within a session and are shared by every
 // position staked in them, so one fetch serves the whole wallet.

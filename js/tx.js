@@ -116,7 +116,11 @@ export function buildSwaps({ pool, plan, harvested, me = account(), auth = null 
     if (!(amountIn > 0)) { swaps.push({ ...s, skipped: 'nothing harvested' }); continue; }
     const expectedOut = amountIn * pFrom / pTo;
     const minOut = expectedOut * (1 - SLIPPAGE);
-    if (!(amountIn > 0) || !(minOut > 0)) { swaps.push({ ...s, skipped: 'dust' }); continue; }
+    // Zero is the only refusal. Not "too small to bother with" — that is the
+    // holder's call — but genuinely zero once rounded to what the token can
+    // express, where the transfer would either do nothing or revert.
+    if (parseFloat(dec(amountIn, from.decimals)) <= 0) { swaps.push({ ...s, skipped: `below one ${from.symbol} unit` }); continue; }
+    if (parseFloat(dec(minOut, to.decimals)) <= 0) { swaps.push({ ...s, skipped: `would return less than one ${to.symbol} unit` }); continue; }
 
     const memo = `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, to.symbol, to.decimals)}@${to.contract}#0`;
     actions.push({
