@@ -51,7 +51,7 @@
   <!-- ------------------------------------------------------------ POOLS -->
   <section class="view" id="view-pools">
     <h2 class="vt">Pools</h2>
-    <p class="vs">Every pool on Alcor, TacoSwap, Defibox and A-DEX. Value shown is what a pool could actually pay out.</p>
+    <p class="vs">Every pool on Alcor, TacoSwap, Defibox and A-DEX. Value is what a pool could actually pay out.</p>
     <div class="stats" id="poolStats"></div>
     <div class="toolbar">
       <input class="search" id="poolSearch" placeholder="Search token or pool id…" autocomplete="off">
@@ -70,7 +70,7 @@
   <!-- ----------------------------------------------------------- TOKENS -->
   <section class="view" id="view-tokens">
     <h2 class="vt">Tokens</h2>
-    <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell in one go before moving the price 1%. It measures how thick a market is, not whether a project is sound — a good token can be small.</p>
+    <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell before moving the price 1%.</p>
     <div class="stats" id="tokStats"></div>
     <div class="subtabs" id="tokLens" role="tablist">
       <button class="chip" data-lens="all" aria-pressed="true">All</button>
@@ -92,7 +92,7 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs">Every live farm, with what it pays each day. Type an amount you would add and every rate updates — your money joins the pot, so it dilutes the return.</p>
+    <p class="vs">Every live farm, with what it pays each day. Type an amount and every rate updates &mdash; your money dilutes the pot.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
@@ -119,7 +119,7 @@
   <!-- ----------------------------------------------------------- WALLET -->
   <section class="view" id="view-wallet">
     <h2 class="vt">My wallet</h2>
-    <p class="vs">Everything this account holds and everything it is owed. Claiming is free; the fee is only for compounding, and only ever taken from what was just claimed.</p>
+    <p class="vs">Everything this account holds and everything it is owed.</p>
     <div class="walletbar">
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
@@ -153,7 +153,7 @@
   <!-- ---------------------------------------------------------- LEADERS -->
   <section class="view" id="view-leaders">
     <h2 class="vt">Leaders</h2>
-    <p class="vs">Who is actually doing this, measured from the chain. <b>Fees earned</b> is the one nobody else publishes &mdash; it is not in any table, it has to be reconstructed from each pool's fee-growth counters for every position separately.</p>
+    <p class="vs">Measured from the chain. <b>Fees earned</b> is in no table &mdash; it is rebuilt per position from each pool's fee-growth counters.</p>
     <div class="stats" id="ldStats"></div>
     <div class="note" id="ldBurn" hidden></div>
     <div class="subtabs" id="ldTabs" role="tablist">
@@ -184,7 +184,7 @@
   <!-- --------------------------------------------------------- COMPOUND -->
   <section class="view" id="view-compound">
     <h2 class="vt">Liquidity</h2>
-    <p class="vs">Your positions, and everything you can do with them: add, take some back out, collect what has accrued, or compound it. Compounding claims first and only then decides what to convert, because what actually landed is not knowable until the claim has run &mdash; and only the harvest is ever used, never the balance you already held.</p>
+    <p class="vs">Your positions: add, take some out, collect, or compound. Only the harvest is ever used, never the balance you already held.</p>
     <div class="walletbar">
       <input id="compInput" placeholder="WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="compGo">Load my positions</button>

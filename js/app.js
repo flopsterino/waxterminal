@@ -855,7 +855,7 @@ async function renderPromoted() {
       <td class="r num dim">#${r.pr.rank}</td>
       <td class="r num dim">${days(r.pr.until - Date.now())}d left</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">Paid slots, ordered by spend. Nothing else on this page ranks differently because of it.${live.length > rows.length ? ` ${live.length - rows.length} more waiting below.` : ''}</p>`;
+    <p class="sub" style="margin:10px 0 0">Paid slots, ordered by spend.${live.length > rows.length ? ` ${live.length - rows.length} more waiting below.` : ''}</p>`;
 
   box.querySelectorAll('tr[data-promo]').forEach(tr => {
     const [kind, id] = tr.dataset.promo.split('|');
@@ -1140,11 +1140,11 @@ const tokFilters = { q: '', solidOnly: true, sort: 'vol24', dir: -1, lens: 'all'
 const LENSES = {
   all:      { sort: 'vol24' },
   trending: { sort: 'heat',     where: t => t.heat != null,
-              note: 'Trading above its own weekly run rate — the multiple, not the amount, so a small token having a big day is not buried under the same eight names.' },
+              note: 'Trading above its own weekly run rate — the multiple, not the amount.' },
   gainers:  { sort: 'change24', where: t => t.change24 != null && t.change24 > 0 },
   losers:   { sort: 'change24', dir: 1, where: t => t.change24 != null && t.change24 < 0 },
   new:      { sort: 'bornAt',   where: t => t.bornAt != null,
-              note: 'Newest first, by the day the first pool for it appeared. New is where both the best entries and the worst rugs are.' },
+              note: 'Newest first, by the day the first pool for it appeared.' },
   volume:   { sort: 'vol24',    where: t => t.vol24 > 0 },
 };
 let tokRows = null;
@@ -1690,7 +1690,7 @@ async function renderWalletResources(account) {
     const built = buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span> to power up <span class="mono">${esc(account)}</span>.
-      <br><span class="dim">One transfer. The service burns the CHEESE and pays the system powerup fee in its own WAX.</span>
+      <br><span class="dim">One transfer. The service burns the CHEESE.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
     $('#pwSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -1711,7 +1711,7 @@ async function renderWalletResources(account) {
     const built = buildUnstake({ cpu, net, me: account });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Unstake <b>${qty(built.total)} WAX</b> &mdash; ${qty(cpu)} from CPU and ${qty(net)} from NET.
-      <br><span class="dim">It lands in your wallet in three days. Until then it is not staked, not spendable, and not earning &mdash; and your CPU drops immediately.</span>
+      <br><span class="dim">In your wallet in three days. Not staked, not spendable, not earning until then.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unSign">Sign and unstake</button></div></div>`;
     $('#unSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -1841,7 +1841,7 @@ async function renderWalletStake(account, feeBps, feeAccount) {
       <div class="stat"><span class="v">${last ? qty(last.amount) + ' WAX' : '—'}</span><span class="k">last claim paid</span><span class="sub">${last ? ago(new Date(last.ts).toISOString()) : 'never claimed'}</span></div>
     </div>
     <div class="card">
-      ${!info.voting ? `<p class="sub" style="margin:0 0 10px">This stake is not voting, so it earns nothing. Voting for producers or a proxy starts the reward &mdash; this terminal will not pick one for you, because who you vote for is not a thing to have chosen on your behalf.</p>` : ''}
+      ${!info.voting ? `<p class="sub" style="margin:0 0 10px">Not voting, so it earns nothing. A vote starts the reward.</p>` : ''}
       ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. The contract allows one claim a day.</p>` : ''}
       ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The claim re-casts your vote too, so the weight stops decaying.</p>` : ''}
       <div id="stakeSteps"></div>
@@ -1916,7 +1916,7 @@ async function renderFarmAccrual(account, positions, joined) {
         <span class="usd" data-accusd="${i}">${t.price == null ? '<span class="dim">unpriced</span>' : ''}</span>
         <span class="src ${t.live ? 'farm' : ''}">${t.live ? `${t.live} live farm${t.live === 1 ? '' : 's'}` : 'ended'}</span>
       </div>`).join('')}</div>
-    ${ended ? `<p class="sub" style="margin:9px 0 0">${ended} of these farms ${ended === 1 ? 'has' : 'have'} ended &mdash; what they owe you is still claimable, it just stops growing.</p>` : ''}
+    ${ended ? `<p class="sub" style="margin:9px 0 0">${ended} ended &mdash; still claimable, no longer growing.</p>` : ''}
     <div class="toolbar" style="margin:11px 0 0"><button class="btn" id="accGo">Claim or compound these</button></div>
   </div>`;
 
@@ -1973,10 +1973,10 @@ async function renderEarned(account) {
       <div class="stat srcstat farm"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span><span class="sub">paid by incentives you staked into</span></div>
       <div class="stat srcstat fee"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span><span class="sub">paid by trades through your ranges</span></div>
       ${kind('waxdao') + kind('pepperstake') > 0 ? `<div class="stat"><span class="v">${usdExact(kind('waxdao') + kind('pepperstake'))}</span><span class="k">WaxDAO &amp; PepperStake</span></div>` : ''}
-      <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">across the whole period, not the last week</span></div>
+      <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">over the whole period</span></div>
     </div>
 
-    <p class="vs">Valued at today's prices, which is what those rewards are worth <i>now</i> &mdash; not what they were worth on each of the ${s.series.length} days you were paid.
+    <p class="vs">Valued at today's prices, not the price on each of the ${s.series.length} days you were paid.
       ${s.unpriced ? `${s.unpriced} payout${s.unpriced === 1 ? '' : 's'} could not be priced and ${s.unpriced === 1 ? 'is' : 'are'} left out of the totals.` : ''}
       ${hist.truncated.length ? `<b>Only the most recent 1,000 ${hist.truncated.join(' and ')} payouts were read</b>, so the real total is higher.` : ''}</p>
 
@@ -2226,7 +2226,7 @@ function reviewSend(account, rows) {
   const worth = row.price != null ? usd(amount * row.price) : null;
   box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
     Send <b>${qty(amount)} ${esc(row.symbol)}</b>${worth ? ` (${worth})` : ''} from <span class="mono">${esc(account)}</span> to <span class="mono">${esc(to)}</span>${memo ? ` with memo <span class="mono">${esc(memo)}</span>` : ', with no memo'}.
-    ${!memo ? '<br><span class="dim">Most exchanges and services need a memo to credit a deposit. Without one it can be lost.</span>' : ''}
+    ${!memo ? '<br><span class="dim">Most services need a memo to credit a deposit. Without one it can be lost.</span>' : ''}
     <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="sendConfirm">Sign and send</button></div></div>`;
 
   $('#sendConfirm').onclick = async () => {
@@ -2443,7 +2443,7 @@ async function lookupWallet(account) {
   const all = [...res.alcor, ...res.taco];
   if (!all.length) {
     out.innerHTML = `<div class="empty">No liquidity found for <span class="mono">${esc(account)}</span>.<br>
-      <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} this account has interacted with, plus its TacoSwap LP balances.</span></div>`;
+      <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} and its TacoSwap LP.</span></div>`;
     return;
   }
 
@@ -2509,7 +2509,7 @@ async function lookupWallet(account) {
   if (withFees) {
     html += `<div class="cta">
       <div><b>${usd(waiting)} in fees is sitting uncollected</b> across ${withFees} position${withFees === 1 ? '' : 's'}
-        <span class="sub">Collected fees earn nothing until they are back in the pool. Farm rewards are on top of this.</span></div>
+        <span class="sub">Farm rewards are on top of this.</span></div>
       <button class="btn" id="goCompound">Compound them</button>
     </div>`;
   }
@@ -2522,7 +2522,7 @@ async function lookupWallet(account) {
     const perDay = gaps.reduce((a, p) => a + p.farm.missedUsdDay, 0);
     html += `<div class="cta warn">
       <div><b>${gaps.length} position${gaps.length === 1 ? ' is' : 's are'} not staked into ${gaps.length === 1 ? 'a farm running on its pool' : 'the farms running on their pools'}</b>
-        <span class="sub">${perDay > 0 ? `About ${usd(perDay)} a day` : 'Rewards'} being paid to staked positions only. Each card below has a one-click join.</span></div>
+        <span class="sub">${perDay > 0 ? `About ${usd(perDay)} a day` : 'Rewards'} paid to staked positions only.</span></div>
     </div>`;
   }
 
@@ -2657,11 +2657,11 @@ async function showCompound(btn, pos) {
       <div class="modesel" role="radiogroup" aria-label="How to compound">
         <button type="button" class="mode${noSwap ? '' : ' on'}" data-mode="swap" data-pos="${pos.posId}" role="radio" aria-checked="${!noSwap}">
           <b>With swapping</b>
-          <span>Sells the long side of the harvest to reach the ratio this band needs. All of it goes back into the pool.</span>
+          <span>Sells the long side to reach the band's ratio. All of it goes back in.</span>
         </button>
         <button type="button" class="mode${noSwap ? ' on' : ''}" data-mode="noswap" data-pos="${pos.posId}" role="radio" aria-checked="${noSwap}">
           <b>Without swapping</b>
-          <span>Puts back only the part that already fits. Nothing is sold &mdash; the rest is claimed straight into your wallet.</span>
+          <span>Puts back what already fits. The rest goes to your wallet, unsold.</span>
         </button>
       </div>
       </div>
@@ -2695,9 +2695,7 @@ async function showCompound(btn, pos) {
       <div class="planline">
         <span class="k">Signs</span>
         <span><span class="mono">${b.actions.map(a => esc(a.name)).join(' &middot; ')}</span>
-          <span class="dim">&mdash; ${b.noSwap
-            ? 'all in one transaction, because every amount in it is known before you sign'
-            : 'in two: the deposit has to wait for what the swap actually returns'}</span></span>
+          <span class="dim">&mdash; ${b.noSwap ? 'one transaction' : 'two'}</span></span>
       </div>
 
       <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
@@ -2868,7 +2866,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
       saveResume(null);
       box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
         <b>Compounded.</b> Put back ${qty(one.depA)} ${esc(pos.pool.symA)} and ${qty(one.depB)} ${esc(pos.pool.symB)} in one transaction, and sold nothing.
-        <br><span class="sub">Asked for ${((1 - one.margin) * 100).toFixed(1)}% under the estimate so it could not over-ask — the remainder is in your wallet and funds the next one.</span>
+        <br><span class="sub">${((1 - one.margin) * 100).toFixed(1)}% under the estimate; the remainder is in your wallet.</span>
         <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       return;
     }
@@ -3155,7 +3153,7 @@ function renderNewPosition(account) {
       Open a ${band === 'full' ? 'full-range' : '±' + band + '%'} position in <b>${esc(p.symA)}/${esc(p.symB)}</b> at ${(p.feeBps / 100).toFixed(2)}%, with
       <b>${qty(amountA)} ${esc(p.symA)}</b> and <b>${qty(amountB)} ${esc(p.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''}, ticks ${lower}…${upper}.
       <br><span class="dim">${built.actions.length} actions in one signature. Whatever the pool cannot take at the current ratio stays in your Alcor balance rather than being lost.</span>
-      ${band !== 'full' ? '<br><span class="dim">A narrow band stops earning the moment the price leaves it, and you are then holding whichever of the two tokens is the losing side. That is the trade you are making, not a malfunction.</span>' : ''}
+      ${band !== 'full' ? '<br><span class="dim">Stops earning the moment the price leaves the band.</span>' : ''}
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="npConfirm">Sign and open</button></div></div>`;
     $('#npConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -3231,7 +3229,7 @@ function renderAddLiquidity(box, pos, account) {
     const worth = (amountA * (pxA || 0)) + (amountB * (pxB || 0));
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Deposit <b>${qty(amountA)} ${esc(pool.symA)}</b> and <b>${qty(amountB)} ${esc(pool.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''} into ticks ${pos.tickLower}…${pos.tickUpper}.
-      ${built.venueTaxA || built.venueTaxB ? `<br><span class="dim">One of these taxes the transfer, so the deposit asks for what arrives rather than what was sent — the difference stays in your Alcor balance.</span>` : ''}
+      ${built.venueTaxA || built.venueTaxB ? `<br><span class="dim">Taxed on transfer, so the deposit asks for what arrives.</span>` : ''}
       <br><span class="dim">${built.actions.length} actions in one signature: the transfers that fund it, then addliquid. Nothing else in your wallet is touched.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="addConfirm">Sign and deposit</button></div></div>`;
     $('#addConfirm').onclick = async () => {
@@ -3292,7 +3290,7 @@ function renderRemoveLiquidity(box, pos, account) {
     if (!built.actions.length) { out.innerHTML = '<div class="err">That fraction rounds to nothing — liquidity is a whole number.</div>'; return; }
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Withdraw <b>${pct}%</b> of position #${pos.posId} &mdash; about ${qty(pos.amountA * pct / 100)} ${esc(pool.symA)} and ${qty(pos.amountB * pct / 100)} ${esc(pool.symB)}, plus everything it has earned.
-      <br><span class="dim">Paid straight to your wallet; nothing is left in an internal balance. A minimum ${(100 - 1).toFixed(0)}% of the expected amounts is enforced, so a price move mid-transaction cancels rather than fills badly.</span>
+      <br><span class="dim">Paid straight to your wallet, with a ${(100 - 1).toFixed(0)}% minimum enforced.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="rmConfirm">Sign and withdraw</button></div></div>`;
     $('#rmConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -3429,12 +3427,12 @@ async function runCompound(account, resume = null) {
       </div>
       ${pos.farm?.missing.length ? `<div class="pc-farm" style="margin-bottom:10px">
         <div><b>${pos.farm.aprMissing != null ? `${pct(pos.farm.aprMissing)} APR` : `${pos.farm.missing.length} farm${pos.farm.missing.length === 1 ? '' : 's'}`} you are not collecting</b>
-          <span class="sub">This pool pays ${pos.farm.missing.map(x => esc(x.rewardSymbol)).join(' + ')} to staked positions, and this one is not staked${pos.farm.missedUsdDay > 0 ? ` &mdash; about ${usd(pos.farm.missedUsdDay)} a day at this size` : ''}. That is why there are no farm rewards here to compound.</span></div>
+          <span class="sub">${pos.farm.missing.map(x => esc(x.rewardSymbol)).join(' + ')} goes to staked positions only${pos.farm.missedUsdDay > 0 ? ` &mdash; about ${usd(pos.farm.missedUsdDay)} a day at this size` : ''}.</span></div>
         <button class="btn" data-joinfarm="${pos.posId}" data-inc="${pos.farm.missing.map(x => esc(x.id)).join(',')}">Join the farm</button>
       </div>` : ''}
       ${harvest.basket.length ? `
         <div style="font-size:12.5px;margin-bottom:8px">${basketBits || '<span class="dim">nothing claimable</span>'}</div>
-        <p class="sub" style="margin:-2px 0 8px">Everything is claimed either way &mdash; this only decides where it lands. Whether anything is <i>sold</i> to get there is the switch on each position.</p>
+        <p class="sub" style="margin:-2px 0 8px">Everything is claimed either way &mdash; this decides where it lands.</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;font-size:12.5px">
           <div><span class="dim">This band needs</span><br><span class="mono">${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pos.pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pos.pool.symB)}</span></div>
           <div><span class="dim">Already the right token</span><br><span class="mono">${[...new Set(plan.alreadyRight.map(b => b.symbol))].map(esc).join(', ') || '—'}</span></div>
@@ -3458,12 +3456,12 @@ async function runCompound(account, resume = null) {
     html += `<div class="cta" style="margin-top:14px">
       <div><b>Selling is off.</b> Each position puts back only the balanced pair its harvest already contains
         &mdash; ${usd(plans.reduce((a, x) => a + (x.plan?.leftoverUsd || 0), 0))} across these positions stays in your wallet instead of being swapped.
-        <span class="sub">It is not lost: it sits there and funds the next compound, when the other side has caught up.</span></div>
+        <span class="sub">It funds the next compound.</span></div>
     </div>`;
   }
 
   html += `<div class="card" style="margin-top:14px"><h3>How this executes</h3>
-    <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">Claim, convert, redeposit &mdash; up to three signatures, and convert is skipped when nothing needs converting. Only the harvest is used; no contract holds your funds.</p>
+    <p style="font-size:13px;color:var(--ink-2);margin:0;max-width:74ch">Only the harvest is used. No contract holds your funds.</p>
     
   </div>`;
 
@@ -3592,7 +3590,7 @@ async function renderLeaders() {
       ldData = await r.json();
     } catch (e) {
       out.innerHTML = `<div class="empty">The leaderboards have not been built yet.<br>
-        <span class="dim">They come from a nightly job that reads every position in every pool; the page cannot compute them while you wait.</span></div>`;
+        <span class="dim">Built nightly.</span></div>`;
       $('#ldStats').innerHTML = '';
       return;
     }
@@ -3612,8 +3610,8 @@ async function renderLeaders() {
   const bn = d.burned;
   $('#ldBurn').innerHTML = bn && bn.n
     ? `<b>${usdExact(bn.f)} of fees has accrued to liquidity that was burned.</b>
-       ${bn.n.toLocaleString()} positions worth ${usdExact(bn.v)} sit at <span class="mono">eosio.null</span>, still earning and permanently uncollectable.
-       They are counted in every pool total on this site and left off the boards below, because no account is doing well here.`
+       ${bn.n.toLocaleString()} positions worth ${usdExact(bn.v)} at <span class="mono">eosio.null</span>, still earning and never collectable.
+       Counted in every pool total, left off the boards below.`
     : '';
   $('#ldBurn').hidden = !(bn && bn.n);
 
@@ -3791,7 +3789,7 @@ async function openAccount(name) {
     <div class="tokhead">
       <div>
         <h2 class="vt" style="margin:0">${esc(name)} <span id="acctKind"></span></h2>
-        <p class="vs" style="margin:2px 0 0">Everything this account holds, priced the same way as the rest of this terminal.</p>
+        <p class="vs" style="margin:2px 0 0"></p>
       </div>
       <span style="flex:1"></span>
       <a class="btn ghost" href="https://waxblock.io/account/${esc(name)}" target="_blank" rel="noopener">Explorer &nearr;</a>
@@ -3981,7 +3979,7 @@ async function renderOrderBook(boxId, tokenId, symbol) {
       : buildLimitOrder({ give: { ...tok, amount: amt }, want: { ...waxTok, amount: total }, me: wallet.account() });
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       ${buying ? `Send <b>${qty(total)} WAX</b> and ask for <b>${qty(amt)} ${esc(symbol)}</b>` : `Send <b>${qty(amt)} ${esc(symbol)}</b> and ask for <b>${qty(total)} WAX</b>`}, at ${qty(px)} WAX each.
-      <br><span class="dim">The order rests on chain until it fills or you cancel it. What you send leaves your wallet now and comes back as the other token, or as itself if you cancel.</span>
+      <br><span class="dim">Rests on chain until it fills or you cancel. What you send leaves your wallet now.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="obSign">Sign and place</button></div></div>`;
     $('#obSign').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -4219,7 +4217,7 @@ async function openToken(id) {
     if (!tax.bps) {
       // Absence of evidence. Some contracts hold the rate in code rather than
       // in a readable table, so this cannot promise there is none.
-      el.innerHTML = `<p class="sub" style="margin:0">None found in this contract&rsquo;s tables &mdash; not a guarantee, a rate held in code is invisible from outside.</p>`;
+      el.innerHTML = `<p class="sub" style="margin:0">None in this contract&rsquo;s tables &mdash; a rate held in code is invisible from outside.</p>`;
       return;
     }
     const burn = tax.parts.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0);
