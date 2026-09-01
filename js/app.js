@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
+import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, buildLimitOrder, buildCancelOrder, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -2647,7 +2647,7 @@ async function showCompound(btn, pos) {
         <span class="from">${usd(b.grossUsd)}</span>
         <span class="arrow">&rarr;</span>
         <span class="to">${usd(b.depositUsd)}</span>
-        <span class="note">back into the band${b.feeUsd > 0 && b.depositUsd > 0 ? ` &middot; ${usd(b.depositUsd * (feeBps / 10000))} fee` : ''} &middot; ${b.swaps.length ? 3 : 2} signatures</span>
+        <span class="note">back into the band${b.feeUsd > 0 && b.depositUsd > 0 ? ` &middot; ${usd(b.depositUsd * (feeBps / 10000))} fee` : ''} &middot; ${b.noSwap ? 'one signature' : 'two signatures'}</span>
       </div>
 
       <div class="prows">${rewardRows}</div>
@@ -2694,7 +2694,10 @@ async function showCompound(btn, pos) {
       </div>
       <div class="planline">
         <span class="k">Signs</span>
-        <span class="mono">${b.actions.map(a => esc(a.name)).join(' &middot; ')}</span>
+        <span><span class="mono">${b.actions.map(a => esc(a.name)).join(' &middot; ')}</span>
+          <span class="dim">&mdash; ${b.noSwap
+            ? 'all in one transaction, because every amount in it is known before you sign'
+            : 'in two: the deposit has to wait for what the swap actually returns'}</span></span>
       </div>
 
       <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
@@ -2783,16 +2786,15 @@ function wireConnect() {
 // The convert step is skipped outright when the harvest already arrives in the
 // two tokens the position needs, which is common on a single-token farm, so it
 // is drawn as skipped rather than quietly vanishing.
-// A compound is three signatures, and it used to ask for all three from one
-// click. Browsers only let a page open a window during a user gesture, and an
-// `await` spends it — so the second and third signature arrive with the gesture
-// gone. WAX Cloud Wallet needs a popup, and when the popup is refused it falls
-// back to navigating the whole page at the wallet. That is the "the page
-// refreshes at step 3 and the steps are interrupted" report: not a crash, a
-// blocked popup, and the flow died with the document.
+// A compound was three signatures asked for from one click. Browsers only let a
+// page open a window during a user gesture and an `await` spends it, so the
+// later ones arrived with the gesture gone; WAX Cloud Wallet needs a popup, and
+// a refused popup falls back to navigating the whole page at the wallet. That
+// was the "the page refreshes at step 3" report: not a crash, a blocked popup,
+// and the flow died with the document.
 //
-// So every signature now waits for its own click. It is one more press and it
-// is the only shape that works in a browser.
+// It is one signature now when nothing is sold, and two when something is —
+// see buildOneShot in tx.js. Each one still waits for a real click.
 //
 // The second half matters more. Between the claim and the deposit the harvest
 // is sitting loose in the wallet — already collected, not yet put back — and a
@@ -2822,108 +2824,92 @@ const saveResume = v => { try { v ? localStorage.setItem(RESUME_KEY, JSON.string
 // without first measuring what the previous one produced.
 async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances = null) {
   const { pos, harvest, plan } = entry;
-  const steps = [
-    { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s). Nothing is swapped or spent.` },
-    { t: 'Convert', d: 'Sell only what was just harvested into the two tokens this position holds. Sized from the measured claim, never from your balance.' },
-    { t: 'Redeposit', d: 'Add exactly what arrived back into your range.'
-        + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on what was harvested goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
-  ];
+  const oneShot = !!plan.noSwap && !resume;
 
-  // `cta` is a label for a button that advances to step i; without one the step
-  // is simply reported as in progress.
+  // Without swapping there is nothing to wait for: every amount in the
+  // transaction is known before it is signed, so claim and deposit go together.
+  // With swapping the deposit has to wait for what the swap actually returned,
+  // and no restructuring changes that.
+  const steps = oneShot
+    ? [{ t: 'Claim and put it back', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s) and add them straight back into your range — one transaction, nothing sold.` }]
+    : [
+      { t: 'Claim and convert', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), and convert what the band needs — one transaction. Only the harvest is spent.` },
+      { t: 'Put it back', d: 'Add exactly what arrived back into your range.'
+          + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on the harvest goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
+    ];
+
   const render = (i, msg, { err = null, cta = null } = {}) => {
-    box.innerHTML = `<div class="steps">${steps.map((s, n) => `
-      <div class="step ${s.skipped ? 'done' : n < i ? 'done' : n === i ? 'active' : ''}">
-        <span class="n">${s.skipped || n < i ? '&check;' : n + 1}</span>
-        <div><h4>${s.t}</h4><p>${s.skipped ? esc(s.skipped) : n === i && msg ? esc(msg) : s.d}</p></div>
+    box.innerHTML = `<div class="steps">${steps.map((st, n) => `
+      <div class="step ${n < i ? 'done' : n === i ? 'active' : ''}">
+        <span class="n">${n < i ? '&check;' : n + 1}</span>
+        <div><h4>${st.t}</h4><p>${n === i && msg ? esc(msg) : st.d}</p></div>
       </div>`).join('')}</div>
       ${err ? `<div class="err" style="margin-top:10px">${esc(err)}</div>` : ''}
       ${cta ? `<button class="btn" style="margin-top:10px;width:100%" data-next>${esc(cta)}</button>` : ''}`;
   };
 
-  // Waits for a real click, because that is what a wallet popup needs.
+  // A wallet popup needs a user gesture, and an `await` spends it — so each
+  // signature after the first waits for a real click of its own.
   const press = (i, label, note) => new Promise(r => {
     render(i, note, { cta: label });
     box.querySelector('[data-next]').onclick = e => { e.currentTarget.disabled = true; r(); };
   });
 
   const basketIds = [...new Set(harvest.basket.map(b => b.tokenId))];
-  let before = resume?.before ?? null;
+  let before = resume?.before ?? preBalances ?? null;
   let r1id = resume?.claimTx ?? '';
-  let skipped = [];
 
   try {
-    // ---- 1. claim -------------------------------------------------------
-    if (!resume) {
-      const { actions } = buildHarvest({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
-      if (!actions.length) throw new Error('Nothing claimable to harvest.');
+    // ---- the whole thing, in one ---------------------------------------
+    if (oneShot) {
+      const one = buildOneShot({ pool: pos.pool, position: pos, basket: harvest.basket, plan, feeBps, feeAccount });
+      render(0, 'Waiting for your wallet…');
+      const r = await wallet.transact(one.actions, { verify: true });
+      saveResume(null);
+      box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+        <b>Compounded.</b> Put back ${qty(one.depA)} ${esc(pos.pool.symA)} and ${qty(one.depB)} ${esc(pos.pool.symB)} in one transaction, and sold nothing.
+        <br><span class="sub">Asked for ${((1 - one.margin) * 100).toFixed(1)}% under the estimate so it could not over-ask — the remainder is in your wallet and funds the next one.</span>
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+      return;
+    }
 
-      // Everything the claim could produce, measured first, so afterwards the
-      // difference is the harvest and nothing else. Already in hand when the
-      // plan was drawn — which is what lets the next line run on the click that
-      // got us here.
-      if (preBalances) {
-        before = preBalances;
-        render(0, 'Waiting for your wallet…');
-      } else {
+    // ---- 1. claim and convert ------------------------------------------
+    if (!resume) {
+      if (!before) {
         render(0, 'Reading your balances…');
         before = await readBalances(pos.pool, basketIds);
-        await press(0, 'Sign 1 of 3 — claim', 'Your wallet will ask you to collect the fees and rewards. Nothing is swapped or spent.');
-        render(0, 'Waiting for your wallet…');
+        await press(0, 'Claim and convert', 'Your wallet will ask once. Only what you just claimed is converted.');
       }
-      const r1 = await wallet.transact(actions, { verify: true });
+      const cs = buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan });
+      render(0, 'Waiting for your wallet…');
+      const r1 = await wallet.transact(cs.actions, { verify: true });
       r1id = r1.id;
       // From here the harvest is loose in the wallet. If anything interrupts
       // this, it has to be finishable.
       saveResume({ account: pos.owner, poolId: pos.pool.id, posId: pos.posId, before, claimTx: r1id, at: Date.now() });
     }
 
-    // ---- 2. convert -----------------------------------------------------
+    // ---- 2. put it back -------------------------------------------------
     render(1, 'Measuring what arrived…');
     await new Promise(r => setTimeout(r, 2500));
-    const after = await readBalances(pos.pool, basketIds);
-    const harvested = harvestedFrom(before, after);
-    if (!harvested.size) throw new Error('The claim produced nothing.');
-
-    const sw = buildSwaps({ pool: pos.pool, plan, harvested });
-    skipped = sw.swaps.filter(x => x.skipped);
-    if (sw.actions.length) {
-      await press(1, 'Sign 2 of 3 — convert', `Convert ${sw.swaps.filter(x => !x.skipped).map(x => `${x.from}→${x.to}`).join(', ')} — only what you just claimed.`);
-      render(1, 'Waiting for your wallet…');
-      await wallet.transact(sw.actions, { verify: true });
-      await new Promise(r => setTimeout(r, 2500));
-    } else {
-      steps[1].skipped = 'Nothing to convert — the harvest already arrived in the two tokens this position holds.';
-    }
-
-    // ---- 3. redeposit ---------------------------------------------------
-    render(2, 'Sizing the deposit from what actually landed…');
-    // What the plan intends to put back, in token terms — the cap the redeposit
-    // checks itself against. It comes from the plan's own deposit figures, not
-    // from the harvest total: in no-swap mode those differ by whatever is being
-    // deliberately left in the wallet, and sizing against the harvest would put
-    // the leftover back in through the cap.
     const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
     const expected = {
       a: pxA > 0 ? plan.depositA / pxA : 0,
       b: pxB > 0 ? plan.depositB / pxB : 0,
     };
     const dep = await buildRedeposit({ pool: pos.pool, position: pos, feeBps, feeAccount, before, expected, exact: !!plan.noSwap });
-    await press(2, 'Sign 3 of 3 — put it back', `Add ${qty(dep.depA)} ${pos.pool.symA} and ${qty(dep.depB)} ${pos.pool.symB} back into your range.`);
-    render(2, 'Waiting for your wallet…');
+    await press(1, 'Put it back', `Add ${qty(dep.depA)} ${pos.pool.symA} and ${qty(dep.depB)} ${pos.pool.symB} back into your range.`);
+    render(1, 'Waiting for your wallet…');
     const r2 = await wallet.transact(dep.actions, { verify: true });
     saveResume(null);
 
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
-      <b>Compounded.</b> Put back ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} — the harvest only.
+      <b>Compounded.</b> Put back ${qty(dep.depA)} ${esc(pos.pool.symA)} and ${qty(dep.depB)} ${esc(pos.pool.symB)} &mdash; the harvest only.
       Your existing ${esc(pos.pool.symA)} and ${esc(pos.pool.symB)} were left alone.
-      ${skipped.length ? `<br><span class="dim">${skipped.length} reward left unswapped (${skipped.map(s => esc(s.skipped)).join(', ')}) — it is in your wallet.</span>` : ''}
       <br><span class="mono" style="font-size:11px">${r1id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
   } catch (e) {
     const m = String(e.message || e);
     const declined = /cancel|reject|declin/i.test(m);
-    // A decline before the claim leaves nothing behind; after it, the harvest
-    // is in the wallet and saying "nothing happened" would be a lie.
     render(0, null, {
       err: declined
         ? (r1id ? 'You declined that signature. What you already claimed is in your wallet — reopen this position to finish putting it back.' : 'You declined the signature — nothing happened.')
@@ -3385,11 +3371,12 @@ async function runCompound(account, resume = null) {
   const fee = worth.reduce((s, x) => s + x.plan.feeUsd, 0);
   const swaps = worth.reduce((s, x) => s + x.plan.swaps.length, 0);
   const actions = worth.reduce((s, x) => s + x.plan.actions.length, 0);
-  // Two signatures where the harvest already arrives in the right two tokens,
-  // three where it has to be converted first. Announcing a flat two and then
-  // asking for three is the one surprise this screen must not spring.
-  const needSwap = worth.filter(x => x.plan.swaps.length > 0).length;
-  const sigs = worth.length * 2 + needSwap;
+  // One signature where nothing is sold, because every amount is known before
+  // signing; two where a swap has to run first, because the deposit cannot be
+  // written until the swap has returned. Announcing a number and then asking
+  // for a bigger one is the surprise this screen must not spring.
+  const needSwap = worth.filter(x => !x.plan.noSwap).length;
+  const sigs = worth.length + needSwap;
   const unpriceable = plans.reduce((s, x) => s + (x.plan?.unpriced.length || 0), 0);
   const tokensSeen = new Set(plans.flatMap(x => x.harvest.basket.map(b => b.symbol)));
 
@@ -3398,7 +3385,7 @@ async function runCompound(account, resume = null) {
       <div class="stat"><span class="v">${usd(gross - fee)}</span><span class="k">back to work</span><span class="sub">${feeBps > 0 ? `after ${usd(fee)} fee at ${(feeBps / 100).toFixed(2)}%` : 'no fee charged'}</span></div>
       <div class="stat"><span class="v">${worth.length}/${plans.length}</span><span class="k">positions with something to claim</span></div>
       <div class="stat"><span class="v">${swaps}</span><span class="k">swaps needed</span><span class="sub">across all positions</span></div>
-      <div class="stat"><span class="v">${sigs}</span><span class="k">signatures</span><span class="sub">${actions} actions &middot; ${needSwap} position${needSwap === 1 ? '' : 's'} also need${needSwap === 1 ? 's' : ''} a conversion</span></div>
+      <div class="stat"><span class="v">${sigs}</span><span class="k">signatures</span><span class="sub">${actions} actions &middot; ${needSwap} position${needSwap === 1 ? '' : 's'} need${needSwap === 1 ? 's' : ''} a second because ${needSwap === 1 ? 'it sells' : 'they sell'} something</span></div>
     </div>`;
 
   if (unpriceable) {

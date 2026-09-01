@@ -603,3 +603,108 @@ export function buildCancelOrder({ marketId, orderId, side, me = account(), auth
     }],
   };
 }
+
+// ============================================================================
+// ONE SIGNATURE
+//
+// Actions in a WAX transaction execute in order, and a later action spends what
+// an earlier one delivered — verified against a real 14-action transaction from
+// a multi-hop bot: transfer, logswap, transfer, transfer, logswap, logswap…
+//
+// So the split into three signatures was never about the chain. It was about
+// not knowing the amounts: addliquid takes concrete numbers, and asking for a
+// satoshi more than arrives reverts the lot.
+//
+// But the amounts are not unknown. Uncollected fees are computed exactly from
+// the pool's fee-growth counters — checked against Alcor's own index to the
+// last decimal they publish. And a farm reward only ever GROWS between planning
+// and execution, because that is what accruing means. So asking for slightly
+// less than the estimate cannot over-ask, and the shortfall is not lost: it
+// stays where it is and funds the next compound.
+//
+// Which leaves exactly one genuinely unknown quantity — what a swap returns —
+// and only the path that swaps has to wait for it.
+//
+//   without swapping   claim + deposit          ONE signature
+//   with swapping      claim + swap, then deposit   two
+//
+// The margin is deliberately generous on the claim side. It costs a fraction of
+// a percent left behind and it removes the failure mode where a compound
+// reverts and bills CPU for nothing.
+const CLAIM_MARGIN = 0.995;
+
+// Claim and deposit in a single transaction. No swap, so every number in it is
+// known before it is signed.
+export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAccount = '', me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
+  if (!actions.length) throw new Error('Nothing claimable to harvest.');
+
+  // Ask for slightly less than the plan says will arrive.
+  let depA = (plan.depositAmtA ?? 0) * CLAIM_MARGIN;
+  let depB = (plan.depositAmtB ?? 0) * CLAIM_MARGIN;
+
+  const fee = [];
+  if (feeAccount && feeBps > 0) {
+    const fa = depA * (feeBps / 10000), fb = depB * (feeBps / 10000);
+    depA -= fa; depB -= fb;
+    for (const [amt, sym, dcm, id] of [[fa, pool.symA, pool.decA, pool.tokenA], [fb, pool.symB, pool.decB, pool.tokenB]]) {
+      if (parseFloat(dec(amt, dcm)) <= 0) continue;
+      const t = tokenMeta(id);
+      fee.push({
+        account: t.contract, name: 'transfer', authorization: auth,
+        data: { from: me, to: feeAccount, quantity: asset(amt, sym, dcm), memo: 'compound fee' },
+      });
+    }
+  }
+
+  // addliquid spends from an internal balance funded by a transfer with memo
+  // "deposit" in the same transaction — and a taxing token delivers less than
+  // it sent, so the ask is discounted by the rate a holder was measured paying.
+  const net = (amt, id) => amt * (1 - (venueTaxOf(id) / 10000));
+  const askA = net(depA, pool.tokenA), askB = net(depB, pool.tokenB);
+  if (parseFloat(dec(askA, pool.decA)) <= 0 && parseFloat(dec(askB, pool.decB)) <= 0) {
+    throw new Error('Nothing large enough to deposit — the harvest rounds to zero in both tokens.');
+  }
+
+  const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
+  const deposit = [];
+  if (parseFloat(dec(depA, pool.decA)) > 0) deposit.push({
+    account: ta.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(depA, pool.symA, pool.decA), memo: 'deposit' },
+  });
+  if (parseFloat(dec(depB, pool.decB)) > 0) deposit.push({
+    account: tb.contract, name: 'transfer', authorization: auth,
+    data: { from: me, to: ALCOR, quantity: asset(depB, pool.symB, pool.decB), memo: 'deposit' },
+  });
+
+  deposit.push({
+    account: ALCOR, name: 'addliquid', authorization: auth,
+    data: {
+      poolId: Number(pool.id), owner: me,
+      tokenADesired: asset(askA, pool.symA, pool.decA),
+      tokenBDesired: asset(askB, pool.symB, pool.decB),
+      tickLower: position.tickLower, tickUpper: position.tickUpper,
+      tokenAMin: asset(askA * (1 - LIQ_SLIPPAGE), pool.symA, pool.decA),
+      tokenBMin: asset(askB * (1 - LIQ_SLIPPAGE), pool.symB, pool.decB),
+      deadline: 0,
+    },
+  });
+
+  return { actions: [...actions, ...fee, ...deposit], depA, depB, margin: CLAIM_MARGIN };
+}
+
+// Claim and convert in a single transaction: the swap spends what the claim
+// just delivered. Sized from the plan and shaded down, because the transfer
+// executes against whatever actually arrived.
+export function buildClaimAndSwap({ pool, position, basket, plan, harvested = null, me = account(), auth = null }) {
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
+  if (!actions.length) throw new Error('Nothing claimable to harvest.');
+
+  // The claim has not run yet, so there is nothing measured to size against —
+  // the plan's own figures are all there is, shaded by the same margin.
+  const scaled = { ...plan, swaps: plan.swaps.map(x => ({ ...x, usd: x.usd * CLAIM_MARGIN })) };
+  const sw = buildSwaps({ pool, plan: scaled, harvested, me, auth });
+  return { actions: [...actions, ...sw.actions], swaps: sw.swaps };
+}

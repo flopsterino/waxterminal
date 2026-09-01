@@ -191,10 +191,13 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
       ...(depositUsd > 0 && feeBps > 0 ? [{ name: 'transfer', contract: 'fee', note: `${(feeBps / 100).toFixed(2)}% service fee` }] : []),
     ];
 
+    const toAmt = (usdPart, wholeUsd, wholeAmt) => (wholeUsd > 0 ? wholeAmt * (usdPart / wholeUsd) : 0);
     return {
       noSwap: true, ratio, grossUsd, feeUsd, netUsd,
       targetA: depA, targetB: depB, finalA: depA, finalB: depB,
       depositA: depA, depositB: depB, depositUsd,
+      // What the deposit is, in the tokens themselves.
+      depositAmtA: toAmt(depA, haveA, amtA), depositAmtB: toAmt(depB, haveB, amtB),
       leftover: left, leftoverUsd: left.reduce((s, x) => s + x.usd, 0),
       swaps: [], alreadyRight: priced.filter(b => isA(b) || isB(b)), unpriced, foreign,
       actions,
