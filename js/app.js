@@ -4651,11 +4651,17 @@ async function openFarm(key) {
   // incentives on one pool can pay different tokens, at different rates, ending
   // on different days.
   const rows = [...g.farms].sort((a, b) => (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0));
-  const live = rows.filter(f => f.periodFinish > now);
+  // A TacoSwap farm carries no periodFinish: it runs until its funding is spent,
+  // and the record says so with `ended: false`. Reading "no end date" as "ended"
+  // reported a live farm as finished — $0 a day against a row plainly showing
+  // $5.12, and the word "ended" beside "open" in the same row.
+  const isLive = f => (f.periodFinish ? f.periodFinish > now : !f.ended);
+  const live = rows.filter(isLive);
   const potDay = rows.reduce((s, f) => s + (f.rewardUsdDay || 0), 0);
   const liveDay = live.reduce((s, f) => s + (f.rewardUsdDay || 0), 0);
-  const endsAt = live.length ? Math.max(...live.map(f => f.periodFinish)) : null;
-  const soonest = live.length ? Math.min(...live.map(f => f.periodFinish)) : null;
+  const dated = live.filter(f => f.periodFinish > 0);
+  const endsAt = dated.length ? Math.max(...dated.map(f => f.periodFinish)) : null;
+  const soonest = dated.length ? Math.min(...dated.map(f => f.periodFinish)) : null;
   const stakers = Math.max(0, ...rows.map(f => f.numStakes || 0));
 
   let farmStakedUsd = null;
@@ -4673,22 +4679,24 @@ async function openFarm(key) {
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
       <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null ? 'on what a deposit could get back out' : g.apr != null ? 'on face value' : aprWhy(g.aprStatus)}</span></div>
-      <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${stakers} position${stakers === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${forHowLong(days(soonest))}</span><span class="k">until the first ends</span><span class="sub">${endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : endsAt ? new Date(endsAt).toISOString().slice(0, 10) : 'nothing running'}</span></div>
+      <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
+      <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
+        soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
+        : live.length ? 'its funding runs out — no end date on chain' : 'nothing running'}</span></div>
     </div>
 
     <div class="card" style="margin-bottom:14px"><h3>What it pays</h3>
       <div class="tablewrap" style="border:0"><table style="font-size:12.5px">
         <thead><tr><th>Reward</th><th class="r">Per day</th><th class="r">Value / day</th><th class="r">Share of the pot</th><th class="r">Ends</th><th>Funded by</th></tr></thead>
         <tbody>${rows.map(f => {
-          const ended = f.periodFinish <= now;
+          const ended = !isLive(f);
           return `<tr class="${ended ? 'dim' : ''}">
             <td><span data-pm="${esc(f.rewardToken)}|${esc(f.rewardSymbol)}"></span> <b>${tokLink(f.rewardToken, f.rewardSymbol)}</b>
               ${ended ? '<span class="pill">ended</span>' : ''}</td>
             <td class="r num">${qty(f.rewardPerDay)} <span class="sub">${esc(f.rewardSymbol)}</span></td>
             <td class="r num">${f.rewardUsdDay ? usd(f.rewardUsdDay) : '<span class="dim">unpriced</span>'}</td>
             <td class="r num dim">${potDay > 0 && f.rewardUsdDay ? (f.rewardUsdDay / potDay * 100).toFixed(0) + '%' : '—'}</td>
-            <td class="r num ${ended ? '' : 'dim'}">${f.periodFinish ? (ended ? new Date(f.periodFinish).toISOString().slice(0, 10) : forHowLong(days(f.periodFinish))) : 'open'}</td>
+            <td class="r num ${ended ? '' : 'dim'}">${f.periodFinish ? (ended ? new Date(f.periodFinish).toISOString().slice(0, 10) : forHowLong(days(f.periodFinish))) : ended ? 'finished' : 'open'}</td>
             <td class="mono dim">${f.creator ? acctLink(f.creator) : '—'}</td>
           </tr>`;
         }).join('')}</tbody></table></div>
@@ -4736,7 +4744,7 @@ async function openFarm(key) {
           <span class="det">${usd(perDay * 30)} a month &middot; ${pct(perDay * 365 / size * 100)} APR</span></div>
       </div>
       <div class="tablewrap" style="border:0;margin-top:10px"><table style="font-size:12px"><tbody>
-        ${rows.filter(f => f.periodFinish > now && f.rewardPerDay > 0).map(f => `<tr>
+        ${rows.filter(f => isLive(f) && f.rewardPerDay > 0).map(f => `<tr>
           <td><b>${esc(f.rewardSymbol)}</b></td>
           <td class="r num">${qty(f.rewardPerDay * share)} <span class="sub">a day</span></td>
           <td class="r num dim">${f.rewardUsdDay ? usd(f.rewardUsdDay * share) : '—'}</td>
@@ -4773,6 +4781,12 @@ async function renderFarmMine(g) {
     return;
   }
   box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your positions…</span></div>';
+
+  // On TacoSwap a stake is an LP token balance, not a position row — looking for
+  // one in Alcor's index finds nothing and says you have no position, which is
+  // wrong for everyone farming there.
+  if (g.dex === 'taco') return renderTacoFarmMine(g, me, box);
+
   let mine = [];
   try {
     const all = await walletPositionsFast(me);
@@ -4790,8 +4804,9 @@ async function renderFarmMine(g) {
   }
 
   const now = Date.now();
-  const liveIds = new Set(g.farms.filter(f => f.periodFinish > now).map(f => String(f.id)));
-  const liveDay = g.farms.filter(f => f.periodFinish > now).reduce((a, f) => a + (f.rewardUsdDay || 0), 0);
+  const isLive = f => (f.periodFinish ? f.periodFinish > now : !f.ended);
+  const liveIds = new Set(g.farms.filter(isLive).map(f => String(f.id)));
+  const liveDay = g.farms.filter(isLive).reduce((a, f) => a + (f.rewardUsdDay || 0), 0);
   // Computed on demand, because the group only carries it when the farms list
   // happened to ask first — and a zero denominator turned every share into 0%
   // and the total into Infinity%.
@@ -4845,6 +4860,36 @@ async function renderFarmMine(g) {
       </tr>`).join('')}</tbody></table></div>`;
   wireJoinFarm(box, me);
   return totalIn;
+}
+
+// A TacoSwap position is a share of the pair, held as a token. There is no
+// staking step and no range to fall out of: hold the LP token and you earn.
+async function renderTacoFarmMine(g, me, box) {
+  let lp = null;
+  try {
+    const res = await walletPositions(me, { skipAlcor: true });
+    lp = res.taco.find(x => String(x.pool.id) === String(g.poolId)) || null;
+  } catch {}
+
+  if (!lp) {
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">You hold no ${esc(g.poolId)} LP, so you are not in this farm.</p>
+      <a class="btn" href="${venueUrl.taco()}" target="_blank" rel="noopener">Add liquidity on TacoSwap &nearr;</a>`;
+    return 0;
+  }
+
+  const now = Date.now();
+  const isLive = f => (f.periodFinish ? f.periodFinish > now : !f.ended);
+  const liveDay = g.farms.filter(isLive).reduce((a, f) => a + (f.rewardUsdDay || 0), 0);
+  const staked = g.stakedReal ?? g.stakedUsd ?? 0;
+  const share = staked > 0 ? Math.min(1, lp.valueUsd / staked) : 0;
+
+  box.innerHTML = `<div class="stats" style="margin-bottom:12px">
+      <div class="stat"><span class="v">${usd(lp.valueUsd)}</span><span class="k">your LP here</span><span class="sub">${qty(lp.balance)} ${esc(g.poolId)}</span></div>
+      <div class="stat"><span class="v">${share > 0 ? (share * 100).toFixed(share >= 0.1 ? 1 : 2) + '%' : '—'}</span><span class="k">share of the farm</span></div>
+      <div class="stat"><span class="v">${usd(liveDay * share)}</span><span class="k">earning a day</span><span class="sub">${usd(liveDay * share * 30)} a month</span></div>
+    </div>
+    <p class="sub" style="margin:0">Holding the LP token is the stake &mdash; there is nothing to join and no range to leave.</p>`;
+  return lp.valueUsd;
 }
 
 // ---------------------------------------------------------- POOL DETAIL -----
