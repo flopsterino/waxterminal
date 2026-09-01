@@ -226,6 +226,10 @@ document.addEventListener('click', e => {
 });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
+// What a trade costs and what a provider receives are not the same number
+// everywhere: TacoSwap charges 0.30% and passes 0.1% of it to the LP. Earnings
+// use the provider's cut, or a Taco position reads three times too rich.
+const lpCut = p => p.lpFeeBps ?? p.feeBps;
 const $ = s => document.querySelector(s);
 
 let CFG = null;
@@ -1504,7 +1508,11 @@ function renderFarms() {
         ? (moved
             ? `<span class="aprmove"><span class="was">${pct(g.aprReal)}</span><span class="arrow">&rarr;</span><span class="apr">${pct(g.aprAt)}</span></span>`
             : `<span class="apr">${pct(g.aprAt)}</span>`)
-        : `<span class="dim">—</span>`;
+        : `<span class="dim" title="${esc(aprWhy(g.aprStatus))}">${
+            g.aprStatus === 'unpriceable' ? 'reward unpriced'
+            : g.aprStatus === 'no_stake' ? 'nobody staked'
+            : g.aprStatus === 'thin' ? 'too little staked'
+            : g.aprStatus === 'lazy' ? 'computing…' : '—'}</span>`;
     const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}</td>
@@ -1526,6 +1534,38 @@ function renderFarms() {
   // A farm row opens the farm. It used to open the pool, which answers a
   // different question and threw away everything specific to the farm.
   $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.pool));
+  // Fill in what the rows on screen are still missing, which then re-renders.
+  autoApr();
+}
+
+// The rows on screen compute themselves. 69 Alcor groups arrived with an APR
+// still uncomputed, the sort puts a missing one last, and the only way to fill
+// them in was a button — so the biggest venue on WAX sat below the fold behind
+// a press nobody knew to make.
+let autoAprRunning = false;
+async function autoApr() {
+  if (autoAprRunning) return;
+  const targets = filteredGroups()
+    .sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir)
+    .slice(0, 40)
+    .filter(g => g.aprStatus === 'lazy' && g.dex === 'alcor');
+  if (!targets.length) return;
+  autoAprRunning = true;
+  try {
+    // Two reads per group against public nodes, four at a time: enough to fill
+    // a screen quickly without looking like a sweep.
+    for (let i = 0; i < targets.length; i += 4) {
+      await Promise.all(targets.slice(i, i + 4).map(async g => {
+        try {
+          const st = await groupStakedUsd(g);
+          g.stakedUsd = st;
+          if (st >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'ok'; }
+          else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
+        } catch { /* stays computable on a retry */ }
+      }));
+    }
+    renderFarms();
+  } finally { autoAprRunning = false; }
 }
 
 // Exact APR for the rows on screen. The denominator is the UNION of positions
@@ -2357,7 +2397,7 @@ function positionCard(p, mine = false) {
 
   // What this position earns a day from trading, at the pool's own 24h volume.
   const feeDay = (p.inRange && pool.vol24 > 0 && pool.tvlReal > 0)
-    ? pool.vol24 * (pool.feeBps / 10000) * (p.valueUsd / pool.tvlReal) : 0;
+    ? pool.vol24 * (lpCut(pool) / 10000) * (p.valueUsd / pool.tvlReal) : 0;
 
   // The band's edges as prices, in the pair's own units. A tick number means
   // nothing to anyone; the price it stands for is the decision.
@@ -2432,7 +2472,7 @@ function tacoCard(p) {
   const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
   const tot = vA + vB;
   const wA = tot > 0 ? vA / tot : 0.5;
-  const tacoDay = (pool.vol24 > 0 && pool.tvl > 0) ? pool.vol24 * (pool.feeBps / 10000) * p.share : 0;
+  const tacoDay = (pool.vol24 > 0 && pool.tvl > 0) ? pool.vol24 * (lpCut(pool) / 10000) * p.share : 0;
   return `<article class="poscard">
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
@@ -2530,7 +2570,7 @@ async function lookupWallet(account) {
   const dailyFees = all.reduce((s, p) => {
     const pool = p.pool;
     if (!p.inRange || !(pool.vol24 > 0) || !(pool.tvlReal > 0)) return s;
-    return s + pool.vol24 * (pool.feeBps / 10000) * ((p.valueUsd || 0) / pool.tvlReal);
+    return s + pool.vol24 * (lpCut(pool) / 10000) * ((p.valueUsd || 0) / pool.tvlReal);
   }, 0);
 
   let html = `<div class="stats">
@@ -3100,7 +3140,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
 // nothing, too wide and your capital is spread so thin it barely earns either.
 // So the picker offers bands around the current price rather than raw ticks,
 // and says what each one means.
-function renderNewPosition(account) {
+function renderNewPosition(account, poolId = null) {
   const box = $('#newPos');
   if (!box) return;
   const pools = state.pools
@@ -3108,11 +3148,14 @@ function renderNewPosition(account) {
     .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvlReal || 0) - (a.tvlReal || 0))
     .slice(0, 300);
 
+  const want = poolId != null ? String(poolId) : null;
   box.innerHTML = `<div class="section"><h3>Open a new position</h3>
     <div class="card">
       <div class="filters" style="display:grid;gap:8px;margin:0">
-        <label>Pool<select id="npPool">${pools.map(p =>
-          `<option value="${esc(p.id)}">${esc(p.symA)}/${esc(p.symB)} — ${(p.feeBps / 100).toFixed(2)}% — ${usd(p.tvlReal)} pooled${p.vol24 > 0 ? `, ${usd(p.vol24)} traded` : ''}</option>`).join('')}</select></label>
+        <label>Pool<select id="npPool">${(poolId && !pools.some(p => String(p.id) === String(poolId))
+          ? [...state.pools.filter(p => p.dex === 'alcor' && String(p.id) === String(poolId)), ...pools]
+          : pools).map(p =>
+          `<option value="${esc(p.id)}"${want === String(p.id) ? ' selected' : ''}>${esc(p.symA)}/${esc(p.symB)} — ${(p.feeBps / 100).toFixed(2)}% — ${usd(p.tvlReal)} pooled${p.vol24 > 0 ? `, ${usd(p.vol24)} traded` : ''}</option>`).join('')}</select></label>
       </div>
       <div class="toolbar" style="margin:10px 0 0">
         <span class="sub">Range</span>
@@ -3783,13 +3826,14 @@ async function renderActivity() {
     </tr></thead><tbody>${swaps.slice(0, cap('swaps')).map(s => {
       const inA = s.amountA > 0;
       return `<tr><td class="num dim"><a href="${trxUrl(s.trx)}" target="_blank" rel="noopener" title="Open this transaction on waxblock">${ago(s.ts)} &nearr;</a></td>
-        <td${s.pool ? ` class="clickable" data-pool="${esc(s.pool.dex)}:${esc(String(s.pool.id))}"` : ''}>${s.pool ? `<span class="pair">${pairName(s.pool)}</span> <span class="venue ${esc(s.pool.dex)}">${esc(venueName[s.pool.dex] || s.pool.dex)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
+        <td${s.pool ? ` class="clickable" data-pool="${esc(s.pool.dex)}:${esc(String(s.pool.id))}"` : ''}>${s.pool ? `<span data-pm="${esc(s.pool.tokenA)}|${esc(s.pool.symA)}|${esc(s.pool.tokenB)}|${esc(s.pool.symB)}"></span><span class="pair">${pairLinks(s.pool)}</span> <span class="venue ${esc(s.pool.dex)}">${esc(venueName[s.pool.dex] || s.pool.dex)}</span>` : ''} <span class="sub">#${esc(s.poolId)}</span></td>
         <td class="mono">${acctLink(s.trader)}</td>
         <td class="r num">${qty(Math.abs(inA ? s.amountA : s.amountB))} <span class="sub">${s.pool ? tokLink(inA ? s.pool.tokenA : s.pool.tokenB, inA ? s.symA : s.symB) : esc(inA ? s.symA : s.symB)}</span></td>
         <td class="r num">${qty(Math.abs(inA ? s.amountB : s.amountA))} <span class="sub">${s.pool ? tokLink(inA ? s.pool.tokenB : s.pool.tokenA, inA ? s.symB : s.symA) : esc(inA ? s.symB : s.symA)}</span></td>
         <td class="r num">${usd(s.volumeReal ?? s.volumeUsd)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 
+  fillMarks(out);
   out.querySelectorAll('td[data-pool]').forEach(td => td.onclick = () => openPool(td.dataset.pool));
 
   // Both shapes of the same window: the routes as reconstructed, and the raw
@@ -3852,32 +3896,31 @@ async function renderOrderBook(boxId, tokenId, symbol) {
 
   // Depth is cumulative from the best price outward, which is what "how much
   // can I fill" actually asks. A bar per level makes the wall visible.
+  //
+  // Three stat tiles and two full tables for what is, on most WAX markets, six
+  // resting orders. One block, both sides against a shared price ladder, the
+  // spread in the middle where it belongs.
   const cum = rows => { let t = 0; return rows.map(o => ({ ...o, cum: (t += o.quote) })); };
-  const bids = cum(b.bid.slice(0, 12)), asks = cum(b.ask.slice(0, 12));
+  const bids = cum(b.bid.slice(0, 8)), asks = cum(b.ask.slice(0, 8));
   const most = Math.max(bids.at(-1)?.cum || 0, asks.at(-1)?.cum || 0, 1);
-  const side = (rows, cls) => rows.map(o => `
-    <tr class="obrow">
+  const row = (o, cls) => `<tr class="obrow" title="${esc(o.account)} · ${qty(o.quote)} ${esc(symbol)} at ${qty(o.price)} WAX">
       <td class="obbar"><span class="${cls}" style="width:${(o.cum / most * 100).toFixed(1)}%"></span></td>
       <td class="r num ${cls === 'obbid' ? 'pos' : 'neg'}">${qty(o.price)}</td>
       <td class="r num">${qty(o.quote)}</td>
-      <td class="mono dim">${acctLink(o.account)}</td>
-    </tr>`).join('');
+      <td class="mono dim obwho">${acctLink(o.account)}</td>
+    </tr>`;
 
   box.innerHTML = `
-    <div class="stats" style="margin:0 0 12px">
-      <div class="stat"><span class="v">${b.best.bid != null ? qty(b.best.bid) : '—'}</span><span class="k">best bid</span><span class="sub">WAX per ${esc(symbol)}</span></div>
-      <div class="stat"><span class="v">${b.best.ask != null ? qty(b.best.ask) : '—'}</span><span class="k">best ask</span><span class="sub">${b.spread != null ? (b.spread * 100).toFixed(2) + '% spread' : 'one side only'}</span></div>
-      <div class="stat"><span class="v">${(b.bid.length + b.ask.length).toLocaleString()}</span><span class="k">resting orders</span><span class="sub">${b.bid.length} bids, ${b.ask.length} asks</span></div>
-    </div>
-    <div class="grid g2">
-      <div><h4 class="obhead pos">Bids &mdash; buyers waiting</h4>
-        <div class="tablewrap" style="max-height:300px;border:0"><table style="font-size:12px">
-          <thead><tr><th></th><th class="r">Price</th><th class="r">${esc(symbol)}</th><th>Who</th></tr></thead>
-          <tbody>${side(bids, 'obbid') || '<tr><td colspan="4" class="dim">nobody bidding</td></tr>'}</tbody></table></div></div>
-      <div><h4 class="obhead neg">Asks &mdash; sellers waiting</h4>
-        <div class="tablewrap" style="max-height:300px;border:0"><table style="font-size:12px">
-          <thead><tr><th></th><th class="r">Price</th><th class="r">${esc(symbol)}</th><th>Who</th></tr></thead>
-          <tbody>${side(asks, 'obask') || '<tr><td colspan="4" class="dim">nobody selling</td></tr>'}</tbody></table></div></div>
+    <div class="obook">
+      <table><tbody>${asks.slice().reverse().map(o => row(o, 'obask')).join('')
+        || '<tr><td colspan="4" class="dim obnone">nobody selling</td></tr>'}</tbody></table>
+      <div class="obmid">
+        <span class="obspread">${b.spread != null ? (b.spread * 100).toFixed(2) + '% spread' : 'one side only'}</span>
+        <span class="dim">${b.best.bid != null ? qty(b.best.bid) : '—'} / ${b.best.ask != null ? qty(b.best.ask) : '—'} WAX</span>
+        <span class="dim">${(b.bid.length + b.ask.length).toLocaleString()} resting</span>
+      </div>
+      <table><tbody>${bids.map(o => row(o, 'obbid')).join('')
+        || '<tr><td colspan="4" class="dim obnone">nobody bidding</td></tr>'}</tbody></table>
     </div>
 
     <p class="sub" style="margin:10px 0 0">Read-only &mdash; place and cancel on Alcor. Market #${market.id}${market.feeBps ? ` &middot; ${(market.feeBps / 100).toFixed(2)}% fee` : ' &middot; no fee'} </p>`;
@@ -4076,12 +4119,13 @@ async function openToken(id) {
     <thead><tr><th>Pool</th><th>Venue</th><th class="r">Fee</th><th class="r">Pooled</th><th class="r">24h</th></tr></thead>
     <tbody>${pools.slice(0, cap('pools')).map(p => `
       <tr data-pool="${esc(p.dex)}:${esc(String(p.id))}" style="cursor:pointer">
-        <td>${pairLinks(p)}</td>
+        <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span>${pairLinks(p)}</td>
         <td class="dim">${esc(p.dex)}</td>
         <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
         <td class="r num" title="${usd(p.tvl)} at face value">${usd(p.tvlReal)}</td>
         <td class="r num ${p.vol24 > 0 ? '' : 'dim'}">${p.vol24 > 0 ? usd(p.vol24) : '—'}</td>
       </tr>`).join('')}</tbody></table></div>`;
+  fillMarks($('#tokPools'));
   $('#tokPools').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
 
   if (farms.length) {
@@ -4089,7 +4133,7 @@ async function openToken(id) {
       <thead><tr><th>Pool</th><th>Pays</th><th class="r">Per day</th><th class="r">Staked</th><th class="r">APR</th><th>Trend</th><th class="r">Runway</th></tr></thead>
       <tbody>${farms.slice(0, cap('farms')).sort((a, b) => (b.rewardRealDay || 0) - (a.rewardRealDay || 0)).map(g => `
         <tr data-fpool="${esc(g.key)}" style="cursor:pointer">
-          <td>${g.pool ? `${pairLinks(g.pool)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
+          <td>${g.pool ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>${pairLinks(g.pool)} <span class="dim">${(g.pool.feeBps / 100).toFixed(2)}%</span>` : esc(g.poolId)}</td>
           <td>${[...new Map(g.rewards.map(r => [r.token, r.symbol]))].slice(0, 4).map(([tk, sym]) => tokLink(tk, sym)).join(', ')}</td>
           <td class="r num">${usd(g.rewardRealDay)}</td>
           <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
@@ -4097,6 +4141,7 @@ async function openToken(id) {
           <td data-apr="${esc(g.key)}"><span class="dim">…</span></td>
           <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>`;
+  fillMarks($('#tokFarms'));
     $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.fpool));
   }
 
@@ -4678,7 +4723,7 @@ async function openFarm(key) {
 
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
-      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null ? 'on what a deposit could get back out' : g.apr != null ? 'on face value' : aprWhy(g.aprStatus)}</span></div>
+      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
       <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
       <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
         soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
@@ -4799,7 +4844,7 @@ async function renderFarmMine(g) {
         <button class="btn" id="farmOpen">Open a position</button>
         <a class="plink" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Pool &nearr;</a>
       </div>`;
-    $('#farmOpen').onclick = () => { show('compound'); $('#compInput').value = me; renderNewPosition(me); };
+    $('#farmOpen').onclick = () => { show('compound'); $('#compInput').value = me; renderNewPosition(me, g.poolId); };
     return;
   }
 

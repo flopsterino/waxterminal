@@ -102,7 +102,8 @@ function normaliseTaco(rows, tokens) {
     out.push({
       dex: 'taco', id: String(p.id),                // the pair id IS the LP token symbol
       tokenA: ta, tokenB: tb, symA: a.symbol, symB: b.symbol, decA: a.decimals, decB: b.decimals,
-      feeBps: 10,                                   // Taco docs: 0.1% to the LP
+      feeBps: 30,                                   // 0.30% charged on a trade
+      lpFeeBps: 10,                                 // of which 0.1% reaches the LP, per Taco's docs
       reserveA: a.amount, reserveB: b.amount,
       liquidity: lp.amount, lpSupply: lp.amount, lpDecimals: lp.decimals,
       sqrtX64: null, tick: null,
@@ -349,6 +350,7 @@ async function loadSnapshot() {
       liquidity: p.l, tick: p.t, sqrtX64: p.s, priceAB: p.p, tvl: p.v,
       tickSpacing: p.ts ?? null,
       priceUsdA: p.pa, priceUsdB: p.pb, usdA: p.pa, usdB: p.pb,
+      lpFeeBps: p.d === 'taco' ? 10 : undefined,
       tvlPartial: (p.pa == null) !== (p.pb == null), active: true,
       routeDepth: p.rd ?? Infinity, thin: !!p.tn, tvlReal: p.vr ?? null, exitRatio: p.er ?? 0,
       vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null,
