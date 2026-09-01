@@ -82,7 +82,22 @@ await new Promise(r => setTimeout(r, seconds * 1000));
 // Panels that only exist after a click cannot be checked from a first paint.
 // Any number of --click=<selector> arguments are dispatched in order, each
 // followed by a settle, so a plan panel or a sub-tab can be opened and read.
-for (const arg of process.argv.slice(3).filter(a => /^--(click|toggle)=/.test(a))) {
+for (const arg of process.argv.slice(3).filter(a => /^--(click|toggle|type)=/.test(a))) {
+  // --type=<selector>=<value> fills a field and fires the input event, which is
+  // the only way to reach a panel that computes from what someone typed. The
+  // wait is long because a quote is a network call behind a debounce.
+  if (arg.startsWith('--type=')) {
+    const body = arg.slice('--type='.length);
+    const at = body.indexOf('=');
+    const sel = body.slice(0, at), val = body.slice(at + 1);
+    const el = document.querySelector(sel);
+    if (!el) { console.error(`[type] no match for ${sel}`); continue; }
+    el.value = val;
+    el.dispatchEvent(new window.Event('input', { bubbles: true }));
+    if (typeof el.oninput === 'function') await el.oninput(new window.Event('input'));
+    await new Promise(r => setTimeout(r, Number(process.env.TYPE_WAIT || 8) * 1000));
+    continue;
+  }
   if (arg.startsWith('--toggle=')) {
     const sel = arg.slice('--toggle='.length);
     const el = document.querySelector(sel);

@@ -11,6 +11,7 @@ import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSw
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
+import { debounce } from './router.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps } from './account.js';
@@ -1783,14 +1784,18 @@ async function renderWalletResources(account) {
   let pw = 2;
   const pwNote = $('#pwNote');
   let pwTok = 'cheese';
-  const paintPw = () => {
+  let pwGen = 0;
+  const paintPw = async () => {
+    const mine = ++pwGen;
     const unit = $('#pwUnit'); if (unit) unit.textContent = pwTok === 'wax' ? 'WAX' : 'CHEESE';
     if (pwTok === 'wax') {
       let bought = null;
       try {
-        const b = buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: account });
+        const b = await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: account });
         bought = b.buys;
       } catch { /* no route or no price; the note says so */ }
+      // A quote is a network call, so a stale one must not overwrite a fresh one.
+      if (mine !== pwGen) return;
       pwNote.innerHTML = bought
         ? `${pw} WAX buys at least ${qty(bought)} CHEESE, which is burned for roughly ${qty(bought * 1.81)} WAX of CPU and NET for a day. One transaction.`
         : `${pw} WAX cannot be routed to CHEESE right now.`;
@@ -1815,7 +1820,7 @@ async function renderWalletResources(account) {
     const box = $('#pwOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     const built = pwTok === 'wax'
-      ? buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
+      ? await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
       : buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span>`} to power up <span class="mono">${esc(account)}</span>.
@@ -3074,7 +3079,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
         before = await readBalances(pos.pool, basketIds);
         await press(0, 'Claim and convert', 'Your wallet will ask once. Only what you just claimed is converted.');
       }
-      const cs = buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan, me });
+      const cs = await buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan, me });
       render(0, 'Waiting for your wallet…');
       const r1 = await wallet.transact(cs.actions, { verify: true });
       r1id = r1.id;
@@ -4583,7 +4588,12 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
   let fromToken = pool.tokenA;
   let band = '50';
 
-  const paint = () => {
+  // A quote is a network call, so an older one can land after a newer one.
+  // Every paint takes a ticket and drops its result if it is no longer the
+  // latest — otherwise typing "25" briefly shows the answer for "2".
+  let gen = 0;
+  const paint = async () => {
+    const mine = ++gen;
     const { lower: tickLower, upper: tickUpper } = bandTicks(pool, band);
     const lo = priceAtTick(pool, tickLower), hi = priceAtTick(pool, tickUpper);
     const now = priceAtTick(pool, pool.tick ?? 0);
@@ -4592,10 +4602,14 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
       ? `Earns at every price, and earns least per dollar for it.`
       : `${sigfig(lo)} &ndash; ${sigfig(hi)} ${esc(pool.symB)} per ${esc(pool.symA)}, now ${sigfig(now)}. Outside it, this position earns nothing.`;
     const amt = num($('#zapAmt')?.value) || 0;
-    const plan = planZap({ pool, tickLower, tickUpper, fromToken, amount: amt, feeBps, sqrtP });
+    const out0 = $('#zapOut');
+    if (out0 && amt > 0 && !out0.dataset.painted) out0.innerHTML = `<p class="sub" style="margin:0">Finding the best route\u2026</p>`;
+    const plan = await planZap({ pool, tickLower, tickUpper, fromToken, amount: amt, feeBps, sqrtP, me: account });
+    if (mine !== gen) return;
     const out = $('#zapOut');
     if (!out) return;
-    if (!plan.ok) { out.innerHTML = `<p class="sub" style="margin:0">${esc(plan.reason)}</p>`; return; }
+    out.dataset.painted = '1';
+    if (!plan.ok) { delete out.dataset.painted; out.innerHTML = `<p class="sub" style="margin:0">${esc(plan.reason)}</p>`; return; }
     out.innerHTML = `<div class="dests">
         <div class="dest in"><span class="lbl">Into the pool</span>
           <span class="amt">${usd(plan.usd - (plan.usd * feeBps / 10000))}</span>
@@ -4621,7 +4635,13 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
       <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''} &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
       ${plan.legs.some(l => l.impact != null) ? `<div class="planline"><span class="k">Moves the price</span><span>${
         plan.legs.filter(l => l.impact != null).map(l => `${esc(l.sym)} <b class="${l.impact > 0.05 ? 'neg' : ''}">${(l.impact * 100).toFixed(l.impact < 0.01 ? 2 : 1)}%</b>`).join(' &middot; ')}
-        <span class="dim">&mdash; the best route carries ${usd(Math.min(...plan.legs.filter(l => l.depth != null).map(l => l.depth)))} before moving 1%</span></span></div>` : ''}
+        ${(() => {
+          const d = plan.legs.filter(l => l.depth != null).map(l => l.depth);
+          return d.length ? `<span class="dim">&mdash; the best route carries ${usd(Math.min(...d))} before moving 1%</span>` : '';
+        })()}</span></div>` : ''}
+      ${plan.needsSwap ? `<div class="planline"><span class="k">Route</span><span>${plan.routed === 'alcor'
+        ? `Alcor's router &middot; ${plan.legs.map(l => `${esc(l.sym)} in ${l.hops} pool${l.hops === 1 ? '' : 's'}${l.split ? ', split' : ''}`).join(' &middot; ')}`
+        : `<span class="dim">Alcor's router did not answer. Using our own map of the pools, which is a day old.</span>`}</span></div>` : ''}
       ${plan.legs.some(l => l.impact > 0.25) ? `<div class="note warn">Too big for the route. Zap less, or bring one of the pool's own tokens.</div>` : ''}
       <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two &mdash; sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` &middot; stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
       <button class="btn" id="zapGo" style="width:100%;margin-top:8px">Zap in</button>
@@ -4654,7 +4674,10 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
     box.querySelectorAll('[data-zaptok]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     paint();
   });
-  $('#zapAmt').oninput = paint;
+  // Typing is one request per settled value, not one per keystroke: the person
+  // most likely to have this open is also running bots against the same host
+  // from the same address, and Cloudflare counts the address.
+  $('#zapAmt').oninput = debounce(paint, 350);
   paint();
 }
 
@@ -4689,7 +4712,7 @@ async function runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account,
     // was already held.
     const before = await readBalances(pool, [pool.tokenA, pool.tokenB], me);
 
-    const t1 = buildZapSwap({ pool, plan, feeAccount, me });
+    const t1 = await buildZapSwap({ pool, plan, feeAccount, me });
     render(0, 'Waiting for your wallet…');
     if (t1.actions.length) await wallet.transact(t1.actions, { verify: true });
 

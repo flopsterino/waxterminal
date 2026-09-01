@@ -12,6 +12,7 @@ import { state } from './store.js';
 import { depositRatio } from './math.js';
 import { balanceOf } from './chain.js';
 import { authorization, account, hasSession } from './wallet.js';
+import { quote as routeQuote } from './router.js';
 
 const ALCOR = 'swap.alcor';
 const SLIPPAGE = 0.02;          // on swap minOut only; the deposit uses real balances
@@ -136,41 +137,78 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
   return { actions, swaps: [] };
 }
 
+// One swap leg, wherever a swap is needed: the zap, the compound, the powerup.
+//
+// Alcor's router answers first, because it walks the live ticks and hands back
+// the memo that executes. Our own graph answers when theirs does not, and then
+// the tolerance has to allow for the trade's own price impact, because the
+// graph only estimates depth. Alcor's expected output already includes it.
+//
+// `me` is the receiver written into the memo, so it must be the signer.
+async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
+  const from = tokenMeta(fromId), to = tokenMeta(toId);
+  const send = parseFloat(dec(amountIn, from.decimals));
+  if (!(send > 0)) return { skipped: `below one ${from.symbol} unit` };
+
+  const q = await routeQuote({ from, to, amount: send, slippagePct: SLIPPAGE * 100, receiver: me });
+  if (q) {
+    if (!(q.min > 0)) return { skipped: `would return less than one ${to.symbol} unit` };
+    return {
+      actions: q.sends.map(x => ({
+        account: from.contract, name: 'transfer', authorization: auth,
+        data: { from: me, to: ALCOR, quantity: x.inputAsset, memo: x.memo },
+      })),
+      amountIn: send, minOut: q.min, expect: q.expect,
+      path: q.route, hops: q.hops, impact: q.impact, routed: 'alcor', split: q.split,
+    };
+  }
+
+  const pFrom = priceOf(fromId), pTo = priceOf(toId);
+  if (!pFrom || !pTo) return { skipped: 'unpriceable' };
+  const path = findPath(fromId, toId, { usd: usd || send * pFrom });
+  if (!path || !path.length) return { skipped: 'no route' };
+  const expect = send * pFrom / pTo;
+  const impact = path.impact || 0;
+  const minOut = expect * (1 - SLIPPAGE - impact);
+  if (parseFloat(dec(minOut, to.decimals)) <= 0) return { skipped: `would return less than one ${to.symbol} unit` };
+  return {
+    actions: [{
+      account: from.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: ALCOR,
+        quantity: asset(send, from.symbol, from.decimals),
+        memo: `swapexactin#${path.map(x => x.id).join(',')}#${me}#${asset(minOut, to.symbol, to.decimals)}@${to.contract}#0`,
+      },
+    }],
+    amountIn: send, minOut, expect,
+    path: path.map(x => x.id), hops: path.length, impact, routed: 'local', depth: path.bottleneck,
+  };
+}
+
 // --------------------------------------------------------- transaction 2 ----
 // Swap what actually arrived into the ratio the band needs, then deposit it.
-export function buildSwaps({ pool, plan, harvested, me = account(), auth = null }) {
+export async function buildSwaps({ pool, plan, harvested, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const actions = [];
   const swaps = [];
   for (const s of plan.swaps) {
-    const from = tokenMeta(s.fromToken), to = tokenMeta(s.toToken);
-    const pFrom = priceOf(s.fromToken), pTo = priceOf(s.toToken);
-    if (!pFrom || !pTo) { swaps.push({ ...s, skipped: 'unpriceable' }); continue; }
-    const path = findPath(s.fromToken, s.toToken, { usd: s.usd });
-    if (!path || !path.length) { swaps.push({ ...s, skipped: 'no route' }); continue; }
-
+    const pFrom = priceOf(s.fromToken);
     // Sized against the measured harvest, never the estimate. `harvested` maps
     // token id to what the claim actually produced; anything not in it cannot
     // be swapped, because the holder did not receive it.
     const available = harvested?.get(s.fromToken);
-    let amountIn = s.usd / pFrom;
-    if (available != null) amountIn = Math.min(amountIn, available);
-    if (!(amountIn > 0)) { swaps.push({ ...s, skipped: 'nothing harvested' }); continue; }
-    const expectedOut = amountIn * pFrom / pTo;
-    const minOut = expectedOut * (1 - SLIPPAGE);
+    let amountIn = pFrom ? s.usd / pFrom : available;
+    if (available != null) amountIn = Math.min(amountIn ?? available, available);
+    if (!(amountIn > 0)) { swaps.push({ ...s, skipped: available != null ? 'nothing harvested' : 'unpriceable' }); continue; }
+
     // Zero is the only refusal. Not "too small to bother with" — that is the
     // holder's call — but genuinely zero once rounded to what the token can
     // express, where the transfer would either do nothing or revert.
-    if (parseFloat(dec(amountIn, from.decimals)) <= 0) { swaps.push({ ...s, skipped: `below one ${from.symbol} unit` }); continue; }
-    if (parseFloat(dec(minOut, to.decimals)) <= 0) { swaps.push({ ...s, skipped: `would return less than one ${to.symbol} unit` }); continue; }
-
-    const memo = `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, to.symbol, to.decimals)}@${to.contract}#0`;
-    actions.push({
-      account: from.contract, name: 'transfer', authorization: auth,
-      data: { from: me, to: ALCOR, quantity: asset(amountIn, from.symbol, from.decimals), memo },
-    });
-    swaps.push({ ...s, amountIn, minOut, path: path.map(p => p.id), hops: path.length });
+    const leg = await swapLeg({ fromId: s.fromToken, toId: s.toToken, amountIn, usd: s.usd, me, auth });
+    if (leg.skipped) { swaps.push({ ...s, skipped: leg.skipped }); continue; }
+    actions.push(...leg.actions);
+    swaps.push({ ...s, amountIn: leg.amountIn, minOut: leg.minOut, path: leg.path, hops: leg.hops, routed: leg.routed });
   }
   return { actions, swaps };
 }
@@ -585,31 +623,19 @@ export function buildPowerup({ amount, target, token, me = account(), auth = nul
 // same minOut later in the same transaction is spending money the chain has
 // already guaranteed arrived. Anything above the minimum stays in the wallet
 // and goes into the next one.
-export function buildPowerupVia({ amount, target, from, to, me = account(), auth = null }) {
+export async function buildPowerupVia({ amount, target, from, to, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   if (!(amount > 0)) return { actions: [] };
   const fromT = tokenMeta(from), toT = tokenMeta(to);
-  const pFrom = priceOf(from), pTo = priceOf(to);
-  if (!pFrom || !pTo) throw new Error(`No price for ${fromT.symbol} or ${toT.symbol}, so the swap cannot be sized.`);
-  const path = findPath(from, to, { usd: amount * pFrom });
-  if (!path || !path.length) throw new Error(`No route from ${fromT.symbol} to ${toT.symbol}.`);
 
-  const expect = (amount * pFrom) / pTo;
-  const minOut = expect * (1 - SLIPPAGE);
-  if (parseFloat(dec(amount, fromT.decimals)) <= 0) throw new Error(`Below one ${fromT.symbol} unit.`);
-  if (parseFloat(dec(minOut, toT.decimals)) <= 0) throw new Error(`Would buy less than one ${toT.symbol}.`);
+  const leg = await swapLeg({ fromId: from, toId: to, amountIn: amount, me, auth });
+  if (leg.skipped) throw new Error(`Cannot buy ${toT.symbol} with ${fromT.symbol}: ${leg.skipped}.`);
+  const { minOut, expect } = leg;
 
   return {
     actions: [
-      {
-        account: fromT.contract, name: 'transfer', authorization: auth,
-        data: {
-          from: me, to: ALCOR,
-          quantity: asset(amount, fromT.symbol, fromT.decimals),
-          memo: `swapexactin#${path.map(p => p.id).join(',')}#${me}#${asset(minOut, toT.symbol, toT.decimals)}@${toT.contract}#0`,
-        },
-      },
+      ...leg.actions,
       {
         account: toT.contract, name: 'transfer', authorization: auth,
         // The guaranteed minimum, not the estimate: the swap above cannot have
@@ -622,7 +648,7 @@ export function buildPowerupVia({ amount, target, from, to, me = account(), auth
       },
     ],
     amount, spends: amount, buys: minOut, expect, target: target || me,
-    symFrom: fromT.symbol, symTo: toT.symbol, hops: path.length,
+    symFrom: fromT.symbol, symTo: toT.symbol, hops: leg.hops, routed: leg.routed,
   };
 }
 
@@ -747,7 +773,7 @@ export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAcco
 // Claim and convert in a single transaction: the swap spends what the claim
 // just delivered. Sized from the plan and shaded down, because the transfer
 // executes against whatever actually arrived.
-export function buildClaimAndSwap({ pool, position, basket, plan, harvested = null, me = account(), auth = null }) {
+export async function buildClaimAndSwap({ pool, position, basket, plan, harvested = null, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
@@ -756,7 +782,7 @@ export function buildClaimAndSwap({ pool, position, basket, plan, harvested = nu
   // The claim has not run yet, so there is nothing measured to size against —
   // the plan's own figures are all there is, shaded by the same margin.
   const scaled = { ...plan, swaps: plan.swaps.map(x => ({ ...x, usd: x.usd * CLAIM_MARGIN })) };
-  const sw = buildSwaps({ pool, plan: scaled, harvested, me, auth });
+  const sw = await buildSwaps({ pool, plan: scaled, harvested, me, auth });
   return { actions: [...actions, ...sw.actions], swaps: sw.swaps };
 }
 
@@ -779,7 +805,7 @@ export function buildClaimAndSwap({ pool, position, basket, plan, harvested = nu
 //
 // The fee is taken first and in the token they brought, so it never depends on
 // how the swap turned out.
-export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps = 0, sqrtP }) {
+export async function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps = 0, sqrtP, me = account() }) {
   const ratio = depositRatio(sqrtP, tickLower, tickUpper);
   const from = tokenMeta(fromToken);
   const pFrom = priceOf(fromToken);
@@ -805,19 +831,40 @@ export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps 
     if (token === fromToken) { keep = want; continue; }   // already the right token
     if (!(want > 0)) continue;                            // band wants none of this side
     const px = priceOf(token);
-    const route = findPath(fromToken, token, { usd: want * pFrom });
+    // Ask Alcor's router what this leg actually gets. It walks the live ticks,
+    // so its output and its price impact are what the contract will do, not an
+    // estimate from a nightly depth pass. Quoted for the amount that will really
+    // be sent — truncated to the token's precision — because a quote for a
+    // slightly different size is a quote for a different trade.
+    //
+    // With no wallet attached the panel still has to show a number, so it quotes
+    // to eosio.null. That memo is never sent: the build re-quotes to the real
+    // signer and checks the receiver before it will spend anything.
+    const send = parseFloat(dec(want, from.decimals));
+    const q = send > 0 ? await routeQuote({
+      from, to: tokenMeta(token), amount: send,
+      slippagePct: SLIPPAGE * 100, receiver: me || 'eosio.null',
+    }) : null;
+    const route = q ? null : findPath(fromToken, token, { usd: want * pFrom });
     legs.push({
       token, sym, decimals: dcm, from: want,
-      expect: px ? (want * pFrom) / px : null, priced: !!px,
+      // A quoted output beats a priced one: it is the real tick walk, and it
+      // holds for tokens our price table has never seen.
+      expect: q ? q.expect : (px ? (want * pFrom) / px : null),
+      priced: !!(q || px),
       // What this leg does to the price, so the panel can say it before anyone
       // signs rather than the chain saying it afterwards.
-      impact: route?.impact ?? null, depth: route?.bottleneck ?? null, hops: route?.length ?? 0,
+      impact: q ? q.impact : (route?.impact ?? null),
+      depth: q ? null : (route?.bottleneck ?? null),
+      hops: q ? q.hops : (route?.length ?? 0),
+      routed: q ? 'alcor' : (route ? 'local' : null),
+      split: q ? q.split : false,
     });
   }
   // A token the pool does not hold leaves nothing behind: every part of it is
   // swapped, and `keep` stays zero.
   const unpriced = legs.filter(l => !l.priced).map(l => l.sym);
-  if (unpriced.length) return { ok: false, reason: `No price for ${unpriced.join(' or ')}, so the split cannot be sized.` };
+  if (unpriced.length) return { ok: false, reason: `No route to ${unpriced.join(' or ')} and no price for it, so the split cannot be sized.` };
 
   return {
     ok: true, ratio, fromToken, legs,
@@ -825,13 +872,14 @@ export function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps 
     inPool: isA || isB,
     amount, fee, net, keep,
     toSwap: legs.reduce((a, l) => a + l.from, 0),
+    routed: legs.length ? (legs.every(l => l.routed === 'alcor') ? 'alcor' : 'local') : null,
     usd: amount * pFrom,
     needsSwap: legs.length > 0,
   };
 }
 
 // Transaction 1: pay the fee, then sell the part that has to change token.
-export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth = null }) {
+export async function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
   const from = tokenMeta(plan.fromToken);
@@ -846,19 +894,45 @@ export function buildZapSwap({ pool, plan, feeAccount = '', me = account(), auth
 
   for (const leg of plan.legs) {
     const to = tokenMeta(leg.token);
+    const send = parseFloat(dec(leg.from, from.decimals));
+    if (!(send > 0)) throw new Error(`Below one ${from.symbol} unit to swap into ${leg.sym}.`);
+
+    // Quote again here, now, against the signer. The panel's quote was for
+    // display and may be a minute old; this one decides what gets signed.
+    const q = await routeQuote({
+      from, to, amount: send, slippagePct: SLIPPAGE * 100, receiver: me,
+    });
+
+    if (q) {
+      if (q.impact > 0.25) {
+        throw new Error(`${from.symbol} to ${leg.sym} would move the price about ${(q.impact * 100).toFixed(0)}%. `
+          + `Zap a smaller amount, or bring one of the pool's own tokens.`);
+      }
+      if (!(q.min > 0)) throw new Error(`Would return less than one ${leg.sym} unit.`);
+      // One transfer per part. Alcor splits an order across routes when that
+      // gets more out, and each part carries its own memo and its own share.
+      // The amount is Alcor's own string: it is what the quote was for.
+      for (const s of q.sends) {
+        actions.push({
+          account: from.contract, name: 'transfer', authorization: auth,
+          data: { from: me, to: ALCOR, quantity: s.inputAsset, memo: s.memo },
+        });
+      }
+      continue;
+    }
+
+    // Alcor could not be reached. Fall back to the local graph, which is a
+    // model of their liquidity rather than a reading of it — so it keeps the
+    // impact allowance the model needs and the model's refusal line.
     const path = findPath(plan.fromToken, leg.token, { usd: leg.from * priceOf(plan.fromToken) });
     if (!path || !path.length) throw new Error(`No route from ${from.symbol} to ${leg.sym}.`);
-    // A tolerance that ignores the price impact of the trade itself is a
-    // tolerance for a trade nobody is making. Depth is quoted for a 1% move, so
-    // a swap worth more than that depth moves the price by more than 1% and the
-    // quote has to allow for it.
     const impact = path.impact || 0;
     if (impact > 0.25) {
       throw new Error(`${from.symbol} to ${leg.sym} would move the price about ${(impact * 100).toFixed(0)}% — `
         + `the best route holds ${'$' + (path.bottleneck || 0).toFixed(2)} of depth. Zap a smaller amount, or a different pair.`);
     }
+    if (!(leg.expect > 0)) throw new Error(`No quote for ${from.symbol} into ${leg.sym}.`);
     const minOut = leg.expect * (1 - SLIPPAGE - impact);
-    if (parseFloat(dec(leg.from, from.decimals)) <= 0) throw new Error(`Below one ${from.symbol} unit to swap into ${leg.sym}.`);
     if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${leg.sym} unit.`);
     actions.push({
       account: from.contract, name: 'transfer', authorization: auth,
