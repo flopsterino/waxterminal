@@ -828,16 +828,19 @@ body { overflow-x: hidden; }
 .acc-rate { font-size: 12.5px; color: var(--muted); }
 .acc-rows { display: flex; flex-direction: column; gap: 1px; background: var(--line);
   border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.acc-row { display: grid; grid-template-columns: auto auto 1fr auto auto; align-items: center; gap: 9px;
+.acc-row { display: grid; grid-template-columns: auto auto 1fr auto auto auto; align-items: center; gap: 9px;
   background: var(--surface); padding: 7px 11px; font-size: 12.5px; }
 .acc-row .sym { font-weight: 650; }
 .acc-row .amt, .acc-row .usd { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; }
 .acc-row .amt { color: var(--ink); }
 .acc-row .usd { color: var(--muted); min-width: 74px; }
+/* What is coming in, next to what is waiting. */
+.acc-row .rate { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 11px;
+  color: var(--c3); text-align: right; white-space: nowrap; }
 .acc-row .src:not(.farm) { color: var(--muted); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
 @media (max-width: 560px) {
   .acc-row { grid-template-columns: auto auto 1fr; }
-  .acc-row .usd, .acc-row .src { grid-column: 2 / -1; text-align: left; }
+  .acc-row .rate, .acc-row .usd, .acc-row .src { grid-column: 2 / -1; text-align: left; }
 }
 
 /* A row the mode has already decided. It still says where the reward goes —

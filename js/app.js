@@ -1665,7 +1665,7 @@ async function renderWalletResources(account) {
           <button class="btn" id="voteGo">Vote</button>
         </div>
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
-          <span class="sub">Re-cast this vote automatically whenever I claim or compound, so the weight never decays</span></label>
+          <span class="sub">Re-cast this vote on every claim, so the weight never decays</span></label>
         <div id="voteOut" style="margin-top:10px"></div>
         <p class="sub" style="margin:10px 0 0">Change or drop it whenever you like.</p>
       </div>
@@ -1724,7 +1724,7 @@ async function renderWalletResources(account) {
     const built = buildUnstake({ cpu, net, me: account });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Unstake <b>${qty(built.total)} WAX</b> &mdash; ${qty(cpu)} from CPU and ${qty(net)} from NET.
-      <br><span class="dim">In your wallet in three days. Not staked, not spendable, not earning until then.</span>
+      <br><span class="dim">In your wallet in three days. Not staked, not spendable, not earning.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unSign">Sign and unstake</button></div></div>`;
     $('#unSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -1844,7 +1844,7 @@ async function renderWalletStake(account, feeBps, feeAccount) {
     </div>
     <div class="card">
       ${!info.voting ? `<p class="sub" style="margin:0 0 10px">Not voting, so it earns nothing. A vote starts the reward.</p>` : ''}
-      ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. The contract allows one claim a day.</p>` : ''}
+      ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. One claim a day.</p>` : ''}
       ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The claim re-casts your vote too, so the weight stops decaying.</p>` : ''}
       <div id="stakeSteps"></div>
       <div class="toolbar" style="margin:0">
@@ -1916,6 +1916,7 @@ async function renderFarmAccrual(account, positions, joined) {
         <span data-pm="${esc(t.tokenId)}|${esc(t.symbol)}"></span>
         <span class="sym">${esc(t.symbol)}</span>
         <span class="amt" data-acc="${i}">—</span>
+        <span class="rate" data-accrate="${i}"></span>
         <span class="usd" data-accusd="${i}">${t.price == null ? '<span class="dim">unpriced</span>' : ''}</span>
         <span class="src ${t.live ? 'farm' : ''}">${t.live ? `${t.live} live farm${t.live === 1 ? '' : 's'}` : 'ended'}</span>
       </div>`).join('')}</div>
@@ -1936,6 +1937,8 @@ async function renderFarmAccrual(account, positions, joined) {
       const rate = t.rows.reduce((a, r) => a + accrualPerSec(r, now), 0);
       const el = out.querySelector(`[data-acc="${i}"]`);
       if (el) el.textContent = qtyFine(amt);
+      const rl = out.querySelector(`[data-accrate="${i}"]`);
+      if (rl) rl.textContent = rate > 0 ? `+${qtyFine(rate * 86400)} / day` : '';
       if (t.price != null) {
         anyPriced = true;
         usd += amt * t.price; perSec += rate * t.price;
@@ -1959,7 +1962,7 @@ async function renderFarmAccrual(account, positions, joined) {
     const tot = $('#accTotal'), rt = $('#accRate');
     if (tot) tot.textContent = anyPriced ? usd4(usd) : '—';
     if (rt) rt.textContent = perSec > 0
-      ? `+${usd4(perSec * 86400)} a day &middot; ${usd4(perSec * 3600)} an hour`.replace('&middot;', '·')
+      ? `+${usd4(perSec * 86400)} a day · ${usd4(perSec * 3600)} an hour`
       : 'not growing — every farm here has ended';
   };
   paint();
@@ -1994,7 +1997,7 @@ async function renderEarned(account) {
       <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">over the whole period</span></div>
     </div>
 
-    <p class="vs">Valued at today's prices, not the price on each of the ${s.series.length} days you were paid.
+    <p class="vs">At today's prices, not the price on each of the ${s.series.length} days paid.
       ${s.unpriced ? `${s.unpriced} payout${s.unpriced === 1 ? '' : 's'} could not be priced and ${s.unpriced === 1 ? 'is' : 'are'} left out of the totals.` : ''}
       ${hist.truncated.length ? `<b>Only the most recent 1,000 ${hist.truncated.join(' and ')} payouts were read</b>, so the real total is higher.` : ''}</p>
 
@@ -2486,7 +2489,7 @@ async function lookupWallet(account) {
   const all = [...res.alcor, ...res.taco];
   if (!all.length) {
     out.innerHTML = `<div class="empty">No liquidity found for <span class="mono">${esc(account)}</span>.<br>
-      <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} and its TacoSwap LP.</span></div>`;
+      <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} and its Taco LP.</span></div>`;
     return;
   }
 
@@ -4003,10 +4006,10 @@ async function openToken(id) {
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
       </div>
     </div>` : `<div class="section"><h3>Trading</h3>
-      <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state, so there is no chart or trade history.</p></div>
+      <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state — no chart, no history.</p></div>
     </div>`}
 
-    <div class="section"><h3>Order book <span class="dim">&mdash; limit orders resting against ${esc(t.symbol)}/WAX, which the pools do not show</span></h3>
+    <div class="section"><h3>Order book <span class="dim">&mdash; resting orders the pools do not show</span></h3>
       <div class="card"><div id="tokBook"><div class="loading"><span class="spinner"></span><span>Reading the book…</span></div></div></div>
     </div>
 
@@ -4098,7 +4101,7 @@ async function openToken(id) {
     if (!tax.bps) {
       // Absence of evidence. Some contracts hold the rate in code rather than
       // in a readable table, so this cannot promise there is none.
-      el.innerHTML = `<p class="sub" style="margin:0">None in this contract&rsquo;s tables &mdash; a rate held in code is invisible from outside.</p>`;
+      el.innerHTML = `<p class="sub" style="margin:0">None in this contract&rsquo;s tables. A rate held in code is invisible from outside.</p>`;
       return;
     }
     const burn = tax.parts.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0);

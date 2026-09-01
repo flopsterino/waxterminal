@@ -623,8 +623,16 @@ export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAcco
       tokenADesired: asset(askA, pool.symA, pool.decA),
       tokenBDesired: asset(askB, pool.symB, pool.decB),
       tickLower: position.tickLower, tickUpper: position.tickUpper,
-      tokenAMin: asset(askA * (1 - LIQ_SLIPPAGE), pool.symA, pool.decA),
-      tokenBMin: asset(askB * (1 - LIQ_SLIPPAGE), pool.symB, pool.decB),
+      // Zero, for the same reason buildRedeposit uses zero: addliquid consumes
+      // the two sides at the ratio the band requires at the current price, so
+      // one side binds and the rest of the other stays in the internal balance.
+      // Requiring 99% of BOTH is requiring the deposit to already be at that
+      // ratio to the satoshi, which it never is — and Alcor rejects it as
+      // "Price slippage check". There is no price to be protected from here:
+      // this is adding liquidity, not trading, and the amounts are capped by
+      // what was just transferred in.
+      tokenAMin: asset(0, pool.symA, pool.decA),
+      tokenBMin: asset(0, pool.symB, pool.decB),
       deadline: 0,
     },
   });
