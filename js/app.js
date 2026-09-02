@@ -4681,35 +4681,30 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
           <span class="amt">${plan.needsSwap ? qty(plan.toSwap) + ' ' + esc(plan.symFrom) : 'nothing'}</span>
           <span class="det">${feeBps > 0 ? `${qty(plan.fee)} ${esc(plan.symFrom)} fee (${(feeBps / 100).toFixed(2)}%)` : 'no fee'}${plan.legs.length > 1 ? ' &middot; two swaps' : ''}</span></div>
       </div>
-      <div class="planline"><span class="k">Band wants</span><span>${(plan.ratio.shareA * 100).toFixed(1)}% ${esc(pool.symA)} / ${(plan.ratio.shareB * 100).toFixed(1)}% ${esc(pool.symB)}</span></div>
       ${(() => {
         const inUsd = plan.usd - plan.usd * feeBps / 10000;
         const fa = feeApr(pool);
         const farmA = farmAprFor(pool, inUsd);
         if (!(inUsd > 0) || (fa == null && farmA == null)) return '';
         const day = ((fa || 0) + (farmA || 0)) / 100 * inUsd / 365;
-        const rate = r => r == null ? null : r > 999 ? 'more than the pool is worth' : pct(r);
+        const rate = r => r == null ? null : r > 999 ? 'off the scale' : pct(r);
         return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day
           <span class="dim">&mdash; farm ${rate(farmA) ?? 'none'} &middot; fees ${rate(fa) ?? 'none'}</span></span></div>`;
       })()}
-      <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${
+      ${plan.needsSwap ? `<div class="planline"><span class="k">Route</span><span>${plan.routed === 'alcor'
+        ? `Alcor&rsquo;s router &middot; ${plan.legs.map(l => `${esc(l.sym)} in ${l.hops} pool${l.hops === 1 ? '' : 's'}${l.split ? ', split' : ''}`).join(' &middot; ')}`
+        : `<span class="dim">Alcor&rsquo;s router did not answer &mdash; our own map, a day old</span>`}${
+        plan.legs.some(l => l.impact != null)
+          ? ` <span class="dim">&middot; moves</span> ${plan.legs.filter(l => l.impact != null).map(l => `${esc(l.sym)} <b class="${l.impact > 0.05 ? 'neg' : ''}">${(l.impact * 100).toFixed(l.impact < 0.01 ? 2 : 1)}%</b>`).join(' &middot; ')}`
+          : ''}</span></div>` : ''}
+      <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'}${
         // A quoted route has already taken the swap fee out — every pool it
         // crosses, at whatever tier each one charges. Naming a rate here would
         // be charging it twice, and naming this pool's rate would be wrong
         // anyway when the route goes somewhere else.
-        plan.routed === 'alcor' ? 'swap fees already in the figures above' : `${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''}`
-      } &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
-      ${plan.legs.some(l => l.impact != null) ? `<div class="planline"><span class="k">Moves the price</span><span>${
-        plan.legs.filter(l => l.impact != null).map(l => `${esc(l.sym)} <b class="${l.impact > 0.05 ? 'neg' : ''}">${(l.impact * 100).toFixed(l.impact < 0.01 ? 2 : 1)}%</b>`).join(' &middot; ')}
-        ${(() => {
-          const d = plan.legs.filter(l => l.depth != null).map(l => l.depth);
-          return d.length ? `<span class="dim">&mdash; the best route carries ${usd(Math.min(...d))} before moving 1%</span>` : '';
-        })()}</span></div>` : ''}
-      ${plan.needsSwap ? `<div class="planline"><span class="k">Route</span><span>${plan.routed === 'alcor'
-        ? `Alcor's router &middot; ${plan.legs.map(l => `${esc(l.sym)} in ${l.hops} pool${l.hops === 1 ? '' : 's'}${l.split ? ', split' : ''}`).join(' &middot; ')}`
-        : `<span class="dim">Alcor's router did not answer &mdash; our own map, a day old.</span>`}</span></div>` : ''}
-      ${plan.legs.some(l => l.impact > 0.25) ? `<div class="note warn">Too big for the route. Zap less, or bring one of the pool's own tokens.</div>` : ''}
-      <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two &mdash; sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` &middot; stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
+        plan.routed === 'alcor' ? '' : ` &middot; ${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''}`
+      } &middot; ${(SLIPPAGE_PCT).toFixed(0)}% slippage &middot; ${plan.needsSwap ? 'two signatures' : 'one signature'}${incentiveIds.length ? `, stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
+      ${plan.legs.some(l => l.impact > 0.25) ? `<div class="note warn">Too big for the route. Zap less, or bring one of the pool&rsquo;s own tokens.</div>` : ''}
       <button class="btn" id="zapGo" style="width:100%;margin-top:8px">Zap in</button>
       <div class="runbox" id="zapRun"></div>`;
     $('#zapGo').onclick = () => runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account, feeAccount });
