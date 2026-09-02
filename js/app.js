@@ -310,7 +310,13 @@ const feeApr = pool => {
   // counts a day of their swap logs instead — which left vol7d null on every
   // TacoSwap pool and meant this formula could never fire there. 217 farm rows
   // blank, 95 of them holding a real 24-hour number that nothing ever read.
-  const perDay = pool.vol7d > 0 ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0);
+  //
+  // Only ever 24 hours or 7 days. A month annualised is history, not a rate
+  // anyone can act on. On the 7-day setting a venue with no weekly figure falls
+  // back to its day, because a real number from the wrong window beats a blank.
+  const perDay = farmFilters.feeWindow === '24h'
+    ? (pool.vol24 > 0 ? pool.vol24 : 0)
+    : (pool.vol7d > 0 ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0));
   if (!(perDay > 0)) {
     // A pool the pass did not mention did not trade. That is a measured zero,
     // and 0% is an answer — a dash reads as "we could not find out", which was
@@ -329,10 +335,11 @@ const feeApr = pool => {
 // to divide by, or a venue nothing has counted.
 const feeAprWhy = pool => {
   if (!pool) return 'no pool';
-  const perDay = pool.vol7d > 0 ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0);
+  const week = farmFilters.feeWindow !== '24h' && pool.vol7d > 0;
+  const perDay = week ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0);
   if (!(perDay > 0)) return venueCountsVolume(pool.dex) ? 'No trades counted' : 'No volume figure for this venue';
   if (!(pool.tvlReal >= FEE_APR_MIN_TVL)) return `Only ${usd(pool.tvlReal)} in the pool — too small to quote a rate against`;
-  return pool.vol7d > 0 ? 'Fee APR, over 7 days' : 'Fee APR, from a day of this venue\u2019s swaps';
+  return week ? 'Annualised from seven days of trading' : 'Annualised from one day of trading';
 };
 const $ = s => document.querySelector(s);
 
@@ -414,7 +421,7 @@ async function boot() {
   // first render off a progress callback meant one early return anywhere in
   // that path left the page on a spinner with no error — which is exactly what
   // happened, and only on the path that reads the chain.
-  wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders();
+  wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders();
 
   // Start the nightly file on the way past. It is 30 KB and it carries the farm
   // APR denominator, so having it in flight before the first table is drawn is
@@ -422,7 +429,7 @@ async function boot() {
   nightlyFile();
 
   const paint = () => {
-    try { renderPools(); renderFarms(); renderTokens(); renderOverview(); }
+    try { renderFarms(); renderTokens(); renderOverview(); }
     catch (e) { banner(`<div class="err"><b>Could not draw the page.</b> <code class="mono">${esc(e.message)}</code></div>`); }
   };
 
@@ -504,7 +511,7 @@ async function boot() {
       b.disabled = true; b.textContent = 'Reading chain…';
       try {
         await loadCore({ force: true, onProgress: p => { if (p.msg) b.textContent = p.msg; } });
-        groups = []; renderPools(); renderFarms(); renderOverview();
+        groups = []; renderFarms(); renderOverview();
         banner('');
       } catch (e) { b.disabled = false; b.textContent = 'Refresh failed — try again'; }
     };
@@ -539,8 +546,7 @@ function redrawCurrent() {
     if (view === 'pool' && arg) return void openPool(decodeURIComponent(arg));
     if (view === 'farm' && arg) return void openFarm(decodeURIComponent(arg));
     if (view === 'account' && arg) { const a = decodeURIComponent(arg); show('wallet', a); $('#walletInput').value = a; return void lookupWallet(a); }
-    if (lastView === 'pools') renderPools();
-    else if (lastView === 'tokens') renderTokens();
+    if (lastView === 'tokens') renderTokens();
     else if (lastView === 'farms') renderFarms();
     else if (lastView === 'overview') renderOverview();
     else if (lastView === 'activity' && activityLoaded) renderActivity();
@@ -555,6 +561,9 @@ function redrawCurrent() {
 }
 
 function show(v, arg = null) {
+  // Pools and farms are one table now. Old links, bookmarks and the partner's
+  // own config still say "pools", and they should still arrive somewhere.
+  if (v === 'pools') v = 'farms';
   // A view the partner turned off is not a view.
   if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
   if (!['pool', 'token', 'account', 'farm'].includes(v)) lastView = v;
@@ -899,8 +908,6 @@ function wireFilterPanel(panel, store, onChange) {
 // $463 pooled turning over $366 in a day — did not appear at all. Depth is
 // still a column, and still sortable; it is just not the question most people
 // open this page with.
-const poolFilters = { q: '', dex: 'all', hideDust: true, hideThin: false, sort: 'vol24', dir: -1,
-  tvl: {}, fee: {}, depth: {}, farmed: 'any' };
 
 // What each table last put on screen. An export has to be exactly what the
 // reader is looking at — same filters, same sort, same order — or the
@@ -1127,150 +1134,6 @@ function wireCsv(toolbarSel, beforeSel, name, key) {
   bar.insertBefore(b, $(beforeSel));
 }
 
-function wirePools() {
-  wireCsv('#view-pools .toolbar', '#poolCount', 'wax-pools', 'pools');
-  $('#poolSearch').oninput = e => { poolFilters.q = e.target.value.trim().toLowerCase(); renderPools(); };
-  const setDex = d => { poolFilters.dex = d; ['All', 'Alcor', 'Taco'].forEach(n => $(`#fDex${n}`).setAttribute('aria-pressed', String(d === n.toLowerCase() || (d === 'all' && n === 'All')))); renderPools(); };
-  $('#fDexAll').onclick = () => setDex('all');
-  $('#fDexAlcor').onclick = () => setDex('alcor');
-  $('#fDexTaco').onclick = () => setDex('taco');
-  $('#fLiq').onclick = e => { poolFilters.hideDust = !poolFilters.hideDust; e.target.setAttribute('aria-pressed', String(poolFilters.hideDust)); renderPools(); };
-  $('#fThin').onclick = e => { poolFilters.hideThin = !poolFilters.hideThin; e.target.setAttribute('aria-pressed', String(poolFilters.hideThin)); renderPools(); };
-  const panel = $('#poolFilters');
-  panel.innerHTML = rangeField('tvl', 'Pooled value', poolFilters, { unit: 'USD' })
-    + rangeField('fee', 'Fee tier', poolFilters, { unit: '%', step: '0.01' })
-    + rangeField('depth', 'Route depth', poolFilters, { unit: 'USD' })
-    + `<label>Has a farm<select data-f="farmed">
-        <option value="any">Any</option><option value="yes">Farmed only</option><option value="no">Unfarmed only</option>
-      </select></label>`;
-  wireFilterPanel(panel, poolFilters, renderPools);
-  $('#fMorePool').onclick = e => { panel.hidden = !panel.hidden; e.target.setAttribute('aria-pressed', String(!panel.hidden)); };
-}
-
-let _farmed = null;
-const farmedPools = () => (_farmed ??= new Set(state.farms.filter(f => !f.ended).map(f => `${f.poolDex}:${f.poolId}`)));
-
-function filteredPools() {
-  const min = CFG?.content?.minTvlUsd ?? 100;
-  return state.pools.filter(p => {
-    if (poolFilters.dex !== 'all' && p.dex !== poolFilters.dex) return false;
-    // Dust is a pool nobody uses, not merely a small one. Now that the table
-    // leads on volume, a pool that traded a hundred dollars today has earned
-    // its row whatever its size — hiding it would have meant ranking on a
-    // number the filter was throwing away.
-    if (poolFilters.hideDust && !((p.tvl ?? 0) >= min || (p.vol24 ?? 0) >= min)) return false;
-    if (poolFilters.hideThin && p.thin) return false;
-    if (!inRange(p.tvlReal ?? -1, poolFilters.tvl)) return false;
-    if (!inRange(p.feeBps / 100, poolFilters.fee)) return false;
-    if (!inRange(isFinite(p.routeDepth) ? p.routeDepth : Infinity, poolFilters.depth)) return false;
-    if (poolFilters.farmed !== 'any') {
-      const has = farmedPools().has(`${p.dex}:${p.id}`);
-      if (poolFilters.farmed === 'yes' && !has) return false;
-      if (poolFilters.farmed === 'no' && has) return false;
-    }
-    if (poolFilters.q) {
-      const s = `${p.symA}/${p.symB} ${p.id}`.toLowerCase();
-      if (!s.includes(poolFilters.q)) return false;
-    }
-    return true;
-  });
-}
-
-const POOL_COLS = [
-  { k: 'rank', label: '', sortable: false },
-  { k: 'pair', label: 'Pool', sortable: false },
-  { k: 'tvlReal', label: 'Pooled value', r: true, sortable: true },
-  { k: 'vol24', label: 'Volume 24h', r: true, sortable: true },
-  { k: 'vol7d', label: '7d', r: true, sortable: true },
-  { k: 'turnover', label: 'Turnover', r: true, sortable: true },
-  { k: 'price', label: 'Price', r: true, sortable: false },
-  { k: 'change24', label: '24h', r: true, sortable: true },
-  { k: 'feeBps', label: 'Fee', r: true, sortable: true },
-  { k: 'bornAt', label: 'Age', r: true, sortable: true },
-];
-
-function renderPools() {
-  const rows = filteredPools();
-  lastRendered.pools = rows;
-  rows.sort((a, b) => {
-    const k = poolFilters.sort;
-    const x = a[k], y = b[k];
-    const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
-    if (xn && yn) return 0;
-    if (xn) return 1;
-    if (yn) return -1;
-    return (x - y) * poolFilters.dir;
-  });
-
-  // Two numbers, and they are nine times apart on WAX, so the page has to say
-  // which one it is showing. Face value counts every token at its quoted price;
-  // realisable value counts only what a route to a bridged dollar could carry
-  // out. The realisable one leads everywhere, because it is the one that
-  // survives contact with a sell order.
-  const total = rows.reduce((s, p) => s + (p.tvl || 0), 0);
-  const totalReal = rows.reduce((s, p) => s + (p.tvlReal || 0), 0);
-  const concentrated = rows.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked);
-  const concVal = concentrated.reduce((s, p) => s + (p.tvl || 0), 0);
-  // state.pools holds what the snapshot kept (anything above $100 or farmed).
-  // Printing that under "Alcor pools" claimed 723 where the chain has 11,585.
-  // Counted per venue, not "Alcor and the rest". The rest was three venues
-  // summed against a total that only covered TacoSwap, which printed 9,704 of
-  // 8,252 — a subset larger than the set it came from.
-  const perVenue = new Map();
-  for (const p of state.pools) perVenue.set(p.dex, (perVenue.get(p.dex) || 0) + 1);
-  const shownA = perVenue.get('alcor') || 0;
-  const others = [...perVenue].filter(([d]) => d !== 'alcor').sort((a, b) => b[1] - a[1]);
-  const shownT = others.reduce((a, [, n]) => a + n, 0);
-  const alcorTotal = state.counts?.alcor ?? shownA;
-  const priced = [...state.prices.values()].length;
-  $('#poolStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(totalReal)}</span><span class="k">pooled value</span><span class="sub">${usd(total)} at face value &middot; ${usd(concVal)} of that in pools whose tokens mostly back each other</span></div>
-    <div class="stat"><span class="v">${shownA.toLocaleString()}</span><span class="k">Alcor pools</span><span class="sub">${alcorTotal > shownA ? `of ${alcorTotal.toLocaleString()} in existence` : 'every one on the chain'}</span></div>
-    <div class="stat"><span class="v">${shownT.toLocaleString()}</span><span class="k">on the other venues</span><span class="sub">${others.map(([d, n]) => `${n.toLocaleString()} ${venueName[d] || d}`).join(' &middot; ')}</span></div>
-    <div class="stat"><span class="v">${priced.toLocaleString()}</span><span class="k">priced tokens</span><span class="sub">of ${state.tokens.size.toLocaleString()} seen</span></div>
-    <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">deepest stable route</span></div>`;
-
-  // The body renders as far as the tier allows. Reporting rows.length made a
-  // search for something ranked 900th look like it does not exist.
-  const CAP = cap('pools');
-  // "showing top 400 of 574" invites the reader to think 574 is all there is,
-  // when the dust filter is holding back twenty thousand more. Say both.
-  const hidden = state.pools.length - rows.length;
-  $('#poolCount').innerHTML = capNote(rows.length, CAP, 'pools')
-    + (hidden > 0 ? ` <span class="dim">&middot; ${hidden.toLocaleString()} more filtered out</span>` : '');
-
-  const thead = $('#poolTable thead');
-  thead.innerHTML = '<tr>' + POOL_COLS.map(c =>
-    `<th class="${c.r ? 'r ' : ''}${c.sortable ? 'sortable' : ''}" data-k="${c.k}">${c.label}${poolFilters.sort === c.k ? ` <span class="dir">${poolFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
-  thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
-    const k = th.dataset.k;
-    if (poolFilters.sort === k) poolFilters.dir *= -1; else { poolFilters.sort = k; poolFilters.dir = -1; }
-    renderPools();
-  });
-
-  const body = rows.slice(0, cap('pools')).map((p, i) => {
-    const ch = p.change24;
-    return `
-    <tr class="clickable" data-pool="${p.dex}:${esc(p.id)}">
-      <td class="rank">${i + 1}<span data-star="p|${esc(p.dex)}:${esc(String(p.id))}|${esc(p.symA)}/${esc(p.symB)}"></span></td>
-      <td><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span><span class="pairbig">${pairLinks(p)}</span>
-        <span class="venue ${p.dex}">${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'Taco' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}</span>
-        <span class="sub">${(p.feeBps / 100).toFixed(2)}%</span></td>
-      <td class="r num" title="What this pool could actually pay out, priced through routes that reach a bridged dollar. ${usd(p.tvl)} at face value.">${usd(p.tvlReal)}<span class="nominal">${usd(p.tvl)} face</span></td>
-      <td class="r num">${p.vol24 > 0 ? usd(p.vol24) : '<span class="dim">—</span>'}</td>
-      <td class="r num dim">${p.vol7d > 0 ? usd(p.vol7d) : '—'}</td>
-      <td class="r num" title="24h volume against pooled value — how hard the liquidity is working">${p.turnover > 0 ? p.turnover.toFixed(2) + '×' : '<span class="dim">—</span>'}</td>
-      <td class="r num">${p.priceAB != null ? qty(p.priceAB) : '—'} <span class="sub">${esc(p.symB)}</span></td>
-      <td class="r num ${ch > 0 ? 'pos' : ch < 0 ? 'neg' : 'dim'}">${ch == null ? '—' : (ch > 0 ? '+' : '') + ch.toFixed(1) + '%'}</td>
-      <td class="r num dim">${(p.feeBps / 100).toFixed(2)}%</td>
-      <td class="r num dim">${age(p.bornAt)}</td>
-    </tr>`;
-  }).join('');
-  $('#poolTable tbody').innerHTML = body || '<tr><td colspan="9" class="empty">No pools match.</td></tr>';
-  fillMarks($('#poolTable tbody'));
-  fillStars($('#poolTable tbody'));
-  $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = rowClick(() => openPool(tr.dataset.pool)));
-}
 
 // --------------------------------------------------------------- TOKENS -----
 // Same argument as the pools table: what trades, not what sits.
@@ -1464,8 +1327,12 @@ function renderTokens() {
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
 // tokens. Listing raw incentives would show the same pool ten times.
-const farmFilters = { q: '', alcor: true, taco: true, realOnly: false, expired: false, sort: 'aprAt', dir: -1,
-  apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '' };
+// One page, one filter set. Pools and farms were two tables answering halves of
+// the same question — what is this market worth, and what does it pay — and a
+// reader had to hold one in their head while looking at the other.
+const farmFilters = { q: '', dex: 'all', hideDust: true, farmed: 'any', realOnly: false, expired: false,
+  sort: 'tvlReal', dir: -1, feeWindow: '7d',
+  apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '', tvl: {}, fee: {} };
 let groups = [];
 
 // What a farm pays YOU, not what it pays the person already in it. Your deposit
@@ -1530,16 +1397,46 @@ function poolShare(g, size) {
 }
 
 function wireFarms() {
-  wireCsv('#view-farms .toolbar', '#farmCount', 'wax-farms', 'farms');
+  wireCsv('#view-farms .toolbar', '#farmCount', 'wax-markets', 'markets');
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
-  tog('alcor', '#fFarmAlcor'); tog('taco', '#fFarmTaco'); tog('realOnly', '#fReal');
+  tog('realOnly', '#fReal');
+  tog('hideDust', '#fLiq2');
+
+  // One venue selector for the merged page, the way the pools table had it —
+  // three states rather than two toggles that can both be off and show nothing.
+  const setDex = d => {
+    farmFilters.dex = d;
+    [['all', '#fDexAll2'], ['alcor', '#fFarmAlcor'], ['taco', '#fFarmTaco']]
+      .forEach(([v, id]) => $(id)?.setAttribute('aria-pressed', String(d === v)));
+    renderFarms();
+  };
+  $('#fDexAll2').onclick = () => setDex('all');
+  $('#fFarmAlcor').onclick = () => setDex('alcor');
+  $('#fFarmTaco').onclick = () => setDex('taco');
+
+  $('#fFarmedOnly').onclick = e => {
+    farmFilters.farmed = farmFilters.farmed === 'yes' ? 'any' : 'yes';
+    e.target.setAttribute('aria-pressed', String(farmFilters.farmed === 'yes'));
+    renderFarms();
+  };
+
+  // The window the fee APR is annualised from. Anything longer than a week is
+  // history rather than a rate you could act on.
+  const setWin = w => {
+    farmFilters.feeWindow = w;
+    $('#fWin24')?.setAttribute('aria-pressed', String(w === '24h'));
+    $('#fWin7d')?.setAttribute('aria-pressed', String(w === '7d'));
+    groups._key = null; renderFarms();
+  };
+  $('#fWin24').onclick = () => setWin('24h');
+  $('#fWin7d').onclick = () => setWin('7d');
+
   $('#fExpired').onclick = e => {
     farmFilters.expired = !farmFilters.expired;
     e.target.setAttribute('aria-pressed', String(farmFilters.expired));
     groups._key = null; renderFarms();
   };
-  $('#fLive').style.display = 'none';                 // groups are live-only by construction
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
   // out what a farm pays is asking them to do the terminal's work.
@@ -1554,10 +1451,21 @@ function wireFarms() {
 }
 
 function filteredGroups() {
+  const minTvl = CFG?.content?.minTvlUsd ?? 100;
   return groups.filter(g => {
-    if (!farmFilters.alcor && g.dex === 'alcor') return false;
-    if (!farmFilters.taco && g.dex === 'taco') return false;
+    if (farmFilters.dex !== 'all' && g.dex !== farmFilters.dex) return false;
+    // Dust is a market nobody uses, not merely a small one — a pool that traded
+    // a hundred dollars today has earned its row whatever its size. A farm is
+    // never dust: something is being paid out there.
+    if (farmFilters.hideDust && !g.farms.length) {
+      const p = g.pool;
+      if (!p || !((p.tvl ?? 0) >= minTvl || (p.vol24 ?? 0) >= minTvl)) return false;
+    }
+    if (farmFilters.farmed === 'yes' && !g.farms.length) return false;
+    if (farmFilters.farmed === 'no' && g.farms.length) return false;
     if (farmFilters.realOnly && g.aprReal == null) return false;
+    if (!inRange(g.pool?.tvlReal ?? -1, farmFilters.tvl)) return false;
+    if (!inRange((g.pool?.feeBps ?? 0) / 100, farmFilters.fee)) return false;
     if (farmFilters.q) {
       const s = `${g.pool ? g.pool.symA + '/' + g.pool.symB : g.poolId} ${g.rewards.map(r => r.symbol).join(' ')} ${g.poolId}`.toLowerCase();
       if (!s.includes(farmFilters.q)) return false;
@@ -1580,7 +1488,7 @@ function filteredGroups() {
 
 let groupsAll = [];
 function renderFarms() {
-  const key = `${state.loadedAt}:${farmFilters.expired}`;
+  const key = `${state.loadedAt}:${farmFilters.expired}:${farmFilters.feeWindow}`;
   if (groups._key !== key) {
     // Expired farms are excluded by default: their reward rate is zero, so any
     // APR computed from one is arithmetic on a farm that stopped paying. They
@@ -1590,8 +1498,14 @@ function renderFarms() {
     // and they carry on after the incentive ends.
     for (const g of groups) {
       g.feeApr = feeApr(g.pool);
+      // Mirrored onto the group so a column can sort on them: the table sorts
+      // by g[key] and these all live one level down on the pool.
       g.vol24 = g.pool?.vol24 ?? null;
       g.vol7d = g.pool?.vol7d ?? null;
+      g.tvlReal = g.pool?.tvlReal ?? null;
+      g.turnover = g.pool?.turnover ?? null;
+      g.change24 = g.pool?.change24 ?? null;
+      g.bornAt = g.pool?.bornAt ?? null;
       // How many wallets are in it, and how many of those took the farm. The
       // staker count rides on the incentive row; the provider count comes from
       // the nightly pass, because counting it live means reading every position
@@ -1600,25 +1514,27 @@ function renderFarms() {
       g.lps = poolLpCount(`${g.dex}:${g.poolId}`);
     }
 
-    // A pool with no farm still pays its providers, and some pay better than
-    // farmed ones — WAX/WUF returns 76.7% on fees alone with nothing staked on
-    // it. Leaving those out made this a list of incentives rather than a list
-    // of places to put money.
+    // Every pool, farmed or not. A pool with no farm still pays its providers,
+    // and some pay better than farmed ones — WAX/WUF returns 76.7% on fees
+    // alone with nothing staked on it. The dust filter decides what is worth
+    // drawing; the build no longer decides it in advance, because that made
+    // this a list of incentives rather than a list of markets.
     const farmed = new Set(groups.map(g => `${g.dex}:${g.poolId}`));
     for (const p of state.pools) {
       if (farmed.has(`${p.dex}:${p.id}`)) continue;
       const fa = feeApr(p);
-      // A farmed pool that earned nothing from trading is worth a 0% in its
-      // row. An UNFARMED pool that earned nothing is not a place to put money
-      // and has no business being in this table at all — without this, making
-      // the zero explicit would have added every quiet Alcor pool over $25.
-      if (!(fa > 0)) continue;
       groups.push({
         key: `${p.dex}:${p.id}`, dex: p.dex, poolId: p.id, pool: p,
         farms: [], rewards: [], rewardUsdDay: 0, rewardRealDay: 0,
-        stakedUsd: p.tvl, stakedReal: p.tvlReal,
+        stakedUsd: null, stakedReal: null,
+        vol24: p.vol24 ?? null, vol7d: p.vol7d ?? null, tvlReal: p.tvlReal ?? null,
+        turnover: p.turnover ?? null, change24: p.change24 ?? null, bornAt: p.bornAt ?? null,
         apr: null, aprReal: null, aprAt: null, aprStatus: 'no_farm',
         feeApr: fa, tokenCount: 0, newestId: 0, endsAt: null, feesOnly: true,
+        // A pool without a farm still has providers, and the nightly pass
+        // counted them. Leaving this off put a dash in the column for two
+        // thirds of the table.
+        lps: poolLpCount(`${p.dex}:${p.id}`), stakers: null,
       });
     }
     groups._key = key; groups._at = state.loadedAt;
@@ -1658,22 +1574,28 @@ function renderFarms() {
     <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
   $('#farmCount').innerHTML = (farmFilters.size > 0
-    ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} farms</span>`
-    : `${rows.length.toLocaleString()} farms`)
+    ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} markets</span>`
+    : `${rows.length.toLocaleString()} markets`)
     + (rows.length > 250 ? '<span class="dim"> &middot; top 250 listed</span>' : '');
 
+  // One row per market: what it holds, what it trades, what it pays. The two
+  // rates stay in two columns and are never added — fee income does not stop
+  // when an incentive does, and a single number would hide which half is which.
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
+    { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
+    { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
     { k: 'aprAt', label: 'Farm APR', r: true, s: true },
-    { k: 'feeApr', label: 'Fee APR', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
-    { k: 'stakedReal', label: 'Pool', r: true, s: true },
-    { k: 'rewardRealDay', label: 'Value / day', r: true, s: true },
+    { k: 'stakedReal', label: 'Staked', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
+    { k: 'turnover', label: 'Turnover', r: true, s: true },
+    { k: 'change24', label: '24h', r: true, s: true },
     { k: 'lps', label: 'LPs / staked', r: true, s: true },
+    { k: 'bornAt', label: 'Age', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -1683,7 +1605,7 @@ function renderFarms() {
     renderFarms();
   });
 
-  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'farms');
+  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets');
   $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
@@ -1723,13 +1645,14 @@ function renderFarms() {
             : g.aprStatus === 'no_farm' ? 'no farm' : '—'}</span>`;
     const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
-      <td class="rank">${i + 1}</td>
+      <td class="rank">${i + 1}<span data-star="p|${esc(g.dex)}:${esc(String(g.poolId))}|${esc(g.pool ? g.pool.symA + '/' + g.pool.symB : String(g.poolId))}"></span></td>
       <td>${pool}</td>
-      <td class="r">${aprCell}</td>
+      <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
+        g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
       <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
-      <td>${chips}</td>
-      <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
-      <td class="r num">${usd(g.rewardRealDay)}</td>
+      <td class="r">${aprCell}</td>
+      <td>${chips}${g.rewardRealDay > 0 ? ` <span class="sub">${usd(g.rewardRealDay)}/day</span>` : ''}</td>
+      <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
         g.expired ? '<span class="badge bad">expired</span>'
         : rw == null ? '—'
@@ -1737,11 +1660,16 @@ function renderFarms() {
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
       <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
+      <td class="r num ${g.pool?.turnover > 0 ? '' : 'dim'}" title="24h volume against pooled value">${g.pool?.turnover > 0 ? g.pool.turnover.toFixed(2) + '\u00d7' : '—'}</td>
+      <td class="r num ${g.pool?.change24 > 0 ? 'pos' : g.pool?.change24 < 0 ? 'neg' : 'dim'}">${
+        g.pool?.change24 == null ? '—' : (g.pool.change24 > 0 ? '+' : '') + g.pool.change24.toFixed(1) + '%'}</td>
       <td class="r num ${g.lps || g.stakers ? '' : 'dim'}" title="${g.lps ? `${g.lps} wallet${g.lps === 1 ? '' : 's'} hold liquidity here` : 'not counted yet'}${g.stakers ? `, ${g.stakers} of them staked into the farm` : ''}">${
         g.lps ? g.lps + (g.stakers ? ` <span class="dim">/ ${g.stakers}</span>` : '') : g.stakers ? `<span class="dim">? / </span>${g.stakers}` : '—'}</td>
+      <td class="r num dim">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="${cols.length}" class="empty">No farms match.</td></tr>`;
+  }).join('') || `<tr><td colspan="${cols.length}" class="empty">Nothing matches.</td></tr>`;
   fillMarks($('#farmTable tbody'));
+  fillStars($('#farmTable tbody'));
   // A farm row opens the farm. It used to open the pool, which answers a
   // different question and threw away everything specific to the farm.
   $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = rowClick(() => openFarm(tr.dataset.pool)));
@@ -3842,7 +3770,7 @@ async function renderActivity() {
     </div>
     <div class="grid g2" style="margin-bottom:12px">
       <div class="card"><h3>Volume by pool <span class="dim">— share of window</span></h3><div id="actDonut"></div></div>
-      <div class="card"><h3>Most active traders <span class="dim">— by volume</span></h3><div id="actBars"></div></div>
+      <div class="card"><h3>Most active traders <span class="dim">&mdash; a full day, not this page</span></h3><div id="actBars"></div></div>
     </div>
     <div class="card" style="margin-bottom:12px">
       <h3>Routes traded <span class="dim">&mdash; swaps sharing a transaction are one trade, in order</span></h3>
@@ -3852,7 +3780,7 @@ async function renderActivity() {
         <th>Route</th><th class="r">Hops</th><th class="r">Times</th><th class="r">Value in</th><th>Traded by</th><th class="r">Last</th>
       </tr></thead><tbody>${routes.slice(0, cap('routes')).map(r => `
         <tr>
-          <td>${r.cycle ? '<span class="badge warn">arb</span> ' : ''}<span class="route">${r.path.map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
+          <td><span class="route">${r.path.map(esc).join('<span class="dim"> &rarr; </span>')}</span></td>
           <td class="r num dim">${r.hops}</td>
           <td class="r num">${r.n.toLocaleString()}</td>
           <td class="r num">${r.priced ? usd(r.usd) : '<span class="dim">&mdash;</span>'}</td>
@@ -3904,8 +3832,32 @@ async function renderActivity() {
       { h: 'trx', v: x => x.trx },
     ]));
   $('#actDonut').appendChild(donut([...byPool].map(([label, value]) => ({ label, value })), { fmt: usd }));
-  $('#actBars').appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
-    .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
+  // "Most active traders" used to rank the few hundred swaps this page happens
+  // to be showing, which meant a board of four-dollar trades from whoever
+  // touched the chain in the last few minutes. It said nothing, because it was
+  // measuring nothing. The nightly pass walks a full day — 113,376 swaps — and
+  // already ranks them; this is that answer, with the trade count beside the
+  // volume because one is not the other, and every name clickable because the
+  // whole point of the question is who they are.
+  const mv = nightlyFile()?.movers;
+  const box = $('#actBars');
+  if (mv?.length) {
+    const hrs = nightlyFile()?.scope?.windowHours;
+    box.innerHTML = `<div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+      <thead><tr><th>Account</th><th class="r">Moved</th><th class="r">Trades</th><th class="r">Pools</th></tr></thead>
+      <tbody>${mv.slice(0, 10).map(m => `<tr>
+        <td>${acctLink(m.a)}</td>
+        <td class="r num">${usd(m.v)}</td>
+        <td class="r num dim">${(m.n || 0).toLocaleString()}</td>
+        <td class="r num dim">${m.p ?? '—'}</td>
+      </tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin:8px 0 0">Over ${hrs ? hrs.toFixed(0) + ' hours' : 'a day'}, from every Alcor swap in the window.</p>`;
+  } else {
+    // The feed slice is a poor second, so it says what it is rather than
+    // pretending to answer the same question.
+    box.appendChild(bars([...traders].sort((a, b) => b[1].usd - a[1].usd).slice(0, 8)
+      .map(([label, t]) => ({ label, value: t.usd, note: `${t.n} trade${t.n === 1 ? '' : 's'}` })), { fmt: usd }));
+  }
 }
 
 // -------------------------------------------------------- ACCOUNT DETAIL ----

@@ -19,8 +19,7 @@
   <nav class="tabs" id="tabs" role="tablist">
     <button role="tab" data-view="overview" aria-selected="true">Overview</button>
     <button role="tab" data-view="tokens"   aria-selected="false">Tokens</button>
-    <button role="tab" data-view="pools"    aria-selected="false">Pools</button>
-    <button role="tab" data-view="farms"    aria-selected="false">Farms</button>
+    <button role="tab" data-view="farms"    aria-selected="false">Markets</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My wallet</button>
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   <button role="tab" data-view="leaders" aria-selected="false">Leaders</button>
@@ -45,25 +44,6 @@
     <p class="vs" id="ovTagline">Live from the WAX chain.</p>
     <div class="stats" id="ovStats"></div>
     <div id="ovCharts"></div>
-  </section>
-
-  <!-- ------------------------------------------------------------ POOLS -->
-  <section class="view" id="view-pools">
-    <h2 class="vt">Pools</h2>
-    <p class="vs">Every pool on all four venues.</p>
-    <div class="stats" id="poolStats"></div>
-    <div class="toolbar">
-      <input class="search" id="poolSearch" placeholder="Search token or pool id…" autocomplete="off">
-      <button class="chip" id="fDexAll"   aria-pressed="true">All DEXes</button>
-      <button class="chip" id="fDexAlcor" aria-pressed="false">Alcor</button>
-      <button class="chip" id="fDexTaco"  aria-pressed="false">TacoSwap</button>
-      <button class="chip" id="fLiq"      aria-pressed="true">Hide dust</button>
-      <button class="chip" id="fThin"     aria-pressed="false">Hide thin routes</button>
-      <button class="chip" id="fMorePool"  aria-pressed="false">More filters</button>
-      <span class="dim" id="poolCount" style="font-size:12px"></span>
-    </div>
-    <div class="filters" id="poolFilters" hidden></div>
-    <div class="tablewrap"><table id="poolTable"><thead></thead><tbody></tbody></table></div>
   </section>
 
   <!-- ----------------------------------------------------------- TOKENS -->
@@ -92,16 +72,23 @@
 
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
-    <h2 class="vt">Farms</h2>
-    <p class="vs">Every live farm and what it pays a day.</p>
+    <h2 class="vt">Markets</h2>
+    <p class="vs">Every pool and every farm on it, in one table.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
-      <button class="chip" id="fLive"      aria-pressed="true">Live only</button>
-      <button class="chip" id="fFarmAlcor" aria-pressed="true">Alcor</button>
-      <button class="chip" id="fFarmTaco"  aria-pressed="true">TacoSwap</button>
+      <button class="chip" id="fDexAll2"  aria-pressed="true">All venues</button>
+      <button class="chip" id="fFarmAlcor" aria-pressed="false">Alcor</button>
+      <button class="chip" id="fFarmTaco"  aria-pressed="false">TacoSwap</button>
+      <span class="sep"></span>
+      <button class="chip" id="fFarmedOnly" aria-pressed="false">Farmed only</button>
+      <button class="chip" id="fLiq2"      aria-pressed="true">Hide dust</button>
       <button class="chip" id="fReal"      aria-pressed="false">Earnable only</button>
       <button class="chip" id="fExpired"   aria-pressed="false">Show expired</button>
+      <span class="sep"></span>
+      <span class="sub">Fee APR</span>
+      <button class="chip" id="fWin24" aria-pressed="false">24h</button>
+      <button class="chip" id="fWin7d" aria-pressed="true">7d</button>
       <button class="chip" id="fMoreFarm" aria-pressed="false">More filters</button>
       <span class="dim" id="farmCount" style="font-size:12px"></span>
     </div>
