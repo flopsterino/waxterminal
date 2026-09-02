@@ -223,20 +223,46 @@ const tokLink = (id, label = null) => `<span class="xlink" data-tokid="${esc(id)
 const poolLink = (dex, id, label) => `<span class="xlink" data-poolkey="${esc(dex)}:${esc(id)}" title="Open this pool">${label}</span>`;
 const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)}`;
 
+// A row is the least specific thing under the cursor. When a click lands on a
+// token, pool, farm or account link inside it, that link owns the click and the
+// row must keep out of it.
+//
+// The delegated handler below captures the event and stops it, which in a
+// browser is enough on its own. This states the same rule where it does not
+// depend on capture firing first: belt and braces on a click that otherwise
+// opens two pages and leaves one of them loading in the background.
+const LINK_SEL = '[data-tokid],[data-poolkey],[data-farmkey],[data-acct]';
+const rowClick = fn => e => { if (e && e.target && e.target.closest && e.target.closest(LINK_SEL)) return; fn(e); };
+
 // One delegated handler for every one of them, however it got on the page —
 // tables are rewritten constantly and rebinding each time is how a click
 // quietly stops working. Most specific first: a token name inside a pool row
 // should open the token, not the pool.
+//
+// CAPTURE, not bubble. A row carries its own onclick, and in the bubble phase
+// the row's handler has already run by the time this one sees the event —
+// stopPropagation() then cancels nothing, because there is nothing left to
+// cancel. Clicking a token name inside a pool row opened the pool AND the
+// token, landed on the token page, and left the pool page's async reads still
+// writing into a panel nobody was looking at. Capturing puts "most specific
+// first" back the right way round.
+//
+// Safe to swallow the event here because all four of these are plain spans
+// wrapping a name — no button, input or link lives inside one.
 document.addEventListener('click', e => {
   const t = e.target.closest?.('[data-tokid]');
   if (t && t.dataset.tokid) { e.stopPropagation(); openToken(t.dataset.tokid); return; }
   const k = e.target.closest?.('[data-poolkey]');
   if (k) { e.stopPropagation(); openPool(k.dataset.poolkey); return; }
+  // Emitted by the token page's farm summary, and until now by nothing that
+  // listened: the spans looked like links and did nothing.
+  const f = e.target.closest?.('[data-farmkey]');
+  if (f && f.dataset.farmkey) { e.stopPropagation(); openFarm(f.dataset.farmkey); return; }
   const el = e.target.closest?.('[data-acct]');
   if (!el) return;
   e.stopPropagation();
   show('wallet', el.dataset.acct); $('#walletInput').value = el.dataset.acct; lookupWallet(el.dataset.acct);
-});
+}, true);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pairName = p => `${esc(p.symA)}/${esc(p.symB)}`;
 // What a trade costs and what a provider receives are not the same number
@@ -666,8 +692,8 @@ function renderOverview() {
     const n = document.createElement('p');
     n.className = 'sub'; n.style.marginTop = '10px';
     n.textContent = showRisky
-      ? `Including ${runaway} farm${runaway === 1 ? '' : 's'} that emit more in a day than their pool is worth. The rate is real; the token cannot survive paying it.`
-      : `${runaway} farm${runaway === 1 ? '' : 's'} hidden: each emits more in a day than its pool is worth. Turn on "risky" to see them.`;
+      ? `Including ${runaway} farm${runaway === 1 ? '' : 's'} that emit more in a day than their pool is worth.`
+      : `${runaway} farm${runaway === 1 ? '' : 's'} hidden: each emits more in a day than its pool is worth.`;
     $('#ovRew').appendChild(n);
   }
   const rt = $('#riskyToggle');
@@ -675,7 +701,7 @@ function renderOverview() {
 
   $('#ovApr').appendChild(withApr.length
     ? histogram(withApr.map(g => g.aprAt), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No real APRs yet — hit "Compute APR" on the farms page to value the Alcor ones.' }));
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No computed APRs yet.' }));
 
   // Alcor only. Its fee is a real field on the pool row (0.05 / 0.30 / 1.00%);
   // the other venues charge one flat rate that this terminal takes from their
@@ -780,7 +806,7 @@ function trustChip(tokenId) {
   if (m.scam) return `<span class="trust bad" title="Alcor has flagged this token as a scam">flagged</span>`;
   // "no safe price" was Alcor's internal field name leaking onto the page. What
   // it means to a reader is that the exchange will not stand behind a price.
-  if (m.safeUsd === 0) return `<span class="trust bad" title="Alcor will not quote a price for this token — treat any figure here as indicative only">unpriced by Alcor</span>`;
+  if (m.safeUsd === 0) return `<span class="trust bad" title="Alcor quotes no price for this token">unpriced by Alcor</span>`;
   if (m.trusted && m.score >= 80) return `<span class="trust ok" title="Alcor rates this ${m.score} out of 100">${m.score}</span>`;
   if (m.score != null) return `<span class="trust" title="Alcor rates this ${m.score} out of 100">${m.score}</span>`;
   return '';
@@ -857,18 +883,24 @@ function promoteBox(kind, id, name) {
 }
 
 // Wired after the page is written, like every other control here.
-function wirePromote() {
-  const buy = $('#promoBuy');
+//
+// SCOPED to the box it belongs to. This markup is rendered on both the token
+// page and the pool page, and both stay in the document — so a document-wide
+// $('#promoBuy') always found whichever section comes first in index.html.
+// Once a token page had rendered, the pool page's Promote button was left with
+// no handler at all, while the day chips still moved the token page's price.
+function wirePromote(root = document) {
+  const buy = root.querySelector('#promoBuy');
   if (!buy || !promotionConfigured()) return;
   const t = promotionTerms();
   let days = 7;
-  document.querySelectorAll('[data-promo-days]').forEach(b => b.onclick = () => {
-    document.querySelectorAll('[data-promo-days]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  root.querySelectorAll('[data-promo-days]').forEach(b => b.onclick = () => {
+    root.querySelectorAll('[data-promo-days]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     days = Number(b.dataset.promoDays);
-    const c = $('#promoCost'); if (c) c.textContent = `${qty(days * t.perDay)} ${t.token}`;
+    const c = root.querySelector('#promoCost'); if (c) c.textContent = `${qty(days * t.perDay)} ${t.token}`;
   });
   buy.onclick = async () => {
-    const out = $('#promoOut');
+    const out = root.querySelector('#promoOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     const built = buildPromotion({ kind: buy.dataset.kind, id: buy.dataset.id, days, terms: t, me: wallet.account() });
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
@@ -922,7 +954,7 @@ async function renderPromoted() {
 
   box.querySelectorAll('tr[data-promo]').forEach(tr => {
     const [kind, id] = tr.dataset.promo.split('|');
-    tr.onclick = () => (kind === 't' ? openToken(id) : openPool(id));
+    tr.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
   });
 }
 
@@ -954,7 +986,7 @@ function renderWatchlist(groups) {
     const g = byFarm.get(id);
     if (g) items.push({ kind: 'f', id, name: g.pool ? `${g.pool.symA}/${g.pool.symB} farm` : `farm ${g.poolId}`, sub: [...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', '),
       metrics: { apr: g.aprReal, paysDay: g.rewardRealDay, staked: g.stakedReal },
-      go: () => openPool(id) });
+      go: () => openFarm(id) });
   }
 
   if (!items.length) { sec.hidden = true; return; }
@@ -976,12 +1008,12 @@ function renderWatchlist(groups) {
           : `<span class="dim">unchanged since ${ago(new Date(d.at).toISOString())}</span>`}</td>
       </tr>`;
     }).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">${watchCount()} followed, in this browser only. Compared against what each was worth when you last looked.</p>`;
+    <p class="sub" style="margin:10px 0 0">${watchCount()} followed, in this browser only.</p>`;
 
   box.querySelectorAll('tr[data-watch]').forEach(tr => {
     const [kind, id] = tr.dataset.watch.split('|');
     const it = items.find(x => x.kind === kind && x.id === id);
-    tr.onclick = () => it?.go();
+    tr.onclick = rowClick(() => it?.go());
   });
   // Recorded after the comparison is on screen, never before it.
   for (const it of items) markSeen(it.kind, it.id, it.metrics);
@@ -1188,7 +1220,7 @@ function renderPools() {
   $('#poolTable tbody').innerHTML = body || '<tr><td colspan="9" class="empty">No pools match.</td></tr>';
   fillMarks($('#poolTable tbody'));
   fillStars($('#poolTable tbody'));
-  $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
+  $('#poolTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = rowClick(() => openPool(tr.dataset.pool)));
 }
 
 // --------------------------------------------------------------- TOKENS -----
@@ -1201,7 +1233,7 @@ const tokFilters = { q: '', solidOnly: true, sort: 'vol24', dir: -1, lens: 'all'
 const LENSES = {
   all:      { sort: 'vol24' },
   trending: { sort: 'heat',     where: t => t.heat != null,
-              note: 'Trading above its own weekly run rate — the multiple, not the amount.' },
+              note: 'By multiple of its own weekly run rate.' },
   gainers:  { sort: 'change24', where: t => t.change24 != null && t.change24 > 0 },
   losers:   { sort: 'change24', dir: 1, where: t => t.change24 != null && t.change24 < 0 },
   new:      { sort: 'bornAt',   where: t => t.bornAt != null,
@@ -1343,7 +1375,7 @@ function renderTokens() {
     </tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No tokens match.</td></tr>`;
   fillMarks($('#tokTable tbody'));
   fillStars($('#tokTable tbody'));
-  $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
+  $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = rowClick(() => openToken(tr.dataset.tokid)));
 }
 
 // ---------------------------------------------------------------- FARMS -----
@@ -1542,7 +1574,7 @@ function renderFarms() {
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
          <span class="pairbig">${pairLinks(g.pool)}</span>
          <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>
-         ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}. The rate is real; the token cannot survive it.">burning out</span>` : ''}`
+         ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}.">burning out</span>` : ''}`
       : `<span class="dim">${esc(g.poolId)}</span>`;
     // What it pays and how much of it: several incentives can pay the same token,
     // so sum per token rather than listing it twice.
@@ -1576,7 +1608,7 @@ function renderFarms() {
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num ${g.feeApr != null ? '' : 'dim'}" title="What the pool's own trading has paid a provider, annualised off the last seven days. It does not stop when the farm does.">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
+      <td class="r num ${g.feeApr != null ? '' : 'dim'}" title="Fee APR, over 7 days">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
@@ -1594,7 +1626,7 @@ function renderFarms() {
   fillMarks($('#farmTable tbody'));
   // A farm row opens the farm. It used to open the pool, which answers a
   // different question and threw away everything specific to the farm.
-  $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.pool));
+  $('#farmTable tbody').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = rowClick(() => openFarm(tr.dataset.pool)));
   // Fill in what the rows on screen are still missing, which then re-renders.
   autoApr();
 }
@@ -1694,7 +1726,6 @@ function wireWallet() {
   // No demo button. It held a stranger's account name, and pointing thousands
   // of visitors at someone's wallet because it made a convenient example is not
   // ours to do.
-  $('#walletDemo')?.remove();
 }
 
 // ------------------------------------------------------- WALLET SECTIONS ----
@@ -1766,25 +1797,24 @@ async function renderWalletResources(account) {
           <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
           <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
         </div>
-        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET. Locked for three days after unstaking.</p>
+        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET.</p>
         <div id="unOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unGo">Review</button></div>
       </div>
 
-      <div class="card"><h3>Voting <span class="dim">&mdash; a stake that does not vote earns nothing</span></h3>
+      <div class="card"><h3>Voting</h3>
         ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
           <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? acctLink(r.voter.proxy) : `${r.voter.producers.length} producers`}${r.voter.weight > 0 ? '' : ' &mdash; weight decayed to nothing'}.</p>`
         : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting</b> &mdash; this stake earns nothing.</p>`}
         <div class="toolbar" style="margin:0">
-          <button class="chip" id="voteProxyBtn" aria-pressed="true">Use a proxy</button>
+          <span class="sub">Proxy</span>
           <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" style="max-width:200px" spellcheck="false">
           <button class="btn" id="voteGo">Vote</button>
         </div>
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
           <span class="sub">Re-cast this vote on every claim, so the weight never decays</span></label>
         <div id="voteOut" style="margin-top:10px"></div>
-        <p class="sub" style="margin:10px 0 0">Change or drop it whenever you like.</p>
-      </div>
+              </div>
 
       <div class="card"><h3>Refund queue</h3>
         ${refund ? `<div class="stats" style="margin:0 0 10px">
@@ -1793,7 +1823,7 @@ async function renderWalletResources(account) {
           </div>
           <div id="rfOut"></div>
           <div class="toolbar" style="margin:0"><button class="btn" id="rfGo"${ready ? '' : ' disabled'}>Collect refund</button></div>`
-        : `<p class="sub" style="margin:0">Nothing unstaking. Anything you take out waits here for three days.</p>`}
+        : `<p class="sub" style="margin:0">Nothing unstaking.</p>`}
       </div>
     </div>
   </div>`;
@@ -1972,17 +2002,17 @@ async function renderWalletStake(account, feeBps, feeAccount) {
   const waxUsd = state.waxUsd || 0;
   const waited = info.lastClaim ? Math.round((Date.now() - info.lastClaim) / 86400000) : null;
 
-  out.innerHTML = `<div class="section"><h3>Staked WAX <span class="dim">&mdash; the reward on CPU and NET, which does not arrive on its own</span></h3>
+  out.innerHTML = `<div class="section"><h3>Staked WAX</h3>
     <div class="stats">
       <div class="stat"><span class="v">${qty(info.staked)} WAX</span><span class="k">staked</span><span class="sub">${waxUsd ? usd(info.staked * waxUsd) : '&nbsp;'}</span></div>
       <div class="stat"><span class="v ${info.voting ? 'pos' : 'neg'}">${info.voting ? 'earning' : 'not earning'}</span><span class="k">vote</span><span class="sub">${info.voting
         ? (info.proxy ? `proxied to ${acctLink(info.proxy)}` : `${info.producers.length} producers`)
-        : 'a stake that does not vote earns nothing'}</span></div>
+        : 'not voting'}</span></div>
       <div class="stat"><span class="v">${apr != null ? pct(apr) : '—'}</span><span class="k">observed rate</span><span class="sub">${apr != null ? 'from what was actually paid' : 'needs a week of claims to annualise'}</span></div>
       <div class="stat"><span class="v">${last ? qty(last.amount) + ' WAX' : '—'}</span><span class="k">last claim paid</span><span class="sub">${last ? ago(new Date(last.ts).toISOString()) : 'never claimed'}</span></div>
     </div>
     <div class="card">
-      ${!info.voting ? `<p class="sub" style="margin:0 0 10px">Not voting, so it earns nothing. A vote starts the reward.</p>` : ''}
+      
       ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. One claim a day.</p>` : ''}
       ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The claim re-casts your vote too, so the weight stops decaying.</p>` : ''}
       <div id="stakeSteps"></div>
@@ -2136,9 +2166,7 @@ async function renderEarned(account) {
       <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">over the whole period</span></div>
     </div>
 
-    <p class="vs">At today's prices, not the price on each of the ${s.series.length} days paid.
-      ${s.unpriced ? `${s.unpriced} payout${s.unpriced === 1 ? '' : 's'} could not be priced and ${s.unpriced === 1 ? 'is' : 'are'} left out of the totals.` : ''}
-      ${hist.truncated.length ? `<b>Only the most recent 1,000 ${hist.truncated.join(' and ')} payouts were read</b>, so the real total is higher.` : ''}</p>
+    <p class="vs">Today's prices${s.unpriced ? ` &middot; ${s.unpriced} unpriced, left out` : ''}${hist.truncated.length ? ` &middot; <b>first 1,000 ${hist.truncated.join(' and ')} only</b>, so the real total is higher` : ''}.</p>
 
     <div class="grid g2">
       <div class="card"><h3>Paid out over time</h3><div id="earnSeries"></div></div>
@@ -2190,7 +2218,7 @@ async function renderPepperClaims(account) {
         </tr>`).join('')}</tbody></table></div>
       <div id="pepSteps"></div>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pepGo">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">Up to 40 periods per pool per go. If more are owed, run it again.</p>
+      <p class="sub" style="margin:10px 0 0">Up to 40 periods per pool per go.</p>
     </div></div>`;
 
   $('#pepGo').onclick = async () => {
@@ -2363,7 +2391,7 @@ async function renderWalletBalances(account) {
   };
 
   fillMarks($('#walletBalances'));
-  out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = () => openToken(tr.dataset.tokid));
+  out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = rowClick(() => openToken(tr.dataset.tokid)));
 
   const balOf = id => v.rows.find(r => r.id === id)?.amount ?? 0;
   const sg = $('#sendGo');
@@ -2391,7 +2419,7 @@ function reviewSend(account, rows) {
   const worth = row.price != null ? usd(amount * row.price) : null;
   box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
     Send <b>${qty(amount)} ${esc(row.symbol)}</b>${worth ? ` (${worth})` : ''} from <span class="mono">${esc(account)}</span> to <span class="mono">${esc(to)}</span>${memo ? ` with memo <span class="mono">${esc(memo)}</span>` : ', with no memo'}.
-    ${!memo ? '<br><span class="dim">Most services need a memo to credit a deposit. Without one it can be lost.</span>' : ''}
+    ${!memo ? '<br><span class="dim">No memo &mdash; an exchange may not credit it.</span>' : ''}
     <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="sendConfirm">Sign and send</button></div></div>`;
 
   $('#sendConfirm').onclick = async () => {
@@ -2682,9 +2710,7 @@ async function lookupWallet(account) {
     </div>`;
 
   if (outOfRange.length) {
-    html += `<div class="note" style="margin-bottom:16px"><b>${usd(oorUsd)} is sitting outside its range.</b>
-      Concentrated liquidity only earns while the price is inside the band you chose. Nobody checks this daily, and
-      quiet weeks out of range are where the yield actually goes.</div>`;
+    html += `<div class="note" style="margin-bottom:16px"><b>${usd(oorUsd)} is sitting outside its range</b> and earns nothing there.</div>`;
   }
 
   html += `<div class="grid g2" style="margin-bottom:16px">
@@ -3241,6 +3267,11 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
 // and says what each one means.
 function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   if (!box) return;
+  // This panel is rendered into two different containers — the wallet's
+  // "Open a new position" and the farm page's own. Both stay in the document,
+  // so a document-wide $('#npPool') always found whichever came first: the farm
+  // panel drew its range into the wallet panel and its buttons did nothing.
+  const q = sel => box.querySelector(sel);
   const pools = state.pools
     .filter(p => p.dex === 'alcor' && p.sqrtX64 && p.tvlReal > 0)
     .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvlReal || 0) - (a.tvlReal || 0))
@@ -3278,7 +3309,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
     ${fixedPool ? '' : '</div>'}</div>`;
 
   let band = 'full';
-  const poolOf = () => pools.find(p => String(p.id) === $('#npPool').value);
+  const poolOf = () => pools.find(p => String(p.id) === q('#npPool').value);
 
   // Ticks must land on the pool's own spacing or the contract rejects them, and
   // the spacing differs per fee tier — 10 on a stable pair, 60 on a volatile
@@ -3307,24 +3338,24 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
     if (!p) return;
     const { lower, upper } = ticksFor(p);
     const r = depositRatio(sqrtPriceFromX64(p.sqrtX64), lower, upper);
-    $('#npLabA').firstChild.textContent = `${p.symA} `;
-    $('#npLabB').firstChild.textContent = `${p.symB} `;
+    q('#npLabA').firstChild.textContent = `${p.symA} `;
+    q('#npLabB').firstChild.textContent = `${p.symB} `;
     const priceAt = t => Math.pow(1.0001, t) * 10 ** (p.decA - p.decB);
-    $('#npRange').innerHTML = band === 'full'
+    q('#npRange').innerHTML = band === 'full'
       ? `Full range: your liquidity works at every price, the way a normal AMM pool does. It earns least per dollar and can never fall out of range &mdash; the safe default, and what most of these positions are.`
       : `From ${qty(priceAt(lower))} to ${qty(priceAt(upper))} ${esc(p.symB)} per ${esc(p.symA)}, around ${qty(p.priceAB)} now.
          Ticks ${lower}…${upper} on a spacing of ${p.tickSpacing || 60}. A narrower band earns more per dollar while the price stays inside it and nothing at all once it leaves.`;
-    $('#npRange').innerHTML += ` <br>At this range the pool wants ${(r.shareA * 100).toFixed(1)}% ${esc(p.symA)} and ${(r.shareB * 100).toFixed(1)}% ${esc(p.symB)} by value.`;
+    q('#npRange').innerHTML += ` <br>At this range the pool wants ${(r.shareA * 100).toFixed(1)}% ${esc(p.symA)} and ${(r.shareB * 100).toFixed(1)}% ${esc(p.symB)} by value.`;
   };
 
-  $('#npPool').onchange = paint;
+  q('#npPool').onchange = paint;
   box.querySelectorAll('[data-band]').forEach(b => b.onclick = () => {
     box.querySelectorAll('[data-band]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     band = b.dataset.band; paint();
   });
-  $('#npClose').onclick = () => { box.innerHTML = ''; };
+  q('#npClose').onclick = () => { box.innerHTML = ''; };
 
-  const A = $('#npA'), B = $('#npB');
+  const A = q('#npA'), B = q('#npB');
   const mirror = (from, to, keyFrom) => {
     const p = poolOf(); if (!p) return;
     const { lower, upper } = ticksFor(p);
@@ -3340,9 +3371,9 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   B.oninput = () => mirror(B, A, 'B');
   paint();
 
-  $('#npGo').onclick = () => {
+  q('#npGo').onclick = () => {
     const p = poolOf();
-    const out = $('#npOut');
+    const out = q('#npOut');
     if (!p) { out.innerHTML = '<div class="err">Pick a pool.</div>'; return; }
     const amountA = Number(A.value) || 0, amountB = Number(B.value) || 0;
     if (!(amountA > 0) && !(amountB > 0)) { out.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
@@ -3352,10 +3383,10 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Open a ${band === 'full' ? 'full-range' : '±' + band + '%'} position in <b>${esc(p.symA)}/${esc(p.symB)}</b> at ${(p.feeBps / 100).toFixed(2)}%, with
       <b>${qty(amountA)} ${esc(p.symA)}</b> and <b>${qty(amountB)} ${esc(p.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''}, ticks ${lower}…${upper}.
-      <br><span class="dim">${built.actions.length} actions in one signature. Whatever the pool cannot take at the current ratio stays in your Alcor balance rather than being lost.</span>
+      <br><span class="dim">${built.actions.length} actions in one signature.</span>
       ${band !== 'full' ? '<br><span class="dim">Stops earning the moment the price leaves the band.</span>' : ''}
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="npConfirm">Sign and open</button></div></div>`;
-    $('#npConfirm').onclick = async () => {
+    q('#npConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
         const r = await wallet.transact(built.actions, { verify: true });
@@ -3430,7 +3461,7 @@ function renderAddLiquidity(box, pos, account) {
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Deposit <b>${qty(amountA)} ${esc(pool.symA)}</b> and <b>${qty(amountB)} ${esc(pool.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''} into ticks ${pos.tickLower}…${pos.tickUpper}.
       ${built.venueTaxA || built.venueTaxB ? `<br><span class="dim">Taxed on transfer, so the deposit asks for what arrives.</span>` : ''}
-      <br><span class="dim">${built.actions.length} actions in one signature: the transfers that fund it, then addliquid. Nothing else in your wallet is touched.</span>
+      <br><span class="dim">${built.actions.length} actions in one signature.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="addConfirm">Sign and deposit</button></div></div>`;
     $('#addConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -3561,7 +3592,7 @@ const LD_BOARDS = {
   },
   movers: {
     key: 'movers', label: 'Traders',
-    note: 'Dollars moved through Alcor in 24h, by the account that signed the swap. Not profit &mdash; a swap log cannot tell you that.',
+    note: 'Dollars moved through Alcor in 24h, by the account that signed the swap.',
     cols: [['v', 'Volume 24h', usdExact], ['n', 'Swaps', v => v.toLocaleString()], ['p', 'Pools', String]],
   },
 };
@@ -3605,7 +3636,7 @@ async function renderLeaders() {
 
   const cfg = LD_BOARDS[ldBoard];
   const rows = d[cfg.key] || [];
-  $('#ldNote').textContent = cfg.note + (sc.hidden ? ` ${sc.hidden} account${sc.hidden === 1 ? '' : 's'} withheld at the operator's request; their activity still counts towards every total above.` : '');
+  $('#ldNote').textContent = cfg.note + (sc.hidden ? ` ${sc.hidden} withheld, still counted.` : '');
 
   if (!rows.length) { out.innerHTML = '<div class="empty">Nothing on this board yet.</div>'; return; }
 
@@ -3676,7 +3707,7 @@ async function renderActivity() {
 
   $('#actMeta').innerHTML = `${swaps.length.toLocaleString()} swaps over ${actWindow >= 60 ? (actWindow / 60) + ' hours' : actWindow + ' min'} &middot; ${priced.length.toLocaleString()} priceable`
     + (swaps.capped
-        ? ` &middot; <span class="neg">the history node returns at most 10,000, so this is the most recent slice of the window</span>`
+        ? ` &middot; <span class="neg">capped at 10,000</span>`
         : swaps.truncated
           ? ` &middot; <span class="neg">showing the most recent ${swaps.length.toLocaleString()} of ${swaps.reportedTotal.toLocaleString()}</span>`
           : '');
@@ -3722,7 +3753,7 @@ async function renderActivity() {
     }).join('')}</tbody></table></div>`;
 
   fillMarks(out);
-  out.querySelectorAll('td[data-pool]').forEach(td => td.onclick = () => openPool(td.dataset.pool));
+  out.querySelectorAll('td[data-pool]').forEach(td => td.onclick = rowClick(() => openPool(td.dataset.pool)));
 
   // Both shapes of the same window: the routes as reconstructed, and the raw
   // swaps they were built from, so a reader can check the reconstruction rather
@@ -3834,7 +3865,7 @@ async function openToken(id) {
   if (!t) {
     const [sym, contract] = id.split('@');
     $('#tokenDetail').innerHTML = `<div class="card"><h3>${esc(sym || id)}</h3>
-      <p class="sub" style="margin:8px 0 0">No pool on any venue holds it right now, so there is nothing to price or chart.</p>
+      <p class="sub" style="margin:8px 0 0">No pool on any venue holds it.</p>
       <p class="sub" style="margin:8px 0 0"><a href="https://waxblock.io/tokens/${esc(contract || '')}/${esc(sym || '')}" target="_blank" rel="noopener">Look it up on waxblock &nearr;</a></p></div>`;
     return;
   }
@@ -3883,7 +3914,7 @@ async function openToken(id) {
       ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
     </div>
 
-    <div class="stats" id="tokStats">
+    <div class="stats">
       <div class="stat"><span class="v">${priceStr}</span><span class="k">price</span>${(() => {
         // The change comes from the deepest pool that reports one. A thin
         // pool's 24h move is noise, so it is taken from where the trading is.
@@ -3996,7 +4027,7 @@ async function openToken(id) {
     ${promoteBox('t', id, t.symbol)}`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
-  wirePromote();
+  wirePromote($('#tokenDetail'));
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
 
@@ -4015,7 +4046,7 @@ async function openToken(id) {
         <td class="r num ${p.vol24 > 0 ? '' : 'dim'}">${p.vol24 > 0 ? usd(p.vol24) : '—'}</td>
       </tr>`).join('')}</tbody></table></div>`;
   fillMarks($('#tokPools'));
-  $('#tokPools').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = () => openPool(tr.dataset.pool));
+  $('#tokPools').querySelectorAll('tr[data-pool]').forEach(tr => tr.onclick = rowClick(() => openPool(tr.dataset.pool)));
 
   if (farms.length) {
     $('#tokFarms').innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
@@ -4031,7 +4062,7 @@ async function openToken(id) {
           <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>`;
   fillMarks($('#tokFarms'));
-    $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = () => openFarm(tr.dataset.fpool));
+    $('#tokFarms').querySelectorAll('tr[data-fpool]').forEach(tr => tr.onclick = rowClick(() => openFarm(tr.dataset.fpool)));
   }
 
   // ---- decimals, straight off the row we already have ----------------------
@@ -4058,7 +4089,7 @@ async function openToken(id) {
           ? `<b class="neg">${(venueBps / 100).toFixed(2)}%</b> <span class="dim">&mdash; measured on a real deposit into swap.alcor</span>`
           : '<span class="ok">exempt</span> <span class="dim">&mdash; a real deposit into swap.alcor paid nothing, whatever the table says</span>'}</dd>
       </dl>
-      <p class="sub" style="margin:10px 0 0">${burn > 0 ? `The ${(burn / 100).toFixed(2)}% sent to eosio.null is destroyed, so supply falls with every send. ` : ''}A swap route pays this at every hop that moves the token between accounts.</p>`;
+      <p class="sub" style="margin:10px 0 0">${burn > 0 ? `The ${(burn / 100).toFixed(2)}% to eosio.null is destroyed. ` : ''}Charged at every hop of a route.</p>`;
   }).catch(() => { const el = $('#tokTax'); if (el) el.innerHTML = '<div class="chart-empty">Could not read the contract.</div>'; });
 
   // ---- supply, burn, market cap -------------------------------------------
@@ -4322,7 +4353,7 @@ async function openToken(id) {
             <td class="r num">${qty(s.amount)}</td>
             <td class="r num">${s.usd != null ? usd(s.usd) : '<span class="dim">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div>
-          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown. &ldquo;through&rdquo; = crossed two ${esc(t.symbol)} pools in one block.</p>`;
+          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown..</p>`;
         // The whole reconstruction, not the shown slice: a reader who wants to
         // do their own arithmetic on it should get every trade this page read,
         // and a tape is exactly the shape a spreadsheet is for.
@@ -4459,7 +4490,7 @@ async function openToken(id) {
       td.appendChild(sparkline(pts, { color: 'var(--c3)' }));
       td.title = pts.length >= 3
         ? `${pts.length} days recorded, ${pts.at(-1)?.toFixed(1)}% now against ${pts[0]?.toFixed(1)}% at the start`
-        : 'A trend needs three days recorded; the snapshot job has not reached that yet';
+        : 'Needs three days recorded';
     });
   }).catch(() => {});
 
@@ -4526,12 +4557,12 @@ async function openToken(id) {
     <thead><tr><th></th><th>Wallet</th><th class="r">Held</th><th class="r">In pools</th><th class="r">Share</th></tr></thead>
     <tbody>${top.map((h, i) => `
     <tr><td class="rank">${i + 1}</td>
-      <td class="mono">${acctLink(h.account)}${h.contractRole ? `<span class="venue" title="An account carrying code — it holds this for other people rather than owning it">${esc(h.contractRole)}</span>` : ''}</td>
+      <td class="mono">${acctLink(h.account)}${h.contractRole ? `<span class="venue" title="A contract account">${esc(h.contractRole)}</span>` : ''}</td>
       <td class="r num">${qty(h.balance)}</td>
       <td class="r num ${h.lp > 0 ? '' : 'dim'}">${h.lp > 0 ? qty(h.lp) : '—'}</td>
       <td class="r num ${share(h.balance) > 10 && !h.contractRole ? 'warnish' : 'dim'}">${share(h.balance) == null ? '' : share(h.balance).toFixed(2) + '%'}</td>
     </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `Top ${top.length} hold ${(top.reduce((a, h) => a + h.balance, 0) / supply * 100).toFixed(1)}% of supply${holderTotal ? ` of ${holderTotal.toLocaleString()} holders` : ''}. ` : ''}Share is wallet balance only &mdash; pooled tokens sit in the DEX's row.</p>`;
+    <p class="sub" style="margin:9px 0 0">${supply > 0 ? `Top ${top.length} hold ${(top.reduce((a, h) => a + h.balance, 0) / supply * 100).toFixed(1)}% of supply${holderTotal ? ` of ${holderTotal.toLocaleString()} holders` : ''}. ` : ''}</p>`;
 
   if (supply > 0) {
     const inContracts = holders.filter(h => h.contractRole).reduce((a, h) => a + h.balance, 0);
@@ -4661,7 +4692,13 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
         return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day
           <span class="dim">&mdash; farm ${rate(farmA) ?? 'none'} &middot; fees ${rate(fa) ?? 'none'}</span></span></div>`;
       })()}
-      <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''} &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
+      <div class="planline"><span class="k">Costs</span><span>${feeBps > 0 ? `${(feeBps / 100).toFixed(2)}% zap fee` : 'no zap fee'} &middot; ${
+        // A quoted route has already taken the swap fee out — every pool it
+        // crosses, at whatever tier each one charges. Naming a rate here would
+        // be charging it twice, and naming this pool's rate would be wrong
+        // anyway when the route goes somewhere else.
+        plan.routed === 'alcor' ? 'swap fees already in the figures above' : `${(pool.feeBps / 100).toFixed(2)}% on each swap${plan.legs.length > 1 ? ' (two)' : ''}`
+      } &middot; up to ${(SLIPPAGE_PCT).toFixed(0)}% slippage</span></div>
       ${plan.legs.some(l => l.impact != null) ? `<div class="planline"><span class="k">Moves the price</span><span>${
         plan.legs.filter(l => l.impact != null).map(l => `${esc(l.sym)} <b class="${l.impact > 0.05 ? 'neg' : ''}">${(l.impact * 100).toFixed(l.impact < 0.01 ? 2 : 1)}%</b>`).join(' &middot; ')}
         ${(() => {
@@ -4670,7 +4707,7 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
         })()}</span></div>` : ''}
       ${plan.needsSwap ? `<div class="planline"><span class="k">Route</span><span>${plan.routed === 'alcor'
         ? `Alcor's router &middot; ${plan.legs.map(l => `${esc(l.sym)} in ${l.hops} pool${l.hops === 1 ? '' : 's'}${l.split ? ', split' : ''}`).join(' &middot; ')}`
-        : `<span class="dim">Alcor's router did not answer. Using our own map of the pools, which is a day old.</span>`}</span></div>` : ''}
+        : `<span class="dim">Alcor's router did not answer &mdash; our own map, a day old.</span>`}</span></div>` : ''}
       ${plan.legs.some(l => l.impact > 0.25) ? `<div class="note warn">Too big for the route. Zap less, or bring one of the pool's own tokens.</div>` : ''}
       <div class="planline"><span class="k">Signs</span><span>${plan.needsSwap ? 'two &mdash; sell, then deposit what arrived' : 'one'}${incentiveIds.length ? ` &middot; stakes into ${incentiveIds.length} farm${incentiveIds.length === 1 ? '' : 's'}` : ''}</span></div>
       <button class="btn" id="zapGo" style="width:100%;margin-top:8px">Zap in</button>
@@ -5038,7 +5075,7 @@ async function renderTacoFarmMine(g, me, box) {
       <div class="stat"><span class="v">${share > 0 ? (share * 100).toFixed(share >= 0.1 ? 1 : 2) + '%' : '—'}</span><span class="k">share of the farm</span></div>
       <div class="stat"><span class="v">${usd(liveDay * share)}</span><span class="k">earning a day</span><span class="sub">${usd(liveDay * share * 30)} a month</span></div>
     </div>
-    <p class="sub" style="margin:0">Holding the LP token is the stake &mdash; there is nothing to join and no range to leave.</p>`;
+    <p class="sub" style="margin:0">Holding the LP token is the stake.</p>`;
   return lp.valueUsd;
 }
 
@@ -5085,7 +5122,7 @@ async function openPool(key) {
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
 
-  wirePromote();
+  wirePromote($('#poolDetail'));
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
 

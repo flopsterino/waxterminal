@@ -26,6 +26,11 @@ export default [
         ...globals.browser,
         // Loaded from a CDN at runtime and referenced by name.
         ResizeObserver: 'readonly',
+        // These modules are imported by the node tools as well as the page, so
+        // a few of them ask whether they are in node at all. Every use is
+        // behind `typeof process !== 'undefined'`, which is the correct guard —
+        // the linter simply has no way to see that from the identifier.
+        process: 'readonly',
       },
     },
     linterOptions: { reportUnusedDisableDirectives: true },

@@ -12,14 +12,39 @@
 // serverless terminal possible at all.
 // =============================================================================
 
-export const RPC_HOSTS = [
-  'https://wax.eosusa.io',
-  'https://api.waxsweden.org',
-  'https://wax.greymass.com',
-  'https://wax.cryptolions.io',
-  'https://wax.eosdac.io',
-  'https://api.wax.alohaeos.com',
-];
+// The browser talks to all of these. A batch job run from a machine that also
+// runs trading bots does not want to: the bots share the address, the public
+// nodes count the address, and a nightly sweep of twelve hundred reads is
+// exactly the shape that gets one rate-limited. So the roster and a floor
+// between calls are overridable from the environment, which exists only for the
+// tools — in a browser `process` is not defined and nothing here changes.
+//
+//   WAX_RPC_HOSTS=https://wax.greymass.com,https://wax.eosdac.io
+//   WAX_RPC_GAP_MS=120
+const env = k => (typeof process !== 'undefined' && process.env ? process.env[k] : null);
+
+export const RPC_HOSTS = (env('WAX_RPC_HOSTS') || '').trim()
+  ? env('WAX_RPC_HOSTS').split(',').map(s => s.trim()).filter(Boolean)
+  : [
+    'https://wax.eosusa.io',
+    'https://api.waxsweden.org',
+    'https://wax.greymass.com',
+    'https://wax.cryptolions.io',
+    'https://wax.eosdac.io',
+    'https://api.wax.alohaeos.com',
+  ];
+
+// Zero in the browser, where the reader is one person clicking and the hedging
+// below is what keeps a dead host from stalling the page.
+const GAP_MS = Number(env('WAX_RPC_GAP_MS') || 0) || 0;
+let gapUntil = 0;
+async function pace() {
+  if (!GAP_MS) return;
+  const now = Date.now();
+  const at = Math.max(now, gapUntil);
+  gapUntil = at + GAP_MS;
+  if (at > now) await new Promise(r => setTimeout(r, at - now));
+}
 
 export const HYPERION_HOSTS = [
   'https://wax.eosusa.io',
@@ -54,6 +79,7 @@ const HEDGE_MS = 2200;
 
 async function once(endpoint, body, host, timeout = REQ_TIMEOUT) {
   let res;
+  await pace();
   try {
     res = await fetch(`${host}/v1/chain/${endpoint}`, {
       method: 'POST',

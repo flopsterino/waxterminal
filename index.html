@@ -27,7 +27,7 @@
   </nav>
   <div class="spacer"></div>
   <div class="waxprice" id="waxPrice">WAX <b>—</b></div>
-  <button class="chip" id="unitToggle" title="Show every value in dollars or in WAX">USD</button>
+  <button class="chip" id="unitToggle">USD</button>
   <button class="btn" id="connectBtn">Connect wallet</button>
   <div class="acct" id="acctChip" hidden><span class="dot"></span><span id="acctName"></span>
     <button class="iconbtn" id="disconnectBtn" title="Disconnect" aria-label="Disconnect" style="width:20px;height:20px;font-size:11px">&times;</button></div>
@@ -50,7 +50,7 @@
   <!-- ------------------------------------------------------------ POOLS -->
   <section class="view" id="view-pools">
     <h2 class="vt">Pools</h2>
-    <p class="vs">Every pool on all four venues. Value is what it could actually pay out.</p>
+    <p class="vs">Every pool on all four venues.</p>
     <div class="stats" id="poolStats"></div>
     <div class="toolbar">
       <input class="search" id="poolSearch" placeholder="Search token or pool id…" autocomplete="off">
@@ -69,20 +69,20 @@
   <!-- ----------------------------------------------------------- TOKENS -->
   <section class="view" id="view-tokens">
     <h2 class="vt">Tokens</h2>
-    <p class="vs">Every token across all four venues. <b>Trade depth</b> is what you could buy or sell before moving the price 1%.</p>
+    <p class="vs">Every token across all four venues.</p>
     <div class="stats" id="tokStats"></div>
     <div class="subtabs" id="tokLens" role="tablist">
       <button class="chip" data-lens="all" aria-pressed="true">All</button>
-      <button class="chip" data-lens="trending" title="Trading well above its own weekly run rate, not simply trading the most">Trending</button>
+      <button class="chip" data-lens="trending">Trending</button>
       <button class="chip" data-lens="gainers">Gainers</button>
       <button class="chip" data-lens="losers">Losers</button>
-      <button class="chip" data-lens="new" title="Ranked by the first pool anyone made for it">New</button>
+      <button class="chip" data-lens="new">New</button>
       <button class="chip" data-lens="volume">Top volume</button>
     </div>
     <p class="vs" id="tokLensNote" hidden style="margin-top:-4px"></p>
     <div class="toolbar">
       <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
-      <button class="chip" id="fTokSolid" aria-pressed="true" title="Has a price this terminal will stand behind, and pooled value behind that price">Tradeable only</button>
+      <button class="chip" id="fTokSolid" aria-pressed="true">Tradeable only</button>
       <span class="dim" id="tokCount" style="font-size:12px"></span>
     </div>
     <div class="tablewrap"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
@@ -91,7 +91,7 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Farms</h2>
-    <p class="vs">Every live farm and what it pays a day. Type an amount &mdash; your money dilutes the pot.</p>
+    <p class="vs">Every live farm and what it pays a day.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
@@ -111,7 +111,6 @@
   <!-- ----------------------------------------------------------- WALLET -->
   <section class="view" id="view-wallet">
     <h2 class="vt">My wallet</h2>
-    <p class="vs">Everything this account holds and everything it is owed.</p>
     <div class="walletbar">
       <input id="walletInput" placeholder="Your WAX account" autocomplete="off" spellcheck="false">
       <button class="btn" id="walletGo">Look up</button>
@@ -154,7 +153,7 @@
   <!-- ---------------------------------------------------------- LEADERS -->
   <section class="view" id="view-leaders">
     <h2 class="vt">Leaders</h2>
-    <p class="vs">Measured from the chain. <b>Fees earned</b> is in no table &mdash; it is rebuilt per position from each pool's fee-growth counters.</p>
+    <p class="vs">Measured from the chain.</p>
     <div class="stats" id="ldStats"></div>
     <div class="note" id="ldBurn" hidden></div>
     <div class="subtabs" id="ldTabs" role="tablist">
