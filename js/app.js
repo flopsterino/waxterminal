@@ -12,7 +12,7 @@ import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMa
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
-import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks } from './holders.js';
+import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
@@ -5105,6 +5105,7 @@ async function openPool(key) {
       <div class="stat"><span class="v">${qty(p.reserveA)}</span><span class="k">${tokLink(p.tokenA, p.symA)} in pool</span><span class="sub">${usd(p.priceUsdA ? p.reserveA * p.priceUsdA : null)}</span></div>
       <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>
       <div class="stat"><span class="v">${farms.length}</span><span class="k">live farms</span></div>
+      ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
     ${farms.length ? `<div class="card" style="margin-bottom:12px"><h3>Farms on this pool <button class="chip" id="poolFarmGo" style="margin-left:auto">See the farm</button></h3>
       ${farms.map(f => `<div style="display:flex;gap:10px;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
@@ -5122,6 +5123,27 @@ async function openPool(key) {
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
+
+  // "Is the liquidity locked?" is the first question anyone asks about a new
+  // token, and on Taco it has an exact answer: the pair id is the LP token
+  // symbol, so the locked balance over the LP supply is the share of this pool
+  // nobody can withdraw yet. A lock whose date has passed is the opposite
+  // signal and says so.
+  if (p.dex === 'taco' && p.lpSupply > 0) {
+    lockedSupply().then(m => {
+      const lk = m.get(`${p.id}@swap.taco`);
+      const el = $('#poolLock');
+      if (!el || !lk || !(lk.locked > 0)) return;
+      const held = Math.max(0, lk.locked - lk.claimable);
+      const pctHeld = held / p.lpSupply * 100;
+      const day = lk.nextUnlock ? new Date(lk.nextUnlock * 1000).toISOString().slice(0, 10) : null;
+      el.hidden = false;
+      el.innerHTML = held > 0
+        ? `<span class="v ${pctHeld >= 50 ? 'pos' : ''}">${pctHeld.toFixed(pctHeld >= 10 ? 0 : 1)}%</span><span class="k">liquidity locked</span>`
+          + `<span class="sub">${day ? `until ${day}` : 'no date'}${lk.claimable > 0 ? ` &middot; ${(lk.claimable / p.lpSupply * 100).toFixed(1)}% already withdrawable` : ''}</span>`
+        : `<span class="v neg">expired</span><span class="k">liquidity lock</span><span class="sub">${(lk.claimable / p.lpSupply * 100).toFixed(1)}% can be withdrawn now</span>`;
+    }).catch(() => {});
+  }
 
   wirePromote($('#poolDetail'));
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
