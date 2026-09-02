@@ -289,7 +289,7 @@ const farmAprFor = (pool, usdIn) => {
 
 const FEE_APR_MIN_TVL = 25;
 const feeApr = pool => {
-  if (!pool || !(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
+  if (!pool) return null;
   if (!(pool.vol7d > 0)) {
     // The hourly volume pass asks Alcor for every pool and writes down the ones
     // that traded, so a pool it does not mention did not trade. That is a
@@ -298,6 +298,10 @@ const feeApr = pool => {
     // the file covers no other venue, so elsewhere a dash is honest.
     return (pool.dex === 'alcor' && state.volumeAt) ? 0 : null;
   }
+  // The floor belongs here and not above it. Dividing real fee income by a
+  // two-cent pool is what printed 314 billion percent; dividing NO fee income
+  // by it is just zero, and a pool being small is no reason to refuse to say so.
+  if (!(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
   return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
 };
 const $ = s => document.querySelector(s);
@@ -381,6 +385,11 @@ async function boot() {
   // that path left the page on a spinner with no error — which is exactly what
   // happened, and only on the path that reads the chain.
   wirePools(); wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders();
+
+  // Start the nightly file on the way past. It is 30 KB and it carries the farm
+  // APR denominator, so having it in flight before the first table is drawn is
+  // the difference between a rate and a second of "computing…".
+  nightlyFile();
 
   const paint = () => {
     try { renderPools(); renderFarms(); renderTokens(); renderOverview(); }
@@ -1455,6 +1464,10 @@ function seedApr(groups) {
     const ratio = g.pool?.tvl > 0 ? Math.min(1, (g.pool.tvlReal || 0) / g.pool.tvl) : 0;
     g.stakedReal = st * ratio;
     if (st >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'nightly'; }
+    // Name the reason that actually applies. A farm with plenty staked and a
+    // reward token nothing will price is not "too little staked", and telling
+    // someone to look at the stake sends them after the wrong thing.
+    else if (!(g.rewardUsdDay > 0)) g.aprStatus = 'unpriceable';
     else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
     if (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0) g.aprReal = (g.rewardRealDay * 365 / g.stakedReal) * 100;
   }
@@ -1730,6 +1743,7 @@ async function autoApr() {
           const ratio = g.pool?.tvl > 0 ? Math.min(1, (g.pool.tvlReal || 0) / g.pool.tvl) : 0;
           g.stakedReal = st * ratio;
           if (st >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'ok'; }
+          else if (!(g.rewardUsdDay > 0)) g.aprStatus = 'unpriceable';
           else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
           g.aprReal = (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0)
             ? (g.rewardRealDay * 365 / g.stakedReal) * 100 : null;
@@ -4913,7 +4927,7 @@ async function openFarm(key) {
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
       <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">farm APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
-      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${feeApr(p) != null ? "the pool's own trading, over 7 days &mdash; it does not stop when the farm does" : 'not enough volume to measure'}</span></div>
+      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${feeApr(p) ? 'over 7 days' : feeApr(p) === 0 ? 'no trades in seven days' : 'no volume figure for this venue'}</span></div>
       <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
       <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
         soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
