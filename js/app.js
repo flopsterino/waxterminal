@@ -288,21 +288,51 @@ const farmAprFor = (pool, usdIn) => {
 };
 
 const FEE_APR_MIN_TVL = 25;
+// Has anything counted volume for this venue at all? Alcor comes from the hourly
+// file; every other venue is counted from a day of its own swap log by the daily
+// job, and if that ran, at least one of its pools traded. Without the question
+// there is no way to tell "nothing traded" from "nobody looked", and answering
+// zero to the second one is a lie.
+let volSeen = null, volSeenAt = 0;
+const venueCountsVolume = dex => {
+  if (dex === 'alcor') return !!state.volumeAt;
+  if (volSeenAt !== state.loadedAt) {
+    volSeen = new Set();
+    for (const p of state.pools) if (p.vol24 > 0) volSeen.add(p.dex);
+    volSeenAt = state.loadedAt;
+  }
+  return volSeen.has(dex);
+};
+
 const feeApr = pool => {
   if (!pool) return null;
-  if (!(pool.vol7d > 0)) {
-    // The hourly volume pass asks Alcor for every pool and writes down the ones
-    // that traded, so a pool it does not mention did not trade. That is a
-    // measured zero, and 0% is an answer — a dash reads as "we could not find
-    // out", which was wrong for three quarters of the table. Only for Alcor:
-    // the file covers no other venue, so elsewhere a dash is honest.
-    return (pool.dex === 'alcor' && state.volumeAt) ? 0 : null;
+  // Alcor publishes a seven-day figure. Nobody else does, so the daily job
+  // counts a day of their swap logs instead — which left vol7d null on every
+  // TacoSwap pool and meant this formula could never fire there. 217 farm rows
+  // blank, 95 of them holding a real 24-hour number that nothing ever read.
+  const perDay = pool.vol7d > 0 ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0);
+  if (!(perDay > 0)) {
+    // A pool the pass did not mention did not trade. That is a measured zero,
+    // and 0% is an answer — a dash reads as "we could not find out", which was
+    // wrong for three quarters of this table.
+    return venueCountsVolume(pool.dex) ? 0 : null;
   }
   // The floor belongs here and not above it. Dividing real fee income by a
   // two-cent pool is what printed 314 billion percent; dividing NO fee income
   // by it is just zero, and a pool being small is no reason to refuse to say so.
   if (!(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
-  return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
+  return (perDay * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
+};
+
+// Why a fee APR cell is empty or zero. A dash with no explanation reads as a
+// number we could not find, and here it never is: it is either a pool too small
+// to divide by, or a venue nothing has counted.
+const feeAprWhy = pool => {
+  if (!pool) return 'no pool';
+  const perDay = pool.vol7d > 0 ? pool.vol7d / 7 : (pool.vol24 > 0 ? pool.vol24 : 0);
+  if (!(perDay > 0)) return venueCountsVolume(pool.dex) ? 'No trades counted' : 'No volume figure for this venue';
+  if (!(pool.tvlReal >= FEE_APR_MIN_TVL)) return `Only ${usd(pool.tvlReal)} in the pool — too small to quote a rate against`;
+  return pool.vol7d > 0 ? 'Fee APR, over 7 days' : 'Fee APR, from a day of this venue\u2019s swaps';
 };
 const $ = s => document.querySelector(s);
 
@@ -1696,7 +1726,7 @@ function renderFarms() {
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${g.feeApr === 0 ? 'No trades in seven days' : 'Fee APR, over 7 days'}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
+      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
@@ -4927,7 +4957,7 @@ async function openFarm(key) {
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
       <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">farm APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
-      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${feeApr(p) ? 'over 7 days' : feeApr(p) === 0 ? 'no trades in seven days' : 'no volume figure for this venue'}</span></div>
+      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${esc(feeAprWhy(p))}</span></div>
       <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
       <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
         soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
