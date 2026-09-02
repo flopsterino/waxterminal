@@ -12,7 +12,7 @@ import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMa
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
-import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
+import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
@@ -347,6 +347,8 @@ async function boot() {
     show(b.dataset.view);
     if (b.dataset.view === 'wallet') autoWallet();
     if (b.dataset.view === 'leaders') renderLeaders();
+    // One extra table read, and only for someone who opened the tokens page.
+    if (b.dataset.view === 'tokens') renderUnlocks().catch(() => {});
   });
   const paintUnit = () => {
     const b = $('#unitToggle');
@@ -1258,6 +1260,39 @@ function wireTokens() {
     e.target.setAttribute('aria-pressed', String(tokFilters.solidOnly));
     renderTokens();
   };
+}
+
+// Every live lock on WAX, soonest first — the supply calendar.
+//
+// One table read, already made for the per-token float figure, shown as the
+// thing a holder can act on: what is about to stop being locked, whose it is,
+// and how much of that token it represents. Every row links onward, because a
+// date on its own is trivia.
+let unlocksDrawn = false;
+async function renderUnlocks() {
+  if (unlocksDrawn) return;
+  const box = $('#unlockTable'), sec = $('#unlockSection');
+  if (!box || !sec) return;
+  let rows = [];
+  try { rows = await upcomingUnlocks({ limit: 25 }); } catch { return; }
+  if (!rows.length) return;
+  unlocksDrawn = true;
+  sec.hidden = false;
+
+  const priced = id => state.prices.get(id)?.usd ?? null;
+  box.innerHTML = `<div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+    <thead><tr><th>Token</th><th class="r">Unlocks</th><th class="r">Worth now</th><th>To</th><th class="r">When</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const px = priced(r.tokenId);
+      return `<tr>
+        <td><span data-pm="${esc(r.tokenId)}|${esc(r.symbol)}"></span>${tokLink(r.tokenId, r.symbol)}</td>
+        <td class="r num">${qty(r.amount)}</td>
+        <td class="r num ${px ? '' : 'dim'}">${px ? usd(r.amount * px) : 'unpriced'}</td>
+        <td>${acctLink(r.receiver)}</td>
+        <td class="r num dim" title="${new Date(r.at).toISOString().slice(0, 10)}">${Math.max(0, Math.round((r.at - Date.now()) / 86400000)).toLocaleString()}d</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+  fillMarks(box);
 }
 
 function renderTokens() {

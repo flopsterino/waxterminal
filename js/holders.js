@@ -156,13 +156,49 @@ export async function lpHoldings(account, tokenId, pools) {
 // was ever deposited.
 const LOCKER = 'waxdaolocker';
 let locksCache = null;
+let rawLocks = null;
+
+// The rows themselves, read once. Both the per-token total and the calendar
+// below are views of the same single table read.
+async function allLocks() {
+  if (rawLocks) return rawLocks;
+  const { getAllRows } = await import('./chain.js');
+  rawLocks = await getAllRows(LOCKER, LOCKER, 'locks');
+  return rawLocks;
+}
+
+// Supply arriving on a schedule. Every live lock on WAX, soonest first.
+//
+// This is the question a holder actually has about a locked token and cannot
+// answer anywhere: not "how much is locked" but "when does it stop being
+// locked, and how much of it". A token 79% locked with the whole of it
+// releasing on one day in March is a different asset from the same token
+// releasing over four years.
+export async function upcomingUnlocks({ limit = 40, withinDays = null } = {}) {
+  let rows;
+  try { rows = await allLocks(); } catch { return []; }
+  const now = Date.now() / 1000;
+  const until = withinDays ? now + withinDays * 86400 : Infinity;
+  return rows
+    .filter(r => Number(r.status) === 1 && Number(r.unlock_time) > now && Number(r.unlock_time) <= until)
+    .map(r => {
+      const [amt, sym] = String(r.amount).split(' ');
+      return {
+        tokenId: `${sym}@${r.token_contract}`, symbol: sym, contract: r.token_contract,
+        amount: Number(amt), at: Number(r.unlock_time) * 1000,
+        receiver: r.receiver, creator: r.creator, id: r.ID,
+      };
+    })
+    .filter(r => r.amount > 0)
+    .sort((a, b) => a.at - b.at)
+    .slice(0, limit);
+}
 
 export async function lockedSupply() {
   if (locksCache) return locksCache;
   const out = new Map();
   try {
-    const { getAllRows } = await import('./chain.js');
-    const rows = await getAllRows(LOCKER, LOCKER, 'locks');
+    const rows = await allLocks();
     const now = Date.now() / 1000;
     for (const r of rows) {
       if (Number(r.status) !== 1) continue;
