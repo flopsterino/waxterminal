@@ -144,9 +144,57 @@ export async function lpHoldings(account, tokenId, pools) {
   return { total, detail };
 }
 
-// Supply, ceiling, issuer, and how much has been sent to eosio.null — the WAX
-// convention for burning, since the chain has no burn primitive. Circulating is
-// supply minus that.
+// Tokens nobody can move, because a contract is holding them until a date.
+//
+// waxdaolocker is chain-wide, not one project's: every lock ever made on WAX
+// sits in one table, so the whole picture costs a single read and is worth
+// caching for the session. status is the field that matters — 0 was created and
+// never funded, 2 has already been withdrawn, and only 1 is money actually held.
+//
+// The distinction is the difference between a real number and a flattering one:
+// counting every row would say 16.5 million CHEESE is locked whether or not it
+// was ever deposited.
+const LOCKER = 'waxdaolocker';
+let locksCache = null;
+
+export async function lockedSupply() {
+  if (locksCache) return locksCache;
+  const out = new Map();
+  try {
+    const { getAllRows } = await import('./chain.js');
+    const rows = await getAllRows(LOCKER, LOCKER, 'locks');
+    const now = Date.now() / 1000;
+    for (const r of rows) {
+      if (Number(r.status) !== 1) continue;
+      const [amt, sym] = String(r.amount).split(' ');
+      const id = `${sym}@${r.token_contract}`;
+      const e = out.get(id) || { locked: 0, locks: 0, nextUnlock: null, claimable: 0, claimableLocks: 0 };
+      const n = Number(amt);
+      if (!(n > 0)) continue;
+      e.locked += n;
+      e.locks++;
+      const t = Number(r.unlock_time);
+      // Past its date and still sitting there: locked in the table, but only
+      // until someone claims it. Saying that is more useful than pretending the
+      // date has not passed.
+      if (t <= now) { e.claimable += n; e.claimableLocks++; }
+      else if (e.nextUnlock == null || t < e.nextUnlock) e.nextUnlock = t;
+      out.set(id, e);
+    }
+  } catch { return out; }        // locker unreachable: report nothing locked, not a wrong number
+  locksCache = out;
+  return out;
+}
+
+// Supply, ceiling, issuer, how much has been sent to eosio.null — the WAX
+// convention for burning, since the chain has no burn primitive — and how much
+// is time-locked.
+//
+// Circulating is what is left. Both subtractions are provable on chain: burned
+// tokens sit in an account with no keys, and locked ones in a contract that
+// will not release them before a timestamp. A market cap that ignores either is
+// quoting a supply that does not exist — for CHEESE that is 21 million against
+// a real float nearer four and a half.
 export async function tokenStats(contract, symbol) {
   const { getRows } = await import('./chain.js');
   const d = await getRows(contract, symbol, 'stat', { limit: 1 });
@@ -160,7 +208,15 @@ export async function tokenStats(contract, symbol) {
     const hit = (b.rows || []).find(r => String(r.balance).endsWith(' ' + symbol));
     burned = hit ? parseFloat(hit.balance) : 0;
   } catch {}
-  return { supply, maxSupply, burned, circulating: supply - burned, issuer: row.issuer };
+  const lk = (await lockedSupply()).get(`${symbol}@${contract}`) || null;
+  const locked = lk ? lk.locked : 0;
+  return {
+    supply, maxSupply, burned, issuer: row.issuer,
+    locked, lockRows: lk ? lk.locks : 0,
+    nextUnlock: lk ? lk.nextUnlock : null,
+    claimable: lk ? lk.claimable : 0,
+    circulating: Math.max(0, supply - burned - locked),
+  };
 }
 
 // Everyone providing liquidity in this token, summed across its pools. The
@@ -168,7 +224,7 @@ export async function tokenStats(contract, symbol) {
 // almost none of it in their own account.
 export async function topLPs(tokenId, pools, { maxPools = 10 } = {}) {
   const { getAllRows } = await import('./chain.js');
-  const { sqrtPriceFromX64, amountsForLiquidity, parseAsset } = await import('./math.js');
+  const { sqrtPriceFromX64, amountsForLiquidity } = await import('./math.js');
   const owners = new Map();
   const add = (o, amt) => { if (amt > 0) owners.set(o, (owners.get(o) || 0) + amt); };
 

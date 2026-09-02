@@ -16,8 +16,8 @@
 // ratio THIS band needs, with the fewest swaps, and no contract in the loop.
 // =============================================================================
 
-import { depositRatio, amountsForLiquidity } from './math.js';
-import { getAllRows, getRows } from './chain.js';
+import { depositRatio } from './math.js';
+import { getRows } from './chain.js';
 
 const ALCOR = 'swap.alcor';
 // A cent was an arbitrary opinion about what is worth moving, and it silently

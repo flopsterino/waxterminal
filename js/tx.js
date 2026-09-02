@@ -11,7 +11,7 @@
 import { state } from './store.js';
 import { depositRatio } from './math.js';
 import { balanceOf } from './chain.js';
-import { authorization, account, hasSession } from './wallet.js';
+import { account, hasSession } from './wallet.js';
 import { quote as routeQuote } from './router.js';
 
 const ALCOR = 'swap.alcor';

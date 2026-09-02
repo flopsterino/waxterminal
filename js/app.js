@@ -7,14 +7,14 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildHarvest, buildSwaps, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity } from './holders.js';
 import { cap } from './limits.js';
-import { accountInfo, valueBalances, accountSwaps } from './account.js';
+import { accountInfo, valueBalances } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -23,7 +23,7 @@ import { pepperStakes, buildPepperClaim } from './pepperstake.js';
 import { balanceOf, getAllRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
-import { configurePromotion, promotionConfigured, promotionTerms, promotionMemo, activePromotions } from './promote.js';
+import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -377,7 +377,6 @@ async function boot() {
     paint();
     if (!marksReady) marks.then(() => paint());
     if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
-    const alive = state.hosts.filter(h => h.ok).length;
     // A node roster and a raw pool count are things the author cares about.
     // What a reader wants from a footer is how old the numbers are.
     // Volume refreshes hourly, everything else daily, so say which is which
@@ -3764,7 +3763,6 @@ async function renderActivity() {
 // Reached by clicking any wallet name anywhere in the terminal — a holder, a
 // liquidity provider, a trader in the feed. The question "who is that" is the
 // one this app was asking readers to answer somewhere else.
-let acctGen = 0;
 async function renderOrderBook(boxId, tokenId, symbol) {
   const box = $(boxId);
   if (!box) return;
@@ -3921,6 +3919,7 @@ async function openToken(id) {
           <dt>Maximum ever</dt><dd class="mono" id="fMax">—</dd>
           <dt>Still mintable</dt><dd class="mono" id="fMint">—</dd>
           <dt>Burned</dt><dd class="mono" id="fBurned">—</dd>
+          <dt>Time-locked</dt><dd class="mono" id="fLocked">—</dd>
           <dt>Circulating</dt><dd class="mono" id="fCirc">—</dd>
           <dt>Holders</dt><dd class="mono" id="fHolders">—</dd>
           <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
@@ -3997,10 +3996,6 @@ async function openToken(id) {
     ${promoteBox('t', id, t.symbol)}`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
-  for (const id of ['#poolFarmGo', '#poolFarmBtn']) {
-    const b = $(id);
-    if (b) b.onclick = () => openFarm(`${p.dex}:${p.id}`);
-  }
   wirePromote();
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
@@ -4083,15 +4078,30 @@ async function openToken(id) {
     set('#fBurned', stats.burned > 0
       ? `${qty(stats.burned)} <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>`
       : '<span class="dim">none</span>');
+    const lockPct = stats.supply > 0 ? stats.locked / stats.supply * 100 : 0;
+    const unlockDay = stats.nextUnlock ? new Date(stats.nextUnlock * 1000).toISOString().slice(0, 10) : null;
+    set('#fLocked', stats.locked > 0
+      ? `${qty(stats.locked)} <span class="dim">(${lockPct.toFixed(2)}% of supply${unlockDay ? `, next unlocks ${unlockDay}` : ''})</span>`
+        + (stats.claimable > 0 ? `<br><span class="dim">${qty(stats.claimable)} is past its date and waiting to be claimed</span>` : '')
+      : '<span class="dim">none</span>');
     set('#fCirc', qty(stats.circulating));
     set('#fIssuer', esc(stats.issuer || '—'));
     set('#tokCirc', qty(stats.circulating));
-    set('#tokBurn', stats.burned > 0
-      ? `${qty(stats.burned)} burned <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}%)</span>`
-      : `of ${qty(stats.maxSupply)} ever`);
+    // What is left out of circulating, and why. Both are provable: burned
+    // tokens sit in an account with no keys, locked ones in a contract that
+    // will not release them before a date.
+    set('#tokBurn', [
+      stats.burned > 0 ? `${qty(stats.burned)} burned` : '',
+      stats.locked > 0 ? `${qty(stats.locked)} locked${unlockDay ? ` to ${unlockDay}` : ''}` : '',
+    ].filter(Boolean).join(' &middot; ') || `of ${qty(stats.maxSupply)} ever`);
     if (t.price != null) {
       set('#tokCap', usd(stats.circulating * t.price));
-      set('#tokCapSub', `${(t.tvl / (stats.circulating * t.price) * 100).toFixed(1)}% of it is pooled`);
+      // A cap on paper supply is a different number from a cap on what can
+      // actually be sold, so when they differ it says by how much.
+      const paper = stats.supply * t.price;
+      const real = stats.circulating * t.price;
+      set('#tokCapSub', `${(t.tvl / real * 100).toFixed(1)}% of it is pooled`
+        + (paper > real * 1.05 ? ` &middot; ${usd(paper)} on paper supply` : ''));
     }
   });
 
@@ -5078,6 +5088,15 @@ async function openPool(key) {
   wirePromote();
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
+
+  // Both "See the farm" buttons live on this page, but the only code wiring
+  // them sat in openToken, where the pool it named did not exist. So they were
+  // dead where the token page had not run, and threw where it had. They belong
+  // here, next to the pool they are about.
+  for (const sel of ['#poolFarmGo', '#poolFarmBtn']) {
+    const b = $(sel);
+    if (b) b.onclick = () => openFarm(`${p.dex}:${p.id}`);
+  }
 
   // Every venue keeps a state table, so every venue gets a chart and a tape.
   // This used to be Alcor-only, and a TacoSwap or Defibox pool showed two boxes
