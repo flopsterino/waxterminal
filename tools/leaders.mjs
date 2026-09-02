@@ -109,6 +109,14 @@ console.log(`reading positions in ${pools.length} pools (${rawPools.size} fee-gr
 
 const lp = new Map();       // account -> totals
 const poolOwners = new Map();  // poolId -> the distinct wallets providing there
+// poolId -> nominal USD staked into a live incentive there.
+//
+// This is the denominator of every farm APR, and computing it in the browser
+// costs a full positions read per pool — which is why the page could only ever
+// afford to do it for the fourteen rows at the top and left the rest saying
+// "computing…" forever. This job already reads every position in every pool to
+// build the boards above, so the number is a running total away.
+const stakedByPool = new Map();
 const touch = a => {
   let r = lp.get(a);
   if (!r) { r = { account: a, valueUsd: 0, nominalUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set() }; lp.set(a, r); }
@@ -162,7 +170,12 @@ await mapLimit(pools, 4, async p => {
     r.positions++;
     r.pools.add(p.id);
     const inc = stakedIn.get(String(pos.id)) || [];
-    if (inc.some(id => liveIncentives.has(id))) { r.staked++; r.stakedUsd += valueUsd; }
+    if (inc.some(id => liveIncentives.has(id))) {
+      r.staked++; r.stakedUsd += valueUsd;
+      // Nominal, not discounted: the page applies its own exit ratio to this,
+      // and applying it twice would halve every APR denominator.
+      stakedByPool.set(String(p.id), (stakedByPool.get(String(p.id)) || 0) + nominalUsd);
+    }
   }
   if (++scanned % 100 === 0) console.log(`  ${scanned}/${pools.length} pools`);
 });
@@ -259,6 +272,9 @@ await writeFile(new URL('leaders.json', OUT), JSON.stringify({
   // Wallets per pool, so a list can say how many people are in a market
   // without reading eighteen thousand positions to find out.
   lps: Object.fromEntries([...poolOwners].filter(([, set]) => set.size > 0).map(([id, set]) => [id, set.size])),
+  // The farm APR denominator, measured. A pool present in `lps` was scanned, so
+  // its absence here means nothing is staked rather than nothing is known.
+  staked: Object.fromEntries([...stakedByPool].filter(([, v]) => v > 0).map(([id, v]) => [id, round(v, 2)])),
 }));
 
 console.log(`leaders: ${providers.length} providers, ${earners.length} earners, ${farmers.length} farmers, ${movers.length} traders`

@@ -277,7 +277,7 @@ const lpCut = p => p.lpFeeBps ?? p.feeBps;
 // The farm rate a deposit of this size would get, not the rate on the board:
 // joining puts you in the denominator.
 const farmAprFor = (pool, usdIn) => {
-  const g = farmGroups().find(x => x.dex === pool.dex && String(x.poolId) === String(pool.id));
+  const g = seedApr(farmGroups()).find(x => x.dex === pool.dex && String(x.poolId) === String(pool.id));
   if (!g) return null;
   const live = g.farms.filter(f => (f.periodFinish ? f.periodFinish > Date.now() : !f.ended));
   const useReal = g.stakedReal != null && g.rewardRealDay > 0;
@@ -289,7 +289,15 @@ const farmAprFor = (pool, usdIn) => {
 
 const FEE_APR_MIN_TVL = 25;
 const feeApr = pool => {
-  if (!pool || !(pool.vol7d > 0) || !(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
+  if (!pool || !(pool.tvlReal >= FEE_APR_MIN_TVL)) return null;
+  if (!(pool.vol7d > 0)) {
+    // The hourly volume pass asks Alcor for every pool and writes down the ones
+    // that traded, so a pool it does not mention did not trade. That is a
+    // measured zero, and 0% is an answer — a dash reads as "we could not find
+    // out", which was wrong for three quarters of the table. Only for Alcor:
+    // the file covers no other venue, so elsewhere a dash is honest.
+    return (pool.dex === 'alcor' && state.volumeAt) ? 0 : null;
+  }
   return ((pool.vol7d / 7) * (lpCut(pool) / 10000) * 365 / pool.tvlReal) * 100;
 };
 const $ = s => document.querySelector(s);
@@ -556,7 +564,7 @@ function routeFromHash() {
 let showRisky = false;
 function renderOverview() {
   const pools = state.pools.filter(p => p.tvl > 0);
-  const groups = farmGroups();
+  const groups = seedApr(farmGroups());
   const nominal = pools.reduce((s, p) => s + p.tvl, 0);
   const realisable = pools.reduce((s, p) => s + (p.tvlReal || 0), 0);
   const selfBackedVal = pools.filter(p => state.depth.get(p.tokenA)?.selfBacked || state.depth.get(p.tokenB)?.selfBacked)
@@ -1427,6 +1435,32 @@ let groups = [];
 // the moment you put $500 in; a 239% on $850 stays at 151%. Ranking on the
 // headline number sorts by how empty a farm is, which is why the top of the
 // list was full of pools nobody would touch.
+// An APR that says "computing…" forever is worse than no column.
+//
+// Valuing an Alcor farm live means reading every position in its pool, so the
+// page could only ever afford the fourteen rows at the top of the screen and
+// every other row sat on "computing…" until the tab was closed. The nightly
+// pass already reads all of them to build the boards, so the denominator is
+// measured — it just was not being published. Now it is, and autoApr refreshes
+// whatever is actually on screen with a live figure on top of it.
+//
+// Applied wherever farmGroups() is used, because opening a farm page directly
+// showed a dash for the same reason the table showed "computing…".
+function seedApr(groups) {
+  for (const g of groups) {
+    if (g.dex !== 'alcor' || g.aprStatus !== 'lazy') continue;
+    const st = poolStakedUsd(g.key);
+    if (st == null) continue;
+    g.stakedUsd = st;
+    const ratio = g.pool?.tvl > 0 ? Math.min(1, (g.pool.tvlReal || 0) / g.pool.tvl) : 0;
+    g.stakedReal = st * ratio;
+    if (st >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'nightly'; }
+    else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
+    if (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0) g.aprReal = (g.rewardRealDay * 365 / g.stakedReal) * 100;
+  }
+  return groups;
+}
+
 function aprAtSize(g, size) {
   if (!(g.rewardRealDay > 0)) return null;
   const staked = g.stakedReal;
@@ -1508,7 +1542,7 @@ function renderFarms() {
     // Expired farms are excluded by default: their reward rate is zero, so any
     // APR computed from one is arithmetic on a farm that stopped paying. They
     // are still worth being able to look at, which is what the toggle is for.
-    groups = farmGroups({ liveOnly: !farmFilters.expired });
+    groups = seedApr(farmGroups({ liveOnly: !farmFilters.expired }));
     // Trading fees are the other half of what a position in a farmed pool earns,
     // and they carry on after the incentive ends.
     for (const g of groups) {
@@ -1531,7 +1565,11 @@ function renderFarms() {
     for (const p of state.pools) {
       if (farmed.has(`${p.dex}:${p.id}`)) continue;
       const fa = feeApr(p);
-      if (fa == null) continue;
+      // A farmed pool that earned nothing from trading is worth a 0% in its
+      // row. An UNFARMED pool that earned nothing is not a place to put money
+      // and has no business being in this table at all — without this, making
+      // the zero explicit would have added every quiet Alcor pool over $25.
+      if (!(fa > 0)) continue;
       groups.push({
         key: `${p.dex}:${p.id}`, dex: p.dex, poolId: p.id, pool: p,
         farms: [], rewards: [], rewardUsdDay: 0, rewardRealDay: 0,
@@ -1630,11 +1668,14 @@ function renderFarms() {
     // money does to the rate; a lone diluted number just looks like a worse farm.
     const rate = g.aprReal ?? g.apr;
     const aprCell = rate != null
-        ? `<span class="apr">${pct(rate)}</span>`
+        ? `<span class="apr"${g.aprStatus === 'nightly' ? ' title="Staked value from last night\u2019s pass. Refreshes live for the rows on screen."' : ''}>${pct(rate)}</span>`
         : `<span class="dim" title="${esc(aprWhy(g.aprStatus))}">${
             g.aprStatus === 'unpriceable' ? 'reward unpriced'
             : g.aprStatus === 'no_stake' ? 'nobody staked'
-            : g.aprStatus === 'thin' ? 'too little staked'
+            // Say how little, not just that it is little. A farm with $3 in it
+            // and one with $24 are a different decision, and the label had them
+            // reading identically.
+            : g.aprStatus === 'thin' ? `only ${usd(g.stakedReal ?? g.stakedUsd)} staked`
             : g.aprStatus === 'lazy' ? 'computing…'
             : g.aprStatus === 'no_farm' ? 'no farm' : '—'}</span>`;
     const rw = g.runwayDays;
@@ -1642,7 +1683,7 @@ function renderFarms() {
       <td class="rank">${i + 1}</td>
       <td>${pool}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num ${g.feeApr != null ? '' : 'dim'}" title="Fee APR, over 7 days">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
+      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${g.feeApr === 0 ? 'No trades in seven days' : 'Fee APR, over 7 days'}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td>${chips}</td>
       <td class="r num">${usd(g.pool?.tvlReal ?? 0)}<span class="nominal">${g.stakedReal != null ? usd(g.stakedReal) + ' staked' : ''}</span></td>
       <td class="r num">${usd(g.rewardRealDay)}</td>
@@ -1675,7 +1716,7 @@ async function autoApr() {
   const targets = filteredGroups()
     .sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir)
     .slice(0, 14)
-    .filter(g => g.aprStatus === 'lazy' && g.dex === 'alcor');
+    .filter(g => (g.aprStatus === 'lazy' || g.aprStatus === 'nightly') && g.dex === 'alcor');
   if (!targets.length) return;
   autoAprRunning = true;
   try {
@@ -1686,8 +1727,12 @@ async function autoApr() {
         try {
           const st = await groupStakedUsd(g);
           g.stakedUsd = st;
+          const ratio = g.pool?.tvl > 0 ? Math.min(1, (g.pool.tvlReal || 0) / g.pool.tvl) : 0;
+          g.stakedReal = st * ratio;
           if (st >= MIN_STAKE_FOR_APR_USD && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'ok'; }
           else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
+          g.aprReal = (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0)
+            ? (g.rewardRealDay * 365 / g.stakedReal) * 100 : null;
         } catch { /* stays computable on a retry */ }
       }));
     }
@@ -3567,17 +3612,42 @@ let ldData = null, ldBoard = 'providers';
 
 // How many wallets provide liquidity in a pool, from the nightly pass. Loaded
 // once, lazily, and absent rather than wrong until it arrives.
-let lpCounts = null;
-function poolLpCount(key) {
-  if (lpCounts === null) {
-    lpCounts = undefined;                       // in flight
+// The nightly pass, loaded once and kept whole. It already reads every position
+// in every pool for the boards, so it is the cheapest place on earth to get two
+// numbers the page cannot afford to compute live: how many wallets provide in a
+// pool, and how much is staked into its farms.
+let nightly = null;
+function nightlyFile() {
+  if (nightly === null) {
+    nightly = undefined;                        // in flight
     fetch('data/leaders.json', { cache: 'no-cache' })
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { lpCounts = d?.lps || {}; if (lastView === 'farms') renderFarms(); })
-      .catch(() => { lpCounts = {}; });
+      .then(d => {
+        nightly = d || {};
+        // The groups were built before this arrived, so they are holding a
+        // "computing…" that is now answerable. Drop the cache key and redraw
+        // whichever view is showing farm rates — the front page ranks on the
+        // same number as the table, and would otherwise keep last night's gap
+        // until something else forced it to repaint.
+        groups._key = null;
+        if (lastView === 'farms') renderFarms();
+        else if (lastView === 'overview') renderOverview();
+      })
+      .catch(() => { nightly = {}; });
   }
-  if (!lpCounts) return null;
-  return lpCounts[String(key).split(':')[1]] ?? null;
+  return nightly || null;
+}
+const poolIdOf = key => String(key).split(':')[1];
+const poolLpCount = key => nightlyFile()?.lps?.[poolIdOf(key)] ?? null;
+// Nominal USD staked into live incentives, measured. Null means unknown; zero
+// means measured and nothing staked. A pool the pass scanned appears in `lps`,
+// so its absence from `staked` is a real zero rather than a gap.
+function poolStakedUsd(key) {
+  const d = nightlyFile();
+  if (!d?.staked) return null;
+  const id = poolIdOf(key);
+  if (d.staked[id] != null) return d.staked[id];
+  return d.lps?.[id] != null ? 0 : null;
 }
 
 const LD_BOARDS = {
@@ -3897,7 +3967,7 @@ async function openToken(id) {
   const tradePools = pools.filter(p => TRADE_VENUES.has(p.dex) && (p.dex !== 'alcor' || p.sqrtX64))
     .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvl || 0) - (a.tvl || 0));
   const deepest = tradePools[0] || null;
-  const farms = farmGroups().filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
+  const farms = seedApr(farmGroups()).filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
 
   const priceStr = t.price == null ? '—'
@@ -4804,7 +4874,7 @@ async function runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account,
 // stakers sharing it — none of which fits in a card on the pool page, which is
 // why clicking a farm used to land somewhere that answered a different question.
 async function openFarm(key) {
-  const g = farmGroups().find(x => x.key === key);
+  const g = seedApr(farmGroups()).find(x => x.key === key);
   if (!g) return;
   show('farm', key);
   const p = g.pool;
