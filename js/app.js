@@ -1466,7 +1466,6 @@ function wireFarms() {
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
   // out what a farm pays is asking them to do the terminal's work.
-  const calc = $('#calcApr'); if (calc) calc.remove();
   const panel = $('#farmFilterPanel');
   panel.innerHTML = rangeField('apr', 'APR', farmFilters, { unit: '%' })
     + rangeField('rewards', 'Rewards per day', farmFilters, { unit: 'USD' })
@@ -1694,34 +1693,6 @@ async function autoApr() {
     }
     renderFarms();
   } finally { autoAprRunning = false; }
-}
-
-// Exact APR for the rows on screen. The denominator is the UNION of positions
-// staked across the pool's incentives, so a position in five farms counts once.
-async function computeVisibleApr() {
-  const btn = $('#calcApr');
-  const targets = filteredGroups()
-    .sort((a, b) => ((a[farmFilters.sort] ?? -Infinity) - (b[farmFilters.sort] ?? -Infinity)) * farmFilters.dir)
-    .slice(0, 250)
-    .filter(g => g.aprStatus === 'lazy' && g.dex === 'alcor');
-  if (!targets.length) { btn.textContent = 'Nothing left to compute'; setTimeout(() => btn.textContent = 'Compute APR for visible', 1800); return; }
-
-  btn.disabled = true;
-  const BATCH = 5;
-  for (let i = 0; i < targets.length; i += BATCH) {
-    btn.textContent = `Computing ${Math.min(i + BATCH, targets.length)}/${targets.length}…`;
-    await Promise.all(targets.slice(i, i + BATCH).map(async g => {
-      try {
-        const st = await groupStakedUsd(g);
-        g.stakedUsd = st;
-        if (st >= 25 && g.rewardUsdDay > 0) { g.apr = (g.rewardUsdDay * 365 / st) * 100; g.aprStatus = 'ok'; }
-        else g.aprStatus = !(st > 0) ? 'no_stake' : 'thin';
-      } catch { /* stays computable on a retry */ }
-    }));
-    renderFarms();
-  }
-  btn.disabled = false;
-  btn.textContent = 'Compute APR for visible';
 }
 
 // --------------------------------------------------------------- WALLET -----
