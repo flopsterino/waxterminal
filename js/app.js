@@ -1331,7 +1331,7 @@ function renderTokens() {
 // the same question — what is this market worth, and what does it pay — and a
 // reader had to hold one in their head while looking at the other.
 const farmFilters = { q: '', dex: 'all', hideDust: true, farmed: 'any', realOnly: false, expired: false,
-  sort: 'tvlReal', dir: -1, feeWindow: '7d',
+  sort: 'tvlReal', dir: -1, feeWindow: '7d', size: 100,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '', tvl: {}, fee: {} };
 let groups = [];
 
@@ -1372,6 +1372,10 @@ function seedApr(groups) {
 }
 
 function aprAtSize(g, size) {
+  // rewardRealDay is the reward discounted by what it could actually be sold
+  // for. A farm paying a token with a face value and no exit is paying nothing
+  // anyone can spend, and dividing by it would quote a rate on money that does
+  // not come out. The caller names that reason rather than blaming the stake.
   if (!(g.rewardRealDay > 0)) return null;
   const staked = g.stakedReal;
   if (staked == null) return null;
@@ -1429,6 +1433,13 @@ function wireFarms() {
     $('#fWin7d')?.setAttribute('aria-pressed', String(w === '7d'));
     groups._key = null; renderFarms();
   };
+  // What a deposit of this size would earn, which is a different number from
+  // what the incumbent earns and the only one a reader can act on.
+  $('#farmSizeTop').oninput = debounce(e => {
+    farmFilters.size = Math.max(0, num(e.target.value) || 0);
+    renderFarms();
+  }, 300);
+
   $('#fWin24').onclick = () => setWin('24h');
   $('#fWin7d').onclick = () => setWin('7d');
 
@@ -1541,7 +1552,12 @@ function renderFarms() {
   }
   const rows = filteredGroups();
   for (const g of rows) {
-    g.aprAt = g.aprReal ?? g.apr;
+    // The rate YOU would get, not the one the person already in it gets. It is
+    // also what makes most of this column exist at all: an APR needs a
+    // denominator worth dividing by, and on a farm holding three dollars your
+    // own deposit is what provides one. With no amount entered the floor blocks
+    // 197 of 400 rows and the table looks broken.
+    g.aprAt = aprAtSize(g, farmFilters.size || 0) ?? (g.aprReal ?? g.apr);
   }
   // A missing value is not a small one. Sorting nulls as -Infinity put every
   // farm we cannot value at the top of a descending APR sort, which is the
@@ -1586,7 +1602,7 @@ function renderFarms() {
     { k: 'pool', label: 'Pool', s: false },
     { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
-    { k: 'aprAt', label: 'Farm APR', r: true, s: true },
+    { k: 'aprAt', label: farmFilters.size > 0 ? `Farm APR at ${UNIT === 'wax' ? usd(farmFilters.size) : '$' + farmFilters.size.toLocaleString()}` : 'Farm APR', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
@@ -1631,18 +1647,29 @@ function renderFarms() {
     // differ enough to matter — that gap IS the size of the farm.
     // Show the move, not the destination. "62% → 43%" says what adding your
     // money does to the rate; a lone diluted number just looks like a worse farm.
-    const rate = g.aprReal ?? g.apr;
+    // The cell shows what the column sorts on. It used to show the headline
+    // rate while the column ranked on the rate at your size, so a row could sort
+    // high and read blank — which is most of why only a selection of APRs ever
+    // appeared.
+    // The cell shows what the column sorts on. It used to show the headline
+    // rate while the column ranked on the rate at your size, so a row could sort
+    // high and read blank — which is most of why only a selection of APRs ever
+    // appeared.
+    //
+    // When there is no rate, the reason is worked out from the data rather than
+    // read off aprStatus. That field is set by whichever branch got there first
+    // and was reporting "too little staked" for 76 TacoSwap farms whose real
+    // problem is that the reward cannot be sold at all.
+    const rate = g.aprAt;
+    const why = !g.farms.length ? ['no farm', 'No farm on this pool — the fee APR beside it is what it pays']
+      : !(g.rewardUsdDay > 0) ? ['reward unpriced', 'Nothing will quote a price for what this farm pays']
+      : !(g.rewardRealDay > 0) ? ['reward has no exit', 'The reward has a face value but no route out — nothing you could sell']
+      : !(g.stakedReal > 0 || g.stakedUsd > 0) ? ['nobody staked', 'Nobody has staked, so there is no rate yet']
+      : g.stakedReal == null ? ['not measured', 'The nightly pass has not reached this pool']
+      : [`only ${usd(g.stakedReal ?? g.stakedUsd)} staked`, 'Too little staked to divide by'];
     const aprCell = rate != null
         ? `<span class="apr"${g.aprStatus === 'nightly' ? ' title="Staked value from last night\u2019s pass. Refreshes live for the rows on screen."' : ''}>${pct(rate)}</span>`
-        : `<span class="dim" title="${esc(aprWhy(g.aprStatus))}">${
-            g.aprStatus === 'unpriceable' ? 'reward unpriced'
-            : g.aprStatus === 'no_stake' ? 'nobody staked'
-            // Say how little, not just that it is little. A farm with $3 in it
-            // and one with $24 are a different decision, and the label had them
-            // reading identically.
-            : g.aprStatus === 'thin' ? `only ${usd(g.stakedReal ?? g.stakedUsd)} staked`
-            : g.aprStatus === 'lazy' ? 'computing…'
-            : g.aprStatus === 'no_farm' ? 'no farm' : '—'}</span>`;
+        : `<span class="dim" title="${esc(why[1])}">${esc(why[0])}</span>`;
     const rw = g.runwayDays;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}<span data-star="p|${esc(g.dex)}:${esc(String(g.poolId))}|${esc(g.pool ? g.pool.symA + '/' + g.pool.symB : String(g.poolId))}"></span></td>
@@ -2611,7 +2638,7 @@ function positionCard(p, mine = false) {
     <footer class="pc-act">
       ${mine ? `<button class="btn" data-compound="${esc(pool.id)}:${p.posId}">Compound</button>
         <button class="btn ghost" data-add="${p.posId}">Add</button>
-        <button class="btn ghost" data-remove="${p.posId}">Take out</button>` : ''}
+        <button class="btn ghost" data-remove="${p.posId}">Remove</button>` : ''}
       <a class="plink" href="${venueUrl.alcor(pool)}" target="_blank" rel="noopener">Pool &nearr;</a>
     </footer>
     <div class="cplan" hidden></div>
