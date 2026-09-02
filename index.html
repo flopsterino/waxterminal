@@ -207,6 +207,11 @@
 // broke: the reader waits, reloads, and concludes the site is dead. Surface it.
 (function () {
   var shown = false;
+  // Has the page actually produced anything? A banner saying the site is broken,
+  // on a page showing every number correctly, is worse than no banner: it is
+  // wrong, and it teaches the reader to ignore the one time it is right.
+  function painted() { return !!document.querySelector('.stat'); }
+
   function fail(what, detail) {
     if (shown) return; shown = true;
     var b = document.getElementById('banner');
@@ -215,11 +220,26 @@
       String(what || '').replace(/[<>&]/g, '') + (detail ? ' &mdash; <code class="mono">' + String(detail).replace(/[<>&]/g, '').slice(0, 200) + '</code>' : '') +
       '<br>Reloading usually fixes it. If it does not, the public WAX nodes may be rate-limiting.</div>';
   }
-  window.addEventListener('error', function (e) { fail(e.message, e.filename ? e.filename.split('/').pop() + ':' + e.lineno : ''); });
-  window.addEventListener('unhandledrejection', function (e) { fail('A request failed', e.reason && e.reason.message); });
+
+  window.addEventListener('error', function (e) {
+    // A bare "Script error." with no file is the browser refusing to tell us
+    // anything, because the throw happened inside a script from another origin —
+    // here that means the chart library or the wallet kit, both loaded from a
+    // CDN. It says nothing about whether this page works, so it never claims
+    // the page is broken while the page is plainly working.
+    var opaque = !e.filename && /script error/i.test(e.message || '');
+    if (opaque && painted()) { try { console.warn('[third-party]', e.message); } catch (x) {} return; }
+    if (painted()) { try { console.warn('[late]', e.message, e.filename, e.lineno); } catch (x) {} return; }
+    if (opaque) { fail('A script we load from a CDN failed', 'no detail: the error came from another origin'); return; }
+    fail(e.message, e.filename ? e.filename.split('/').pop() + ':' + e.lineno : '');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    if (painted()) { try { console.warn('[late]', e.reason && e.reason.message); } catch (x) {} return; }
+    fail('A request failed', e.reason && e.reason.message);
+  });
   // If nothing has painted after this long, something is wrong that did not throw.
   setTimeout(function () {
-    if (!document.querySelector('.stat')) fail('Still loading after 25 seconds', 'no data rendered');
+    if (!painted()) fail('Still loading after 25 seconds', 'no data rendered');
   }, 25000);
 })();
 </script>

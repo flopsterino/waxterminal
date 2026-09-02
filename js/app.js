@@ -87,12 +87,24 @@ const sigfig = v => {
   if (a >= 1) return v.toPrecision(4).replace(/\.?0+$/, '');
   return v.toPrecision(3);
 };
-const usdExact = v => (v == null || !isFinite(v)) ? '—'
-  : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Money at a fixed precision. Both of these honour the unit switch: choosing
+// WAX and still being shown dollars everywhere the number actually matters —
+// farm rewards, what is waiting to be claimed, what has been paid out — makes
+// the switch a lie. Only the WAX price itself stays in dollars, because that is
+// what it is.
+const fixed = (v, digits) => {
+  if (v == null || !isFinite(v)) return '—';
+  const sign = v < 0 ? '-' : '';
+  if (UNIT === 'wax') {
+    const w = inWax(v);
+    if (w != null) return sign + Math.abs(w).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) + ' WAX';
+  }
+  return sign + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+const usdExact = v => fixed(v, 2);
 // Four decimals, because two of them cannot show a number moving by a
 // thousandth of a cent a second — which is the whole point of showing it move.
-const usd4 = v => (v == null || !isFinite(v)) ? '—'
-  : (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const usd4 = v => fixed(v, 4);
 // Six decimals is plenty for WAX and not nearly enough for WAXWBTC: it printed
 // 0.0000 beside $0.0162, which reads as owning nothing worth 1.6 cents. Below
 // what six decimals can show, precision takes over.
@@ -458,6 +470,13 @@ function redrawCurrent() {
     else if (lastView === 'farms') renderFarms();
     else if (lastView === 'overview') renderOverview();
     else if (lastView === 'activity' && activityLoaded) renderActivity();
+    else if (lastView === 'wallet') {
+      // The wallet page was the one view the unit switch never reached, so the
+      // header said WAX while every balance below it stayed in dollars. It
+      // rebuilds from the account already on screen.
+      const a = ($('#walletInput')?.value || '').trim();
+      if (a) { walletShown = null; lookupWallet(a); }
+    }
   } catch {}
 }
 
@@ -4929,6 +4948,19 @@ async function renderFarmMine(g) {
     pendPos.set(r.posId, (pendPos.get(r.posId) || 0) + pendingAt(r, now) * r.price);
   }
 
+  // What you are owed, by token. A converted total answers "is this worth a
+  // transaction"; it does not answer "what am I actually being paid", and on a
+  // farm paying a token no price feed carries it answers nothing at all — those
+  // rewards are real and were previously invisible, because the money total
+  // skips anything unpriced.
+  const pendTok = new Map();
+  for (const r of pend) {
+    const t = pendTok.get(r.tokenId) || { symbol: r.symbol, amount: 0, priced: r.price != null };
+    t.amount += pendingAt(r, now);
+    pendTok.set(r.tokenId, t);
+  }
+  const pendList = [...pendTok.values()].filter(t => t.amount > 0).sort((a, b) => b.amount - a.amount);
+
   // Only a position that is staked AND in range is actually earning here.
   const rows = mine.map(x => {
     const ids = (joined.get(String(x.posId)) || []).filter(id => liveIds.has(id));
@@ -4946,7 +4978,9 @@ async function renderFarmMine(g) {
     <div class="stats" style="margin-bottom:12px">
       <div class="stat"><span class="v">${usd(totalIn)}</span><span class="k">your stake here</span><span class="sub">${staked > 0 ? Math.min(100, totalIn / staked * 100).toFixed(totalIn / staked >= 0.1 ? 1 : 2) + '% of the farm' : 'the farm reports nothing staked'}</span></div>
       <div class="stat"><span class="v">${usd(totalDay)}</span><span class="k">earning a day</span><span class="sub">${usd(totalDay * 30)} a month</span></div>
-      <div class="stat"><span class="v">${usd4(totalPend)}</span><span class="k">waiting to claim</span><span class="sub">from this farm</span></div>
+      <div class="stat"><span class="v">${pendList.length && !pendList.some(t => t.priced) ? `${qtyFine(pendList[0].amount)} ${esc(pendList[0].symbol)}` : usd4(totalPend)}</span><span class="k">waiting to claim</span><span class="sub">${
+        pendList.length ? pendList.map(t => `${qtyFine(t.amount)} ${esc(t.symbol)}${t.priced ? '' : ' <span class="dim">unpriced</span>'}`).join(' &middot; ') : 'from this farm'
+      }</span></div>
       ${unstaked > 0 ? `<div class="stat"><span class="v neg">${usd(unstaked)}</span><span class="k">not staked</span><span class="sub">earning fees only</span></div>` : ''}
       ${idle > 0 ? `<div class="stat"><span class="v neg">${usd(idle)}</span><span class="k">staked but out of range</span><span class="sub">earns nothing until the price returns</span></div>` : ''}
     </div>

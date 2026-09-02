@@ -62,8 +62,27 @@ export async function connect() {
   return s;
 }
 
+// Has this browser ever connected? WharfKit keeps its sessions in localStorage
+// under its own prefix, so the question can be answered without loading it.
+//
+// This matters because restore() runs on every page load. Without the check,
+// every visitor who has never connected — most of them — pays a quarter of a
+// megabyte from a CDN before they can look at a pool table, which is exactly
+// what the top of this file promises not to do. It also keeps a third-party
+// script out of the boot path, and a throw inside one of those arrives with no
+// file, no line and no message worth reading.
+function hasStoredSession() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      if (/wharf/i.test(localStorage.key(i) || '')) return true;
+    }
+  } catch { return true; }   // storage blocked: try the restore rather than skip it
+  return false;
+}
+
 // Restore a previous session so a reload does not force another wallet prompt.
 export async function restore() {
+  if (!hasStoredSession()) return null;
   try {
     const k = await kitOnce();
     const s = await k.restore();

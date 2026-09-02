@@ -44,17 +44,56 @@ function themeOptions() {
       horzLine: { color: cssVar('--line-2'), width: 1, style: 2, labelBackgroundColor: cssVar('--accent') },
     },
     handleScale: { axisPressedMouseMove: { time: true, price: false } },
-    autoSize: true,
+    // Deliberately NOT autoSize. That option installs the library's own
+    // ResizeObserver, and an exception thrown inside it belongs to a script
+    // from another origin: it escapes every .catch() around the mount, reaches
+    // window.onerror as a bare "Script error." with no file and no line, and
+    // the boot banner then tells the reader the WAX nodes are rate-limiting
+    // them. Sizing happens below instead, in code we can wrap.
   };
+}
+
+// Every chart on a container replaces whatever was there before.
+//
+// Redrawing used to leak: switching the interval on the front page calls the
+// mount again, which clears the container's HTML but leaves the previous chart
+// object alive with an observer still watching a node that is no longer in the
+// document. A session spent clicking through intervals accumulates them, and
+// each one is a live callback inside third-party code.
+const mounted = new WeakMap();
+
+function mount(container, createChart, options, height) {
+  const prev = mounted.get(container);
+  if (prev) { try { prev.chart.remove(); } catch {} try { prev.stop(); } catch {} }
+
+  container.innerHTML = '';
+  container.style.height = height + 'px';
+  const width = Math.max(0, container.clientWidth || container.getBoundingClientRect().width || 0);
+  const chart = createChart(container, { ...options, width: width || undefined, height });
+
+  // Our own observer, so a throw here is ours to catch. It also stops itself
+  // once the container leaves the document, which is what the leak above was.
+  let ro = null;
+  const stop = () => { try { ro?.disconnect(); } catch {} ro = null; };
+  if (typeof ResizeObserver === 'function') {
+    ro = new ResizeObserver(() => {
+      try {
+        if (!container.isConnected) { stop(); return; }
+        const w = container.clientWidth;
+        if (w > 0) chart.applyOptions({ width: w, height });
+      } catch { stop(); }
+    });
+    try { ro.observe(container); } catch { stop(); }
+  }
+
+  mounted.set(container, { chart, stop });
+  return { chart, stop };
 }
 
 // candles: [{time, open, high, low, close, volume}] with time in SECONDS.
 export async function candleChart(container, candles, { height = 320, precision = 6 } = {}) {
   const { createChart, CandlestickSeries, HistogramSeries } = await load();
-  container.innerHTML = '';
-  container.style.height = height + 'px';
-
-  const chart = createChart(container, themeOptions());
+  const { chart, stop } = mount(container, createChart, themeOptions(), height);
   const up = cssVar('--good') || '#4c9';
   const down = cssVar('--bad') || '#c54';
 
@@ -80,7 +119,7 @@ export async function candleChart(container, candles, { height = 320, precision 
   chart.timeScale().fitContent();
   return {
     chart,
-    destroy: () => { try { chart.remove(); } catch {} },
+    destroy: () => { stop(); try { chart.remove(); } catch {} },
     retheme: () => chart.applyOptions(themeOptions()),
   };
 }
@@ -91,28 +130,25 @@ export async function candleChart(container, candles, { height = 320, precision 
 // cursor like the price chart above it.
 export async function histogramChart(container, points, { height = 170, color = null, fmt = null } = {}) {
   const { createChart, HistogramSeries } = await load();
-  container.innerHTML = '';
-  container.style.height = height + 'px';
-  const chart = createChart(container, {
+  const { chart, stop } = mount(container, createChart, {
     ...themeOptions(),
     // Volume has a floor of zero and no meaningful sub-cent detail, so the
     // price scale is formatted as money rather than as a quote.
     localization: fmt ? { priceFormatter: fmt } : undefined,
-  });
+  }, height);
   const c = color || cssVar('--c2') || '#3987e5';
   const s = chart.addSeries(HistogramSeries, { color: c, priceFormat: { type: 'volume' } });
   s.setData(points.map(p => ({ time: p.time, value: p.value })));
   chart.timeScale().fitContent();
-  return { chart, destroy: () => { try { chart.remove(); } catch {} }, retheme: () => chart.applyOptions(themeOptions()) };
+  return { chart, destroy: () => { stop(); try { chart.remove(); } catch {} }, retheme: () => chart.applyOptions(themeOptions()) };
 }
 
 // A single line, for series that have no open/high/low — an account balance, a
 // TVL history, an APR over time.
 export async function lineSeriesChart(container, points, { height = 240, color = null, precision = 4, fmt = null } = {}) {
   const { createChart, AreaSeries } = await load();
-  container.innerHTML = '';
-  container.style.height = height + 'px';
-  const chart = createChart(container, { ...themeOptions(), localization: fmt ? { priceFormatter: fmt } : undefined });
+  const { chart, stop } = mount(container, createChart,
+    { ...themeOptions(), localization: fmt ? { priceFormatter: fmt } : undefined }, height);
   const c = color || cssVar('--c1') || '#3987e5';
   const s = chart.addSeries(AreaSeries, {
     lineColor: c, topColor: c + '44', bottomColor: c + '05', lineWidth: 2,
@@ -120,5 +156,5 @@ export async function lineSeriesChart(container, points, { height = 240, color =
   });
   s.setData(points.map(p => ({ time: p.time, value: p.value })));
   chart.timeScale().fitContent();
-  return { chart, destroy: () => { try { chart.remove(); } catch {} }, retheme: () => chart.applyOptions(themeOptions()) };
+  return { chart, destroy: () => { stop(); try { chart.remove(); } catch {} }, retheme: () => chart.applyOptions(themeOptions()) };
 }
