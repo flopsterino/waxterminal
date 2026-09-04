@@ -51,7 +51,7 @@ export const hideTip = () => { if (tip) tip.hidden = true; };
 // -------------------------------------------------------------- line/area ---
 // points: [{x, y}] — x is usually a timestamp. One series: no legend, the title
 // names it. Crosshair + tooltip on hover, endpoint emphasised.
-export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v => v, fmtX = v => v, label = '' } = {}) {
+export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v => v, fmtX = v => v, label = '', zeroBase = true } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart';
   if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
@@ -64,9 +64,15 @@ export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v 
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
   if (y0 === y1) { const p = Math.abs(y0 || 1) * 0.08; y0 -= p; y1 += p; }
-  // Start value axes at zero where the data allows: a truncated baseline makes a
-  // 2% move look like a crash.
-  if (y0 > 0 && y0 / y1 > 0.55) y0 = 0;
+  // Start VALUE axes at zero where the data allows: a truncated baseline makes
+  // a 2% move look like a crash.
+  //
+  // A RATE is the opposite. An APR that sat between 26.5% and 27.4% all week,
+  // drawn from zero, is a flat line pinned to the ceiling above four fifths of
+  // empty chart — which is exactly what "is this rate normal" looked like, and
+  // why it read as showing nothing. Zero is not a reference anyone holds a rate
+  // against; last week is.
+  if (zeroBase && y0 > 0 && y0 / y1 > 0.55) y0 = 0;
   const pad = (y1 - y0) * 0.08; y1 += pad;
 
   const X = v => padL + ((v - x0) / (x1 - x0 || 1)) * (W - padL - padR);

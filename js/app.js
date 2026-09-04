@@ -5191,7 +5191,7 @@ async function renderFarmParts(g, out) {
 
     <div class="card" style="margin-bottom:14px"><h3>What it pays</h3>
       <div class="tablewrap" style="border:0"><table style="font-size:12.5px">
-        <thead><tr><th>Reward</th><th class="r">Per day</th><th class="r">Value / day</th><th class="r">Share of the pot</th><th class="r">Ends</th><th>Funded by</th></tr></thead>
+        <thead><tr><th>Reward</th><th class="r">Per day</th><th class="r">Value / day</th>${rows.length > 1 ? '<th class="r">Share of the pot</th>' : ''}<th class="r">Ends</th><th>Funded by</th></tr></thead>
         <tbody>${rows.map(f => {
           const ended = !isLive(f);
           return `<tr class="${ended ? 'dim' : ''}">
@@ -5199,7 +5199,7 @@ async function renderFarmParts(g, out) {
               ${ended ? '<span class="pill">ended</span>' : ''}</td>
             <td class="r num">${qty(f.rewardPerDay)} <span class="sub">${esc(f.rewardSymbol)}</span></td>
             <td class="r num">${f.rewardUsdDay ? usd(f.rewardUsdDay) : '<span class="dim">unpriced</span>'}</td>
-            <td class="r num dim">${potDay > 0 && f.rewardUsdDay ? (f.rewardUsdDay / potDay * 100).toFixed(0) + '%' : '—'}</td>
+            ${rows.length > 1 ? `<td class="r num dim">${potDay > 0 && f.rewardUsdDay ? (f.rewardUsdDay / potDay * 100).toFixed(0) + '%' : '—'}</td>` : ''}
             <td class="r num ${ended ? '' : 'dim'}">${f.periodFinish ? (ended ? new Date(f.periodFinish).toISOString().slice(0, 10) : forHowLong(days(f.periodFinish))) : ended ? 'finished' : 'open'}</td>
             <td class="mono dim">${f.creator ? acctLink(f.creator) : '—'}</td>
           </tr>`;
@@ -5251,12 +5251,25 @@ async function renderFarmParts(g, out) {
     const per = new Map();
     for (const p2 of pts) per.set(new Date(p2.x).toISOString().slice(0, 10), p2);
     const series = [...per.values()];
-    box.innerHTML = '';
-    lineSeriesChart(box, series.map(p2 => ({ time: Math.floor(p2.x / 1000), value: p2.y })),
-      { height: 160, color: 'var(--c3)', fmt: v => pct(v) })
+    const vals = series.map(p2 => p2.y);
+    const lo = Math.min(...vals), hi = Math.max(...vals), latest = vals[vals.length - 1];
+    // The answer in a sentence, because a line that has not moved looks
+    // identical to a chart that failed to draw.
+    const swing = lo > 0 ? (hi - lo) / lo : 0;
+    const verdict = swing < 0.1 ? 'steady all week'
+      : latest >= hi * 0.98 ? 'at its highest this week'
+      : latest <= lo * 1.02 ? 'at its lowest this week'
+      : 'moving';
+    box.innerHTML = `<p class="sub" style="margin:0 0 8px"><b>${pct(latest)}</b> today &middot;
+      ${pct(lo)} to ${pct(hi)} over ${series.length} days &middot; <b>${verdict}</b></p><div id="farmHistChart"></div>`;
+    const cbox = $('#farmHistChart');
+    lineSeriesChart(cbox, series.map(p2 => ({ time: Math.floor(p2.x / 1000), value: p2.y })),
+      { height: 150, color: 'var(--c3)', fmt: v => pct(v) })
       .catch(() => {
-        box.innerHTML = '';
-        box.appendChild(areaChart(series, { height: 160, color: 'var(--c3)', fmtY: pct, fmtX: t => new Date(t).toISOString().slice(5, 10), label: 'Farm APR over time' }));
+        cbox.innerHTML = '';
+        // zeroBase off: this is a rate, and drawing it from zero flattens the
+        // only thing the chart is for.
+        cbox.appendChild(areaChart(series, { height: 150, color: 'var(--c3)', zeroBase: false, fmtY: pct, fmtX: t => new Date(t).toISOString().slice(5, 10), label: 'Farm APR over time' }));
       });
   }).catch(() => {});
 
