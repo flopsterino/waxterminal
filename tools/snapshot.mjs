@@ -238,7 +238,10 @@ const taxByToken = new Map();
 const groups = farmGroups();
 const farmedIds = new Set(groups.map(g => `${g.dex}:${g.poolId}`));
 const pools = state.pools
-  .filter(p => p.tvl >= MIN_TVL || farmedIds.has(`${p.dex}:${p.id}`))
+  // Match what the site's own dust filter admits, or the page asks for rows the
+  // file does not carry. That filter keeps a pool that TRADED a hundred dollars
+  // today whatever its size, because a busy small pool has earned its row.
+  .filter(p => p.tvl >= MIN_TVL || (p.vol24 ?? 0) >= MIN_TVL || farmedIds.has(`${p.dex}:${p.id}`))
   .map(p => ({
     d: p.dex, i: p.id, a: p.symA, b: p.symB, ca: p.tokenA, cb: p.tokenB,
     da: p.decA, db: p.decB, f: p.feeBps,
@@ -388,9 +391,16 @@ try {
 
 // One file per month keeps any single file small and lets old months be pruned
 // or archived without rewriting history.
+//
+// The history line is the reason this job used to run once a day: one point per
+// day is all anyone reads a TVL chart for, and appending every two hours would
+// turn a 6 MB year into 70 MB. But the SNAPSHOT is a different thing from the
+// history, and the site's whole first paint comes out of it — so the snapshot
+// runs often and the history line is written only when asked for.
+const WRITE_HISTORY = process.env.WRITE_HISTORY !== '0';
 const month = new Date().toISOString().slice(0, 7);
 await mkdir(new URL('history/', OUT), { recursive: true });
-await appendFile(new URL(`history/${month}.ndjson`, OUT), JSON.stringify({
+if (WRITE_HISTORY) await appendFile(new URL(`history/${month}.ndjson`, OUT), JSON.stringify({
   at: Date.now(),
   wax: round(state.waxUsd, 10),
   tvl: round(state.pools.reduce((s, p) => s + (p.tvl || 0), 0), 2),
@@ -402,7 +412,9 @@ await appendFile(new URL(`history/${month}.ndjson`, OUT), JSON.stringify({
   farms,
   tokens: tokenRows,
 }) + '\n');
-console.log(`appended history/${month}.ndjson — ${topPools.length} pools, ${farms.length} farms, ${tokenRows.length} tokens`);
+console.log(WRITE_HISTORY
+  ? `appended history/${month}.ndjson — ${topPools.length} pools, ${farms.length} farms, ${tokenRows.length} tokens`
+  : 'history line skipped (WRITE_HISTORY=0) — this is a freshness run');
 
 // Guard against silently shipping a broken snapshot: if the anchor price or the
 // pool count collapses, the run should fail loudly rather than overwrite good

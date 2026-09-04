@@ -483,10 +483,10 @@ async function boot() {
     if (build) txt += `${txt ? ' · ' : ''}build ${build}`;
     $('#freshness').textContent = txt;
     if (loadError) {
-      banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
+      banner(`<div class="freshbar">Showing the last snapshot, ${ago(new Date(state.loadedAt).toISOString())}.
         Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
     } else if (state.fromSnapshot) {
-      banner(`<div class="freshbar">Daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}. Pools and wallets you open are read live.
+      banner(`<div class="freshbar">Snapshot from ${ago(new Date(state.loadedAt).toISOString())}, rebuilt every two hours. Pools and wallets you open are read live.
         <button class="btn ghost" id="goLive">Refresh from chain</button></div>`);
     } else banner('');
     // Money left mid-flight outranks anything else on the page.
@@ -514,7 +514,7 @@ async function boot() {
   // read is a deliberate act, and anything you actually open (a pool, a wallet,
   // a compound) reads live state for that one thing anyway.
   if (state.fromSnapshot) {
-    banner(`<div class="freshbar">Showing the daily snapshot from ${ago(new Date(state.loadedAt).toISOString())}.
+    banner(`<div class="freshbar">Showing the last snapshot, ${ago(new Date(state.loadedAt).toISOString())}.
       Pools and wallets you open are read live. <button class="btn ghost" id="goLive">Refresh everything from chain</button></div>`);
     const b = $('#goLive');
     if (b) b.onclick = async () => {

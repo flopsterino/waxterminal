@@ -478,14 +478,28 @@ export async function loadCore({ onProgress = () => {}, force = false, swr = fal
       // sweep thirteen thousand rows before seeing anything. Hand back what is
       // here and let the caller refresh behind them.
       if (swr) return state;
-    } else {
-      // No cache yet: show the committed snapshot immediately rather than a
-      // spinner for fifteen seconds, then keep loading the real thing.
-      try {
-        const d = await loadSnapshot();
-        onProgress({ phase: 'snapshot', done: false, at: d.at, pools: state.pools.length });
-      } catch { /* no snapshot published; fall through to the full sweep */ }
     }
+
+    // The snapshot IS the site, not a placeholder for it.
+    //
+    // Sweeping the chain in the visitor's browser costs 56 requests and 12.9 MB
+    // of free public-node capacity, measured, per visitor. A hundred people
+    // reading at once is 5,600 requests and 1.3 GB, from nodes nobody pays for
+    // and that this operator's trading bots share. It does not scale, and the
+    // cost lands on someone else.
+    //
+    // A GitHub Action does that same sweep every two hours and commits the
+    // result. Three static files off a CDN answer the same questions, for any
+    // number of readers, instantly. Anyone who wants the chain as it is right
+    // now can ask for it — that is what force does, and the freshness bar says
+    // how old this is and offers exactly that.
+    try {
+      const d = await loadSnapshot();
+      await applyVolume(state.pools);
+      state.stale = false;
+      onProgress({ phase: 'snapshot', done: true, at: d.at, pools: state.pools.length });
+      return state;
+    } catch { /* no snapshot published; fall through to reading the chain */ }
   }
 
   // Probe the roster first. A dead public node costs 9s per request otherwise,

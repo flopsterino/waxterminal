@@ -1,12 +1,25 @@
 name: Chain snapshot
 
-# Daily. APR moves slowly enough that a daily point is all the history anyone
-# reads it for, and it keeps the history file at roughly 6 MB a year instead of
-# 140 MB. Freshness is not this job's problem: the terminal reads live state
-# from chain on every visit. This exists for fast first paint and for memory.
+# Every two hours, and once a day it also writes a history line.
+#
+# It used to run daily, on the reasoning that "freshness is not this job's
+# problem: the terminal reads live state from chain on every visit". Measured,
+# that visit costs 56 requests and 12.9 MB against the free public WAX nodes,
+# per visitor. A hundred people reading the site at once is 5,600 requests and
+# 1.3 GB pulled from infrastructure nobody is paying for — and from the same
+# nodes the operator's trading bots depend on.
+#
+# So the sweep belongs here, on a GitHub runner, where doing it twelve times a
+# day costs nobody anything and touches no home address. The site reads three
+# static files from a CDN instead.
+#
+# The history line is a separate thing and stays daily: one point per day is
+# what a TVL chart is read for, and appending every two hours would turn a 6 MB
+# year into 70 MB. So would the leaderboards, which take about ten minutes.
 on:
   schedule:
-    - cron: '7 3 * * *'
+    - cron: '7 3 * * *'          # the daily one: snapshot + history + leaders
+    - cron: '7 1,5,7,9,11,13,15,17,19,21,23 * * *'   # freshness only
   workflow_dispatch:
 
 permissions:
@@ -24,9 +37,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Work out which kind of run this is
+        id: kind
+        run: echo "daily=${{ github.event.schedule == '7 3 * * *' || github.event_name == 'workflow_dispatch' }}" >> "$GITHUB_OUTPUT"
       - name: Refresh token logos
+        if: steps.kind.outputs.daily == 'true'
         run: node tools/logos.mjs
       - name: Read chain and write snapshot
+        env:
+          WRITE_HISTORY: ${{ steps.kind.outputs.daily == 'true' && '1' || '0' }}
         run: node --max-old-space-size=2048 tools/snapshot.mjs
       # Ranking liquidity providers means reading every position in every pool
       # and rebuilding fee growth for each — about a minute of table reads, so
@@ -34,6 +53,7 @@ jobs:
       # failure here must not cost the snapshot, which is the file the whole
       # site loads.
       - name: Build the leaderboards
+        if: steps.kind.outputs.daily == 'true'
         continue-on-error: true
         run: node --max-old-space-size=2048 tools/leaders.mjs
       - name: Commit if anything changed
