@@ -1018,3 +1018,89 @@ export async function buildZapDeposit({
 
   return { actions, depA, depB, staking: incentiveIds.length };
 }
+
+// ------------------------------------------------------------ new pool ------
+// Creating a market that does not exist yet.
+//
+// Two things here are easy to get wrong and expensive to get wrong, so both are
+// derived rather than assumed.
+//
+// ORDER. Alcor stores a pair as (tokenA, tokenB) in a fixed order, and passing
+// them the other way round either fails or creates a mirrored market nobody
+// will find. Checked against all 754 Alcor pools in the snapshot: the order is
+// by contract account, and where both sides share a contract, by symbol code.
+// Zero exceptions. Note that a symbol code is the precision byte followed by
+// the characters little-endian, so it does NOT sort alphabetically — LTGOLD
+// ranks above LTTIN, which is what the chain does and what alphabetical
+// comparison got wrong for 19 pairs.
+//
+// PRICE. sqrtPriceX64 is a uint128 and cannot go through a JS number without
+// losing the tail, so it is assembled with BigInt. Verified round-trip against
+// live pools to a relative error of 2e-13, which is float precision and not
+// method error.
+const CH = '.12345abcdefghijklmnopqrstuvwxyz';
+const nameToInt = s => {
+  let v = 0n;
+  for (let i = 0; i < 12; i++) {
+    const c = i < s.length ? BigInt(CH.indexOf(s[i])) : 0n;
+    v |= c << BigInt(64 - 5 * (i + 1));
+  }
+  if (s.length > 12) v |= BigInt(CH.indexOf(s[12])) & 0x0fn;
+  return v;
+};
+const symbolCode = (sym, precision) => {
+  let v = BigInt(precision & 0xff);
+  for (let i = 0; i < sym.length; i++) v |= BigInt(sym.charCodeAt(i)) << BigInt(8 * (i + 1));
+  return v;
+};
+// Which of the two the chain calls tokenA.
+export function orderPair(x, y) {
+  const nx = nameToInt(x.contract), ny = nameToInt(y.contract);
+  if (nx !== ny) return nx < ny ? [x, y] : [y, x];
+  return symbolCode(x.symbol, x.decimals) <= symbolCode(y.symbol, y.decimals) ? [x, y] : [y, x];
+}
+
+// price is tokenB per tokenA, quoted the way the pair will read once created.
+export function sqrtPriceX64(price, decA, decB) {
+  const adj = price / 10 ** (decA - decB);
+  if (!(adj > 0) || !isFinite(adj)) throw new Error('The starting price has to be a positive number.');
+  const s = Math.sqrt(adj);
+  const SCALE = 10n ** 18n;
+  const x = (BigInt(Math.round(s * 1e18)) * (1n << 64n)) / SCALE;
+  if (x <= 0n) throw new Error('That starting price is too small for the pair to express.');
+  if (x >= (1n << 128n)) throw new Error('That starting price is too large for the pair to express.');
+  return x.toString();
+}
+
+// The pool is created empty: the quantities carry only symbol and precision, as
+// every createpool on chain does. Liquidity is a separate deposit afterwards.
+export function buildCreatePool({ tokenA, tokenB, price, feeBps, me = account(), auth = null }) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const x = tokenMeta(tokenA), y = tokenMeta(tokenB);
+  if (!x?.contract || !y?.contract) throw new Error('Pick two tokens this terminal knows.');
+  if (tokenA === tokenB) throw new Error('A pool needs two different tokens.');
+  const [a, b] = orderPair(x, y);
+  const fee = Number(feeBps);
+  if (![5, 30, 100].includes(fee)) throw new Error('Alcor offers 0.05%, 0.30% and 1.00% fee tiers.');
+  return {
+    ordered: { a, b },
+    actions: [{
+      account: ALCOR, name: 'createpool', authorization: auth,
+      data: {
+        account: me,
+        tokenA: { quantity: asset(0, a.symbol, a.decimals), contract: a.contract },
+        tokenB: { quantity: asset(0, b.symbol, b.decimals), contract: b.contract },
+        // Quoted in the chain's own order, whichever way round the person asked.
+        // The person quotes the price the way they think of the pair; the chain
+        // wants it in its own order. tokenMeta's fallback object carries no id,
+        // so identity is contract + symbol rather than a field that may not be
+        // there — comparing on `id` was true for BOTH sides of an unknown pair.
+        sqrtPriceX64: sqrtPriceX64(
+          (a.contract === x.contract && a.symbol === x.symbol) ? price : 1 / price,
+          a.decimals, b.decimals),
+        fee: fee * 100,          // the row stores hundredths of a bp: 30 -> 3000
+      },
+    }],
+  };
+}

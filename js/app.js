@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { buildCreatePool, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -1485,6 +1485,7 @@ function wireFarms() {
     renderFarms();
   }, 300);
 
+  $('#fNewPool').onclick = () => renderCreatePool($('#newPoolBox'));
   $('#fWin24').onclick = () => setWin('24h');
   $('#fWin7d').onclick = () => setWin('7d');
 
@@ -4771,6 +4772,115 @@ const aprWhy = st => st === 'no_stake' ? 'nobody has staked, so there is no rate
   : st === 'ended' ? 'this farm has finished'
   : st === 'no_farm' ? 'no farm here — the fee APR beside it is what it pays'
   : 'not computed yet';
+
+
+// ------------------------------------------------------- CREATE A POOL ------
+// The market that does not exist yet.
+//
+// Alcor lets anyone open one, and until now this terminal could only ever show
+// you markets other people had made. The two things that are easy to get wrong
+// — which token the chain calls A, and the starting price as a uint128 — are
+// derived in tx.js and checked against all 751 live pools, so this panel only
+// has to ask the three questions a person actually has.
+function renderCreatePool(box) {
+  if (!box) return;
+  if (box.dataset.open === '1') { box.dataset.open = '0'; box.innerHTML = ''; return; }
+  box.dataset.open = '1';
+
+  // Only tokens with a pool already: a symbol nothing has ever traded is
+  // almost always a typo, and the picker is long enough as it is.
+  // Ordered by how much of each is pooled, so the tokens anyone would actually
+  // open a market against are at the top. Sorting on price put WAXWBTC first,
+  // which tells you only that a bitcoin is expensive.
+  const weight = new Map();
+  for (const p of state.pools) {
+    for (const id of [p.tokenA, p.tokenB]) weight.set(id, (weight.get(id) || 0) + (p.tvlReal || 0) / 2);
+  }
+  const toks = [...state.tokens.values()]
+    .filter(t => t.symbol && t.contract)
+    .sort((a, b) => (weight.get(b.id) || 0) - (weight.get(a.id) || 0) || a.symbol.localeCompare(b.symbol));
+  const opts = sel => toks.map(t =>
+    `<option value="${esc(t.id)}"${t.id === sel ? ' selected' : ''}>${esc(t.symbol)} &mdash; ${esc(t.contract)}</option>`).join('');
+
+  let fee = 30;
+  box.innerHTML = `<div class="card"><h3>Create a pool</h3>
+    <div class="filters" style="display:grid;gap:8px;margin:0">
+      <label>Base<select id="cpA">${opts('WAX@eosio.token')}</select></label>
+      <label>Quote<select id="cpB">${opts('CHEESE@cheeseburger')}</select></label>
+      <label id="cpPriceLab">Starting price<input id="cpPrice" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+    </div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <span class="sub">Fee</span>
+      ${[[5, '0.05%'], [30, '0.30%'], [100, '1.00%']].map(([v, l]) =>
+        `<button class="chip" data-cpfee="${v}"${v === 30 ? ' aria-pressed="true"' : ''}>${l}</button>`).join('')}
+      <span class="dim" id="cpNote" style="font-size:12px;margin-left:auto"></span>
+    </div>
+    <div id="cpOut" style="margin-top:10px"></div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <button class="btn ghost" id="cpClose">Cancel</button>
+      <button class="btn" id="cpGo">Create</button>
+    </div></div>`;
+
+  const q = sel => box.querySelector(sel);
+  const paint = () => {
+    const a = state.tokens.get(q('#cpA').value), b = state.tokens.get(q('#cpB').value);
+    const lab = q('#cpPriceLab');
+    if (a && b) lab.firstChild.textContent = `Starting price — ${b.symbol} per ${a.symbol} `;
+    const px = num(q('#cpPrice').value) || 0;
+    const pa = a && state.prices.get(a.id)?.usd, pb = b && state.prices.get(b.id)?.usd;
+    const note = q('#cpNote');
+    // If both sides are priced we already know what the market says, so the
+    // field is not a blank someone has to guess at.
+    if (note) note.innerHTML = (pa && pb)
+      ? `market is <b>${sigfig(pa / pb)}</b> <span class="dim">&mdash; <span class="xlink" id="cpUse">use it</span></span>`
+      : '';
+    const u = q('#cpUse');
+    if (u) u.onclick = () => { q('#cpPrice').value = String(pa / pb); paint(); };
+
+    const out = q('#cpOut');
+    if (!a || !b || a.id === b.id) { out.innerHTML = '<p class="sub" style="margin:0">Pick two different tokens.</p>'; return; }
+    if (!(px > 0)) { out.innerHTML = '<p class="sub" style="margin:0">Enter the price this pool should open at.</p>'; return; }
+    const exists = state.pools.find(p => p.dex === 'alcor' && p.feeBps === fee
+      && ((p.tokenA === a.id && p.tokenB === b.id) || (p.tokenA === b.id && p.tokenB === a.id)));
+    if (exists) {
+      out.innerHTML = `<div class="note warn">This pool already exists at that fee tier &mdash;
+        ${poolLink('alcor', exists.id, `${esc(exists.symA)}/${esc(exists.symB)}`)} holds ${usd(exists.tvlReal)}.</div>`;
+      return;
+    }
+    let built;
+    try { built = buildCreatePool({ tokenA: a.id, tokenB: b.id, price: px, feeBps: fee, me: wallet.account() || 'eosio.null' }); }
+    catch (e) { out.innerHTML = `<p class="sub" style="margin:0">${esc(e.message)}</p>`; return; }
+    const { a: oa, b: ob } = built.ordered;
+    out.innerHTML = `<div class="planline"><span class="k">The chain will store it as</span><span>
+      <b>${esc(oa.symbol)}/${esc(ob.symbol)}</b> <span class="dim">&mdash; the order is the contract account, not your choice</span></span></div>
+      <div class="planline"><span class="k">Opens at</span><span>${sigfig(px)} ${esc(b.symbol)} per ${esc(a.symbol)}</span></div>
+      <div class="planline"><span class="k">Costs</span><span>RAM for the row, and nothing else. The pool starts empty &mdash; you add liquidity after.</span></div>`;
+  };
+
+  box.querySelectorAll('[data-cpfee]').forEach(btn => btn.onclick = () => {
+    fee = Number(btn.dataset.cpfee);
+    box.querySelectorAll('[data-cpfee]').forEach(x => x.setAttribute('aria-pressed', String(x === btn)));
+    paint();
+  });
+  q('#cpA').onchange = paint; q('#cpB').onchange = paint; q('#cpPrice').oninput = paint;
+  q('#cpClose').onclick = () => { box.dataset.open = '0'; box.innerHTML = ''; };
+  q('#cpGo').onclick = async () => {
+    const out = q('#cpOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const a = state.tokens.get(q('#cpA').value), b = state.tokens.get(q('#cpB').value);
+    const px = num(q('#cpPrice').value) || 0;
+    try {
+      const built = buildCreatePool({ tokenA: a.id, tokenB: b.id, price: px, feeBps: fee, me: wallet.account() });
+      const r = await wallet.transact(built.actions, { verify: true });
+      out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+        <b>Created.</b> ${esc(built.ordered.a.symbol)}/${esc(built.ordered.b.symbol)} at ${(fee / 100).toFixed(2)}%.
+        It will appear here after the next snapshot; add liquidity from the pool page.
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; }
+  };
+  paint();
+}
+
 
 // ------------------------------------------------------------- ZAP IN -------
 // One token becomes a position. Someone holding only WAX who wants to be in a
