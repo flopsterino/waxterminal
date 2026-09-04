@@ -1403,7 +1403,14 @@ function renderTokens() {
 // the same question — what is this market worth, and what does it pay — and a
 // reader had to hold one in their head while looking at the other.
 const farmFilters = { q: '', dex: 'all', hideDust: true, farmed: 'any', realOnly: false, expired: false,
-  sort: 'tvlReal', dir: -1, feeWindow: '7d', size: 100,
+  sort: 'tvlReal', dir: -1, feeWindow: '7d',
+  // A reference deposit, not a control. The rate a farm quotes is the rate its
+  // incumbents get, and on a farm holding three dollars that is a number nobody
+  // can act on — your own money is what gives it a denominator. $100 is small
+  // enough not to flatter anything and large enough to clear the floor. What
+  // YOUR deposit does is answered where you make that decision, on the position
+  // panel, rather than by a box on a table.
+  size: 100,
   apr: {}, rewards: {}, staked: {}, tokens: {}, reward: '', tvl: {}, fee: {} };
 let groups = [];
 
@@ -1505,13 +1512,6 @@ function wireFarms() {
     $('#fWin7d')?.setAttribute('aria-pressed', String(w === '7d'));
     groups._key = null; renderFarms();
   };
-  // What a deposit of this size would earn, which is a different number from
-  // what the incumbent earns and the only one a reader can act on.
-  $('#farmSizeTop').oninput = debounce(e => {
-    farmFilters.size = Math.max(0, num(e.target.value) || 0);
-    renderFarms();
-  }, 300);
-
   $('#fNewPool').onclick = () => renderCreatePool($('#newPoolBox'));
   $('#fWin24').onclick = () => setWin('24h');
   $('#fWin7d').onclick = () => setWin('7d');
@@ -1648,19 +1648,35 @@ function renderFarms() {
 
   lastRendered.farms = rows;
 
-  const payReal = groups.reduce((s, g) => s + (g.rewardRealDay || 0), 0);
-  const enterableAll = rows.filter(g => g.aprAt != null);
-  const best = enterableAll.length ? Math.max(...enterableAll.map(g => g.aprAt)) : null;
-  const median = enterableAll.length
-    ? [...enterableAll].map(g => g.aprAt).sort((a, b) => a - b)[Math.floor(enterableAll.length / 2)]
-    : null;
-  const multi = groups.filter(g => g.tokenCount > 1).length;
+  // Facts about the markets ON SCREEN, not about the whole chain.
+  //
+  // What was here: the single best APR after dilution, the median APR, how many
+  // farms pay more than one token and the largest number of tokens any of them
+  // pays. A best-of is already the top row of a sorted table; a median APR is
+  // not a thing anyone acts on; and the count of multi-token farms answers a
+  // question nobody asked. One of them was also simply wrong — "of 21,412
+  // farmed pools" counted every pool on the chain, because this table stopped
+  // being a list of farms when pools and farms merged and the label did not.
+  const shown = rows;
+  const pooled = shown.reduce((a, g) => a + (g.pool?.tvlReal || 0), 0);
+  const face = shown.reduce((a, g) => a + (g.pool?.tvl || 0), 0);
+  const vol = shown.reduce((a, g) => a + (g.pool?.vol24 || 0), 0);
+  const depth = shown.reduce((a, g) => a + (g.pool?.depth1 || 0), 0);
+  const farmed = shown.filter(g => g.farms.length);
+  const payReal = farmed.reduce((a, g) => a + (g.rewardRealDay || 0), 0);
+  const feeDay = shown.reduce((a, g) => {
+    const p2 = g.pool; if (!p2) return a;
+    const perDay = p2.vol7d > 0 ? p2.vol7d / 7 : (p2.vol24 > 0 ? p2.vol24 : 0);
+    return a + perDay * (lpCut(p2) / 10000);
+  }, 0);
   $('#farmStats').innerHTML = `
-    <div class="stat"><span class="v">${enterableAll.length.toLocaleString()}</span><span class="k">${farmFilters.size > 0 ? 'big enough for you' : 'farms paying'}</span><span class="sub">of ${groups.length.toLocaleString()} farmed pools</span></div>
-    <div class="stat"><span class="v">${best != null ? pct(best) : '—'}</span><span class="k">best rate${farmFilters.size > 0 ? ' at your size' : ''}</span><span class="sub">${farmFilters.size > 0 ? 'after your deposit dilutes it' : 'as advertised today'}</span></div>
-    <div class="stat"><span class="v">${median != null ? pct(median) : '—'}</span><span class="k">middle of the pack</span><span class="sub">half pay more, half pay less</span></div>
-    <div class="stat"><span class="v">${usd(payReal)}</span><span class="k">paid out daily</span><span class="sub">across every farm, in sellable tokens</span></div>
-    <div class="stat"><span class="v">${multi.toLocaleString()}</span><span class="k">pay several tokens</span><span class="sub">up to ${Math.max(...groups.map(g => g.tokenCount), 0)} at once</span></div>`;
+    <div class="stat"><span class="v">${usd(pooled)}</span><span class="k">pooled here</span><span class="sub">${
+      face > pooled * 1.05 ? `${usd(face)} at face value` : 'fully backed'}</span></div>
+    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">across ${shown.length.toLocaleString()} market${shown.length === 1 ? '' : 's'}</span></div>
+    <div class="stat"><span class="v">${usd(feeDay + payReal)}</span><span class="k">paid to providers daily</span><span class="sub">${usd(feeDay)} in trading fees &middot; ${usd(payReal)} from farms</span></div>
+    <div class="stat"><span class="v">${farmed.length.toLocaleString()}</span><span class="k">of them farmed</span><span class="sub">${
+      farmed.length ? `${(farmed.length / shown.length * 100).toFixed(0)}% of what you are looking at` : 'none in this filter'}</span></div>
+    <div class="stat"><span class="v">${usd(depth)}</span><span class="k">tradeable at once</span><span class="sub">before moving any price 1%</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
   $('#farmCount').innerHTML = (farmFilters.size > 0
     ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} markets</span>`
@@ -1675,7 +1691,7 @@ function renderFarms() {
     { k: 'pool', label: 'Pool', s: false },
     { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
-    { k: 'aprAt', label: farmFilters.size > 0 ? `Farm APR at ${UNIT === 'wax' ? usd(farmFilters.size) : '$' + farmFilters.size.toLocaleString()}` : 'Farm APR', r: true, s: true },
+    { k: 'aprAt', label: 'Farm APR', r: true, s: true, title: `What a ${usd(farmFilters.size)} deposit would earn, after joining dilutes the pot` },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
@@ -1734,7 +1750,7 @@ function renderFarms() {
     // and was reporting "too little staked" for 76 TacoSwap farms whose real
     // problem is that the reward cannot be sold at all.
     const rate = g.aprAt;
-    const why = !g.farms.length ? ['no farm', 'No farm on this pool — the fee APR beside it is what it pays']
+    const why = !g.farms.length ? ['—', 'No farm on this pool — the fee APR beside it is what it pays']
       : !(g.rewardUsdDay > 0) ? ['reward unpriced', 'Nothing will quote a price for what this farm pays']
       : !(g.rewardRealDay > 0) ? ['reward has no exit', 'The reward has a face value but no route out — nothing you could sell']
       : !(g.stakedReal > 0 || g.stakedUsd > 0) ? ['nobody staked', 'Nobody has staked, so there is no rate yet']
@@ -4982,8 +4998,19 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
         if (!(inUsd > 0) || (fa == null && farmA == null)) return '';
         const day = ((fa || 0) + (farmA || 0)) / 100 * inUsd / 365;
         const rate = r => r == null ? null : r > 999 ? 'off the scale' : pct(r);
+        // What YOUR deposit does, where the decision is made. Joining a farm
+        // puts your money in the denominator, so the rate on the board is the
+        // rate the people already in it get — never the one you would get. On a
+        // small farm that gap is most of the number.
+        const before = farmAprFor(pool, 0.01);
+        const shrink = (before != null && farmA != null && before > farmA * 1.02)
+          ? ` <span class="dim">from</span> ${rate(before)}` : '';
+        const share = pool.tvlReal > 0 ? inUsd / (pool.tvlReal + inUsd) : null;
         return `<div class="planline"><span class="k">Then earns</span><span>${usd(day)} a day
-          <span class="dim">&mdash; farm ${rate(farmA) ?? 'none'} &middot; fees ${rate(fa) ?? 'none'}</span></span></div>`;
+          <span class="dim">&mdash; farm ${rate(farmA) ?? 'none'}${shrink} &middot; fees ${rate(fa) ?? 'none'}</span></span></div>`
+          + (share != null ? `<div class="planline"><span class="k">You would own</span><span>${
+            (share * 100).toFixed(share >= 0.1 ? 1 : 2)}% of the pool
+            <span class="dim">&mdash; ${usd(inUsd)} against ${usd(pool.tvlReal)} already there</span></span></div>` : '');
       })()}
       ${plan.needsSwap ? `<div class="planline"><span class="k">Route</span><span>${plan.routed === 'alcor'
         ? `Alcor&rsquo;s router &middot; ${plan.legs.map(l => `${esc(l.sym)} in ${l.hops} pool${l.hops === 1 ? '' : 's'}${l.split ? ', split' : ''}`).join(' &middot; ')}`
@@ -5158,16 +5185,6 @@ async function openFarm(key) {
       ${rows.some(f => !f.rewardUsdDay) ? '<p class="sub" style="margin:9px 0 0">An unpriced reward is real but not counted in the totals above.</p>' : ''}
     </div>
 
-    <div class="card" style="margin-bottom:14px">
-      <div class="toolbar" style="margin:0">
-        <span class="sizesel"><label for="farmSize">If I add</label>
-          <span class="amt"><span class="cur">$</span><input id="farmSize" type="number" min="0" step="any" placeholder="1000" inputmode="decimal"></span>
-        </span>
-        ${[100, 1000, 10000].map(v => `<button class="chip" data-fsize="${v}">${v >= 1000 ? v / 1000 + 'k' : v}</button>`).join('')}
-        <span id="farmEarn" class="earnline"></span>
-      </div>
-    </div>
-
     <div class="card" style="margin-bottom:14px"><h3>Is this rate normal?
       <span class="dim">&mdash; one point per daily snapshot</span></h3>
       <div id="farmHist"></div></div>
@@ -5188,24 +5205,6 @@ async function openFarm(key) {
 
   fillMarks(out);
 
-  // Your money joins the pot, so the rate you get is not the rate on the board.
-  const earn = () => {
-    const size = num($('#farmSize').value) || 0;
-    const box = $('#farmEarn');
-    const staked = farmStakedUsd ?? g.stakedReal ?? g.stakedUsd ?? 0;
-    if (!(size > 0)) { box.innerHTML = '<span class="dim">enter an amount</span>'; return; }
-    if (!(liveDay > 0)) { box.innerHTML = '<span class="dim">nothing live is paying here</span>'; return; }
-    const share = size / (staked + size);
-    const perDay = liveDay * share;
-    // One line, in a toolbar. This was two boxes and a table inside its own
-    // half-width card, for an answer that is a rate, a daily figure and a list
-    // of tokens — none of which needs a panel of its own.
-    box.innerHTML = `<b>${usd(perDay)}</b> a day <span class="dim">&middot;</span> <b>${pct(perDay * 365 / size * 100)}</b> APR
-      <span class="dim">&middot; ${(share * 100).toFixed(share >= 0.1 ? 1 : 2)}% of the farm, against ${usd(staked)} already in</span>
-      ${rows.filter(f => isLive(f) && f.rewardPerDay > 0).length > 1 || true ? `<span class="dim">&middot;</span> ${
-        rows.filter(f => isLive(f) && f.rewardPerDay > 0)
-          .map(f => `${qty(f.rewardPerDay * share)} <b>${esc(f.rewardSymbol)}</b>`).join('<span class="dim"> + </span>')}` : ''}`;
-  };
   // A rate on its own is a number; a rate against its own past is an answer.
   // "95% APR" reads very differently once you can see it was 95% all week, or
   // that it was 12% until this morning because someone pulled their stake out.
@@ -5239,9 +5238,6 @@ async function openFarm(key) {
       });
   }).catch(() => {});
 
-  $('#farmSize').oninput = earn;
-  out.querySelectorAll('[data-fsize]').forEach(b => b.onclick = () => { $('#farmSize').value = b.dataset.fsize; earn(); });
-  earn();
 
   // Seeded with what is already in, so the first number on screen is about this
   // holder rather than a round figure nobody chose.
@@ -5249,7 +5245,6 @@ async function openFarm(key) {
     if (!(v > 0)) return;
     farmStakedUsd = v;
     const el = $('#farmStaked'); if (el) el.textContent = usd(v);
-    earn();
   }).catch(() => {});
 
   // A zap belongs here: the pool and the incentives are already known, so the
@@ -5278,9 +5273,7 @@ async function openFarm(key) {
     showHow('one');
   }
 
-  renderFarmMine(g).then(mineUsd => {
-    if (mineUsd > 0 && !$('#farmSize').value) { $('#farmSize').value = Math.round(mineUsd * 100) / 100; earn(); }
-  }).catch(() => {});
+  renderFarmMine(g).catch(() => {});
 }
 
 // Where you stand in this farm. Not a list of positions — a reading of them:
