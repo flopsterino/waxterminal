@@ -8,8 +8,9 @@ import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pend
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { buildCreatePool, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
-import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline } from './charts.js';
+import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
+import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
@@ -5423,9 +5424,45 @@ async function openPool(key) {
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
     </div>
+    ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Where the liquidity sits
+      <span class="dim">&mdash; ${esc(p.symB)} per ${esc(p.symA)}</span></h3>
+      <div id="poolDepth"><div class="loading"><span class="spinner"></span><span>Reading ticks…</span></div></div>
+      <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
+
+  // Where the money sits across price. One ticks read for the pool you opened,
+  // which is a detail page and can afford it. The reconstruction is checked in
+  // math.js against the pool's own reserves: it lands within about 2%, and that
+  // 2% is the protocol fee plus uncollected LP fees, which sit in the pool and
+  // belong to no position.
+  if (p.dex === 'alcor') {
+    (async () => {
+      const box = $('#poolDepth');
+      if (!box) return;
+      try {
+        const rows = await getAllRows('swap.alcor', String(p.id), 'ticks');
+        const bands = bandValues(liquidityBands(rows), p);
+        const price = p.priceAB;
+        box.innerHTML = '';
+        box.appendChild(depthChart(bands, {
+          price, fmt: usd,
+          fmtPrice: v => sigfig(v),
+        }));
+        const near = bands.filter(b => b.priceLower < price * 1.1 && b.priceUpper > price * 0.9);
+        const nearUsd = near.reduce((a2, b) => a2 + b.usd, 0);
+        const all = bands.reduce((a2, b) => a2 + b.usd, 0);
+        const note = $('#poolDepthNote');
+        if (note) note.innerHTML = all > 0
+          ? `${usd(nearUsd)} of ${usd(all)} sits within 10% of the price &mdash; <b>${(nearUsd / all * 100).toFixed(0)}%</b>.
+             <span class="dim">Left of the line is what buys ${esc(p.symA)}; right of it is ${esc(p.symA)} waiting to be sold.</span>`
+          : '&nbsp;';
+      } catch (e) {
+        box.innerHTML = `<div class="chart-empty">Could not read this pool's ticks.</div>`;
+      }
+    })();
+  }
 
   // "Is the liquidity locked?" is the first question anyone asks about a new
   // token, and on Taco it has an exact answer: the pair id is the LP token

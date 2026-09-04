@@ -93,3 +93,57 @@ export function feesOwed(pos, pool, tickLowerRow, tickUpperRow) {
   }
   return { feesA: out.A, feesB: out.B };
 }
+
+// --------------------------------------------------------- liquidity map ----
+// Where the liquidity actually sits, across the price range.
+//
+// On a concentrated-liquidity pool this is the question. A pool holding
+// $15,000 tells you nothing about whether a trade will move the price: all of
+// it can be stacked in a band half a percent wide, or spread so thin that the
+// first swap walks straight through it. Every serious Uniswap-V3 tool draws
+// this and nothing on WAX does.
+//
+// The reconstruction is the standard one. Each initialised tick carries
+// liquidityNet, the change in active liquidity when the price crosses it going
+// up. Walk the ticks in order, accumulate, and the running total is the
+// liquidity active between one tick and the next.
+//
+// Ticks are signed and the table's primary key is not, so negative ticks come
+// back after positive ones. They are sorted here rather than trusted.
+export function liquidityBands(tickRows) {
+  const ticks = tickRows
+    .map(r => ({ tick: Number(r.id), net: BigInt(r.liquidityNet) }))
+    .filter(t => Number.isFinite(t.tick))
+    .sort((a, b) => a.tick - b.tick);
+  const bands = [];
+  let L = 0n;
+  for (let i = 0; i < ticks.length - 1; i++) {
+    L += ticks[i].net;
+    if (L > 0n) bands.push({ lower: ticks[i].tick, upper: ticks[i + 1].tick, liquidity: L });
+  }
+  return bands;
+}
+
+// What each band is worth, in the two tokens, if the price were inside it.
+// Summing these across every band reproduces the pool's own reserves, which is
+// the check that the walk above is right rather than merely plausible.
+export function bandValues(bands, pool) {
+  const out = [];
+  // At the pool's CURRENT price, so this is what each band actually holds right
+  // now: bands below the price are all of token B, bands above are all of token
+  // A, and the one straddling it holds both. Priced at each band's own midpoint
+  // instead, the numbers are a hypothetical and the total is not the pool.
+  const sqrtP = sqrtPriceFromX64(pool.sqrtX64);
+  for (const b of bands) {
+    const { amountA, amountB } = amountsForLiquidity(b.liquidity, sqrtP, b.lower, b.upper);
+    const a = amountA / 10 ** pool.decA, bb = amountB / 10 ** pool.decB;
+    out.push({
+      ...b,
+      amountA: a, amountB: bb,
+      priceLower: humanPrice(Math.pow(TICK_BASE, b.lower), pool.decA, pool.decB),
+      priceUpper: humanPrice(Math.pow(TICK_BASE, b.upper), pool.decA, pool.decB),
+      usd: a * (pool.priceUsdA || 0) + bb * (pool.priceUsdB || 0),
+    });
+  }
+  return out;
+}

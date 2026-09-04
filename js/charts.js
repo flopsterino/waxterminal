@@ -592,3 +592,72 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   wrap.appendChild(svg);
   return wrap;
 }
+
+// ------------------------------------------------------------ depth map -----
+// Where a concentrated-liquidity pool's money actually sits, across price.
+//
+// A pool holding $15,000 tells you nothing about whether your trade will move
+// the price. All of it can be stacked in a band half a percent wide, or spread
+// so thin that the first swap walks straight through. This is the chart that
+// answers it, and the reason it exists here is that nothing on WAX draws one.
+//
+// Bars left of the current price are the quote token — what is there to buy the
+// base WITH. Bars right of it are the base token, waiting to be sold. That is
+// not decoration: it is why a pool can be deep in one direction and empty in
+// the other, which a single "pooled value" figure hides completely.
+export function depthChart(bands, { price, fmtPrice = v => v, fmt = v => v, height = 170, span = 0.6 } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  const usable = bands.filter(b => b.usd > 0 && isFinite(b.priceLower) && isFinite(b.priceUpper));
+  if (!usable.length || !(price > 0)) { wrap.innerHTML = '<div class="chart-empty">No liquidity map for this pool.</div>'; return wrap; }
+
+  // A window around the current price. The outermost ticks on most pools are
+  // full-range positions at 1e-18 and 1e18, and plotting those makes every
+  // other band a pixel wide.
+  const lo = price * (1 - span), hi = price * (1 + span);
+  const BINS = 48;
+  const step = (hi - lo) / BINS;
+  const bins = new Array(BINS).fill(0);
+  for (const b of usable) {
+    const a = Math.max(lo, Math.min(hi, b.priceLower));
+    const z = Math.max(lo, Math.min(hi, b.priceUpper));
+    if (!(z > a)) continue;
+    // Spread a band's value across the bins it covers, in proportion — a band
+    // wider than a bin is not worth more than one that fits inside it.
+    const width = b.priceUpper - b.priceLower;
+    const per = b.usd * ((z - a) / (width || (z - a)));
+    const i0 = Math.max(0, Math.floor((a - lo) / step));
+    const i1 = Math.min(BINS - 1, Math.floor((z - lo) / step));
+    const n = i1 - i0 + 1;
+    for (let i = i0; i <= i1; i++) bins[i] += per / n;
+  }
+  const peak = Math.max(...bins, 1);
+  const W = 720, H = height, padB = 20, padT = 8;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Liquidity by price' });
+  svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
+  const bw = W / BINS;
+  const mid = Math.floor((price - lo) / step);
+  bins.forEach((v, i) => {
+    const h = (v / peak) * (H - padT - padB);
+    const r = el('rect', {
+      x: i * bw + 0.5, y: H - padB - h, width: bw - 1, height: Math.max(h, v ? 1.5 : 0), rx: 2,
+      fill: i < mid ? 'var(--c2)' : 'var(--c1)', opacity: v ? 0.9 : 0,
+    });
+    const p0 = lo + i * step, p1 = p0 + step;
+    r.addEventListener('pointermove', e => showTip(
+      `<b>${fmtPrice(p0)} – ${fmtPrice(p1)}</b><span>${fmt(v)}${i < mid ? ' available to buy with' : ' waiting to be sold'}</span>`,
+      e.clientX, e.clientY));
+    r.addEventListener('pointerleave', hideTip);
+    svg.appendChild(r);
+  });
+  // The current price, which is the only line on here that matters.
+  const x = ((price - lo) / (hi - lo)) * W;
+  svg.appendChild(el('line', { x1: x, x2: x, y1: padT - 4, y2: H - padB, stroke: 'var(--accent)', 'stroke-width': 1.5, 'stroke-dasharray': '3 3' }));
+  for (const [frac, val] of [[0, lo], [0.5, price], [1, hi]]) {
+    const t = el('text', { x: Math.min(W - 30, Math.max(24, frac * W)), y: H - 6, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+    t.textContent = fmtPrice(val);
+    svg.appendChild(t);
+  }
+  wrap.appendChild(svg);
+  return wrap;
+}
