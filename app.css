@@ -890,7 +890,7 @@ body { overflow-x: hidden; }
 .tablewrap table th:nth-child(2),
 .tablewrap table td:nth-child(2) {
   position: sticky; left: 46px; z-index: 3; background: var(--surface);
-  width: 210px; min-width: 210px; max-width: 210px;
+  width: 148px; min-width: 148px; max-width: 148px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* The header sits above the body where they overlap in the corner. */
@@ -905,6 +905,14 @@ body { overflow-x: hidden; }
   table th, table td { padding: 7px 6px; font-size: 12px; }
   .tablewrap table th:first-child,
   .tablewrap table td:first-child { width: 34px; min-width: 34px; }
+  /* On a phone the two frozen columns must not own the viewport: 34 + 104 of a
+     390-point screen leaves room for three real columns, where 46 + 210 left
+     one and pushed the farm rate off the right edge entirely. */
   .tablewrap table th:nth-child(2),
-  .tablewrap table td:nth-child(2) { left: 34px; max-width: 130px; }
+  .tablewrap table td:nth-child(2) { left: 34px; width: 104px; min-width: 104px; max-width: 104px; }
 }
+
+/* What a figure is made of, under the figure. Trading fees and farm rewards are
+   different money from different sources — one stops when the incentive ends,
+   the other does not — so a card that adds them has to say which is which. */
+.fig .figsub { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; line-height: 1.3; }

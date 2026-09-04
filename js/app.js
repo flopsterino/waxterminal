@@ -1700,17 +1700,15 @@ function renderFarms() {
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
-    { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
     { k: 'aprAt', label: 'Farm APR', r: true, s: true, title: `What a ${usd(farmFilters.size)} deposit would earn, after joining dilutes the pot` },
+    { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
+    { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
-    { k: 'turnover', label: 'Turnover', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
-    { k: 'lps', label: 'LPs / staked', r: true, s: true },
     { k: 'bornAt', label: 'Age', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
@@ -1726,7 +1724,6 @@ function renderFarms() {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
          <span class="pairbig">${pairLinks(g.pool)}</span>
-         <span class="venue ${g.dex}">${g.dex === 'alcor' ? 'Alcor' : g.dex === 'taco' ? 'Taco' : g.dex}</span>
          ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}.">burning out</span>` : ''}`
       : `<span class="dim">${esc(g.poolId)}</span>`;
     // What it pays and how much of it: several incentives can pay the same token,
@@ -1774,10 +1771,10 @@ function renderFarms() {
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}<span data-star="p|${esc(g.dex)}:${esc(String(g.poolId))}|${esc(g.pool ? g.pool.symA + '/' + g.pool.symB : String(g.poolId))}"></span></td>
       <td>${pool}</td>
+      <td class="r">${aprCell}</td>
+      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
         g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
-      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
-      <td class="r">${aprCell}</td>
       <td>${chips}${g.rewardRealDay > 0 ? ` <span class="sub">${usd(g.rewardRealDay)}/day</span>` : ''}</td>
       <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
@@ -1787,11 +1784,8 @@ function renderFarms() {
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
       <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
-      <td class="r num ${g.pool?.turnover > 0 ? '' : 'dim'}" title="24h volume against pooled value">${g.pool?.turnover > 0 ? g.pool.turnover.toFixed(2) + '\u00d7' : '—'}</td>
       <td class="r num ${g.pool?.change24 > 0 ? 'pos' : g.pool?.change24 < 0 ? 'neg' : 'dim'}">${
         g.pool?.change24 == null ? '—' : (g.pool.change24 > 0 ? '+' : '') + g.pool.change24.toFixed(1) + '%'}</td>
-      <td class="r num ${g.lps || g.stakers ? '' : 'dim'}" title="${g.lps ? `${g.lps} wallet${g.lps === 1 ? '' : 's'} hold liquidity here` : 'not counted yet'}${g.stakers ? `, ${g.stakers} of them staked into the farm` : ''}">${
-        g.lps ? g.lps + (g.stakers ? ` <span class="dim">/ ${g.stakers}</span>` : '') : g.stakers ? `<span class="dim">? / </span>${g.stakers}` : '—'}</td>
       <td class="r num dim">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${cols.length}" class="empty">Nothing matches.</td></tr>`;
@@ -2703,7 +2697,7 @@ function positionCard(p, mine = false) {
       : f && f.inFarm.length ? `<span class="pill good">Farming${f.aprLive != null ? ` &middot; ${pct(f.aprLive)} APR` : ''}</span>` : '',
   ].filter(Boolean).join('');
 
-  const fig = (k, v, cls = '') => `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+  const fig = (k, v, cls = '', sub = '') => `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${sub ? `<span class="figsub">${sub}</span>` : ''}</div>`;
 
   return `<article class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(pool.id)}:${p.tickLower}:${p.tickUpper}:${pool.tick}">
     <header class="pc-head">
@@ -2738,7 +2732,10 @@ function positionCard(p, mine = false) {
     <div class="pc-figs">
       ${fig('Fees waiting', usd(p.feesUsd), p.feesUsd > 0 ? 'accent' : 'dim')}
       ${fig('Farm rewards', `<span data-farmpend="${p.posId}" class="dim">&mdash;</span>`, '')}
-      ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim')}
+      ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim',
+        feeDay + farmDay > 0
+          ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}`
+          : '')}
       ${fig('Top up at', `${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}`)}
     </div>
 
@@ -5394,7 +5391,7 @@ async function renderFarmMine(g) {
   box.innerHTML = `
     <div class="stats" style="margin-bottom:12px">
       <div class="stat"><span class="v">${usd(totalIn)}</span><span class="k">your stake here</span><span class="sub">${staked > 0 ? Math.min(100, totalIn / staked * 100).toFixed(totalIn / staked >= 0.1 ? 1 : 2) + '% of the farm' : 'the farm reports nothing staked'}</span></div>
-      <div class="stat"><span class="v">${usd(totalDay)}</span><span class="k">earning a day</span><span class="sub">${usd(totalDay * 30)} a month</span></div>
+      <div class="stat"><span class="v">${usd(totalDay)}</span><span class="k">the farm pays you a day</span><span class="sub">${usd(totalDay * 30)} a month &middot; trading fees are on top</span></div>
       <div class="stat"><span class="v">${pendList.length && !pendList.some(t => t.priced) ? `${qtyFine(pendList[0].amount)} ${esc(pendList[0].symbol)}` : usd4(totalPend)}</span><span class="k">waiting to claim</span><span class="sub">${
         pendList.length ? pendList.map(t => `${qtyFine(t.amount)} ${esc(t.symbol)}${t.priced ? '' : ' <span class="dim">unpriced</span>'}`).join(' &middot; ') : 'from this farm'
       }</span></div>
@@ -5443,7 +5440,7 @@ async function renderTacoFarmMine(g, me, box) {
   box.innerHTML = `<div class="stats" style="margin-bottom:12px">
       <div class="stat"><span class="v">${usd(lp.valueUsd)}</span><span class="k">your LP here</span><span class="sub">${qty(lp.balance)} ${esc(g.poolId)}</span></div>
       <div class="stat"><span class="v">${share > 0 ? (share * 100).toFixed(share >= 0.1 ? 1 : 2) + '%' : '—'}</span><span class="k">share of the farm</span></div>
-      <div class="stat"><span class="v">${usd(liveDay * share)}</span><span class="k">earning a day</span><span class="sub">${usd(liveDay * share * 30)} a month</span></div>
+      <div class="stat"><span class="v">${usd(liveDay * share)}</span><span class="k">the farm pays you a day</span><span class="sub">${usd(liveDay * share * 30)} a month &middot; trading fees are on top</span></div>
     </div>
     <p class="sub" style="margin:0">Holding the LP token is the stake.</p>`;
   return lp.valueUsd;
