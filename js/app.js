@@ -709,7 +709,7 @@ function renderOverview() {
     <div class="section"><h3>Where the liquidity is</h3>
       <div class="grid g2">
         <div class="card"><h3>Deepest pools <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
-        <div class="card"><h3>Split by venue</h3><div id="ovDex"></div></div>
+        <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees earned in 7 days</span></h3><div id="ovDex"></div></div>
       </div>
     </div>
     <div class="section"><h3>Tokens</h3>
@@ -724,7 +724,7 @@ function renderOverview() {
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
           <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
           <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
-        <div class="card"><h3>Alcor fee tiers <span class="dim">— by real pooled value</span></h3><div id="ovFee"></div></div>
+        <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovFee"></div></div>
       </div>
     </div>
     <div class="section"><h3>Tracked over time</h3>
@@ -760,13 +760,29 @@ function renderOverview() {
   const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
   const byTvl = [...toks].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
   $('#ovTokVol').appendChild(byVol.length
-    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, note: `${t.pools} pools · ${usd(t.depth1)} tradeable`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c2)' })
+    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, sub: `${t.pools} pools &middot; ${usd(t.depth1)} tradeable`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c2)' })
     : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Volume arrives with the next daily snapshot.' }));
-  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, note: `${t.pools} pools · ${usd(t.depth1)} tradeable at 1%`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c1)' }));
+  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, sub: `${t.pools} pools &middot; ${usd(t.depth1)} tradeable at 1%`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c1)' }));
 
-  const byDex = new Map();
-  for (const p of pools) { const n = venueName[p.dex] || p.dex; byDex.set(n, (byDex.get(n) || 0) + (p.tvlReal || 0)); }
-  $('#ovDex').appendChild(donut([...byDex].map(([label, value]) => ({ label, value })), { fmt: usd, top: 2 }));
+  // What the pools actually PAID their providers last week, which is the
+  // question someone with money to place has. It replaced a donut of which
+  // venue holds what share of the value — true, and nothing anyone can act on.
+  const paid = pools
+    .map(p => {
+      const perDay = p.vol7d > 0 ? p.vol7d / 7 : (p.vol24 > 0 ? p.vol24 : 0);
+      return { p, fees: perDay * 7 * (lpCut(p) / 10000) };
+    })
+    .filter(x => x.fees > 0)
+    .sort((a, b) => b.fees - a.fees)
+    .slice(0, 8);
+  $('#ovDex').appendChild(paid.length
+    ? bars(paid.map(({ p, fees }) => ({
+        label: `${p.symA}/${p.symB} ${(p.feeBps / 100).toFixed(2)}%`,
+        value: fees,
+        sub: `${usd(p.tvlReal)} pooled &middot; ${pct(feeApr(p))} a year at that rate`,
+        go: () => openPool(`${p.dex}:${p.id}`),
+      })), { fmt: usd, color: 'var(--c3)' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No trading fees recorded this week.' }));
 
   // A farm emitting more in a day than its pool is worth is not a payout, it is
   // a token about to be printed into the ground. BUZZ/SHIL pays $25.28 a day
@@ -806,13 +822,23 @@ function renderOverview() {
   // the other venues charge one flat rate that this terminal takes from their
   // documentation, and charting an assumption next to a fact invents a "0.10%
   // tier" that does not exist.
-  const byFee = new Map();
-  for (const p of pools) {
-    if (p.dex !== 'alcor') continue;
-    const k = `${(p.feeBps / 100).toFixed(2)}%`;
-    byFee.set(k, (byFee.get(k) || 0) + (p.tvlReal || 0));
-  }
-  $('#ovFee').appendChild(donut([...byFee].map(([label, value]) => ({ label, value })), { fmt: usd, top: 4 }));
+  // Yield with a date on it. A farm ending in nine days is a rate you can still
+  // take and then cannot, and nothing on the site said so — where the previous
+  // chart here reported which fee tier holds the most value, which is a fact
+  // about Alcor's tier design rather than about anyone's money.
+  const now2 = Date.now();
+  const ending = groups
+    .filter(g => g.endsAt && g.endsAt > now2 && g.endsAt < now2 + 45 * 86400e3 && g.rewardRealDay > 0)
+    .sort((a, b) => b.rewardRealDay - a.rewardRealDay)
+    .slice(0, 8);
+  $('#ovFee').appendChild(ending.length
+    ? bars(ending.map(g => ({
+        label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : String(g.poolId),
+        value: g.rewardRealDay,
+        sub: `${Math.max(0, Math.round((g.endsAt - now2) / 86400e3))} days left &middot; ${usd(g.stakedReal ?? g.stakedUsd)} staked`,
+        go: () => openFarm(g.key),
+      })), { fmt: v => usd(v) + '/day', color: 'var(--c4)' })
+    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm ends in the next six weeks.' }));
 
   if (SNAPSHOT_ONLY) {
     $('#ovWax').innerHTML = '<div class="chart-empty">Snapshot mode — chain history not fetched.</div>';
