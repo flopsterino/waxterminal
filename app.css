@@ -869,3 +869,9 @@ body { overflow-x: hidden; }
   padding: 5px 8px; background: var(--surface-2); border-block: 1px solid var(--line); font-size: 11px; }
 .obspread { font-family: var(--font-data); font-weight: 650; }
 @media (max-width: 560px) { .obook .obwho { display: none; } }
+
+/* The farm page's "if I add" answer, on one line inside its toolbar. It used to
+   be two boxes and a table in a half-width card, which is a lot of furniture
+   for a rate and a daily figure. */
+.earnline { font-size: 12.5px; margin-left: auto; text-align: right; }
+.earnline b { font-variant-numeric: tabular-nums; }

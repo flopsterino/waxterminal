@@ -4739,7 +4739,7 @@ const priceAtTick = (pool, t) => Math.pow(1.0001, t) * 10 ** (pool.decA - pool.d
 
 const SLIPPAGE_PCT = 2;
 
-function renderZap(box, pool, { incentiveIds = [], account }) {
+function renderZap(box, pool, { incentiveIds = [], account, embedded = false } = {}) {
   if (!box) return;
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(200, CFG?.commercial?.zapFeeBps ?? 0)) : 0;
@@ -4809,7 +4809,9 @@ function renderZap(box, pool, { incentiveIds = [], account }) {
     $('#zapGo').onclick = () => runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account, feeAccount });
   };
 
-  box.innerHTML = `<div class="card"><h3>Open a position <span class="dim">&mdash; one token, straight in</span></h3>
+  // Embedded inside the farm page's own "Open a position" card, this panel
+  // does not bring a second card and a second heading saying the same thing.
+  box.innerHTML = `<div class="${embedded ? '' : 'card'}">${embedded ? '' : '<h3>Open a position <span class="dim">&mdash; one token, straight in</span></h3>'}
     <div class="toolbar" style="margin:0 0 6px">
       <span class="sub">Range</span>
       ${[['full', 'Full'], ['50', '\u00b150%'], ['20', '\u00b120%'], ['5', '\u00b15%']].map(([v, l]) =>
@@ -4961,55 +4963,49 @@ async function openFarm(key) {
       ${rows.some(f => !f.rewardUsdDay) ? '<p class="sub" style="margin:9px 0 0">An unpriced reward is real but not counted in the totals above.</p>' : ''}
     </div>
 
-    <div class="grid g2">
-      <div class="card"><h3>What you would earn</h3>
-        <div class="toolbar" style="margin:0 0 10px">
-          <span class="sizesel"><label for="farmSize">If I add</label>
-            <span class="amt"><span class="cur">$</span><input id="farmSize" type="number" min="0" step="any" placeholder="1000" inputmode="decimal"></span>
-          </span>
-          ${[100, 1000, 10000].map(v => `<button class="chip" data-fsize="${v}">${v >= 1000 ? v / 1000 + 'k' : v}</button>`).join('')}
-        </div>
-        <div id="farmEarn"></div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar" style="margin:0">
+        <span class="sizesel"><label for="farmSize">If I add</label>
+          <span class="amt"><span class="cur">$</span><input id="farmSize" type="number" min="0" step="any" placeholder="1000" inputmode="decimal"></span>
+        </span>
+        ${[100, 1000, 10000].map(v => `<button class="chip" data-fsize="${v}">${v >= 1000 ? v / 1000 + 'k' : v}</button>`).join('')}
+        <span id="farmEarn" class="earnline"></span>
       </div>
-      <div class="card"><h3>The pot, by reward</h3><div id="farmSplit"></div></div>
     </div>
 
-    <div class="card" style="margin-top:14px"><h3>Getting in</h3>
+    <div class="card" style="margin-bottom:14px"><h3>Getting in</h3>
       <div id="farmMine"></div>
     </div>
-    <div id="farmZap" style="margin-top:14px"></div>
-    <div id="farmNewPos" style="margin-top:14px"></div>`;
+    <div class="card"><h3>Open a position <span class="dim">&mdash; two ways in</span></h3>
+      <div class="toolbar" style="margin:0 0 10px">
+        <span class="sub">I have</span>
+        <button class="chip" data-how="one" aria-pressed="true">One token</button>
+        <button class="chip" data-how="both" aria-pressed="false">Both tokens</button>
+        <span class="dim" id="howNote" style="font-size:12px"></span>
+      </div>
+      <div id="farmZap"></div>
+      <div id="farmNewPos"></div>
+    </div>`;
 
   fillMarks(out);
-
-  $('#farmSplit')?.appendChild(rows.filter(f => f.rewardUsdDay > 0).length
-    ? donut(rows.filter(f => f.rewardUsdDay > 0).map(f => ({ label: f.rewardSymbol, value: f.rewardUsdDay })), { fmt: usd, top: 8 })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Nothing here can be priced.' }));
 
   // Your money joins the pot, so the rate you get is not the rate on the board.
   const earn = () => {
     const size = num($('#farmSize').value) || 0;
     const box = $('#farmEarn');
     const staked = farmStakedUsd ?? g.stakedReal ?? g.stakedUsd ?? 0;
-    if (!(size > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Type an amount to see what it earns here.</p>'; return; }
-    if (!(liveDay > 0)) { box.innerHTML = '<p class="sub" style="margin:0">Nothing live is paying, so a deposit earns nothing from this farm.</p>'; return; }
+    if (!(size > 0)) { box.innerHTML = '<span class="dim">enter an amount</span>'; return; }
+    if (!(liveDay > 0)) { box.innerHTML = '<span class="dim">nothing live is paying here</span>'; return; }
     const share = size / (staked + size);
     const perDay = liveDay * share;
-    box.innerHTML = `<div class="dests">
-        <div class="dest in"><span class="lbl">Your share of the farm</span>
-          <span class="amt">${(share * 100).toFixed(share >= 0.1 ? 1 : 2)}%</span>
-          <span class="det">${usd(size)} against ${usd(staked)} already staked</span></div>
-        <div class="dest out"><span class="lbl">Yours per day</span>
-          <span class="amt">${usd(perDay)}</span>
-          <span class="det">${usd(perDay * 30)} a month &middot; ${pct(perDay * 365 / size * 100)} APR</span></div>
-      </div>
-      <div class="tablewrap" style="border:0;margin-top:10px"><table style="font-size:12px"><tbody>
-        ${rows.filter(f => isLive(f) && f.rewardPerDay > 0).map(f => `<tr>
-          <td><b>${esc(f.rewardSymbol)}</b></td>
-          <td class="r num">${qty(f.rewardPerDay * share)} <span class="sub">a day</span></td>
-          <td class="r num dim">${f.rewardUsdDay ? usd(f.rewardUsdDay * share) : '—'}</td>
-        </tr>`).join('')}
-      </tbody></table></div>`;
+    // One line, in a toolbar. This was two boxes and a table inside its own
+    // half-width card, for an answer that is a rate, a daily figure and a list
+    // of tokens — none of which needs a panel of its own.
+    box.innerHTML = `<b>${usd(perDay)}</b> a day <span class="dim">&middot;</span> <b>${pct(perDay * 365 / size * 100)}</b> APR
+      <span class="dim">&middot; ${(share * 100).toFixed(share >= 0.1 ? 1 : 2)}% of the farm, against ${usd(staked)} already in</span>
+      ${rows.filter(f => isLive(f) && f.rewardPerDay > 0).length > 1 || true ? `<span class="dim">&middot;</span> ${
+        rows.filter(f => isLive(f) && f.rewardPerDay > 0)
+          .map(f => `${qty(f.rewardPerDay * share)} <b>${esc(f.rewardSymbol)}</b>`).join('<span class="dim"> + </span>')}` : ''}`;
   };
   $('#farmSize').oninput = earn;
   out.querySelectorAll('[data-fsize]').forEach(b => b.onclick = () => { $('#farmSize').value = b.dataset.fsize; earn(); });
@@ -5027,7 +5023,27 @@ async function openFarm(key) {
   // A zap belongs here: the pool and the incentives are already known, so the
   // only thing left to say is which token you hold and how much.
   if (g.dex === 'alcor' && p?.sqrtX64) {
-    renderZap($('#farmZap'), p, { incentiveIds: live.map(f => f.id), account: wallet.account() });
+    // Two ways in, one card. Selling half of what you brought and depositing
+    // both sides are different trades with different risks, and which one
+    // someone wants depends on what is already in their wallet — so it is a
+    // choice rather than a decision the page makes for them.
+    const incIds = live.map(f => f.id);
+    const showHow = how => {
+      out.querySelectorAll('[data-how]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.how === how)));
+      const note = $('#howNote');
+      if (note) note.textContent = how === 'one'
+        ? 'sells part of it, deposits both sides, stakes it'
+        : 'you supply both sides yourself, nothing is sold';
+      $('#farmZap').hidden = how !== 'one';
+      $('#farmNewPos').hidden = how !== 'both';
+      if (how === 'both' && !$('#farmNewPos').dataset.built) {
+        $('#farmNewPos').dataset.built = '1';
+        renderNewPosition(wallet.account(), g.poolId, $('#farmNewPos'));
+      }
+    };
+    out.querySelectorAll('[data-how]').forEach(b => b.onclick = () => showHow(b.dataset.how));
+    renderZap($('#farmZap'), p, { incentiveIds: incIds, account: wallet.account(), embedded: true });
+    showHow('one');
   }
 
   renderFarmMine(g).then(mineUsd => {
