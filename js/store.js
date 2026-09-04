@@ -457,7 +457,7 @@ async function applyVolume(pools) {
 // so their calls come from their own IP, and the daily snapshot runs on GitHub.
 export const SNAPSHOT_ONLY = typeof location !== 'undefined' && new URLSearchParams(location.search).has('snapshot');
 
-export async function loadCore({ onProgress = () => {}, force = false } = {}) {
+export async function loadCore({ onProgress = () => {}, force = false, swr = false } = {}) {
   if (SNAPSHOT_ONLY) {
     const d = await loadSnapshot();
     state.stale = false; state.hosts = [];   // no live read follows in this mode
@@ -473,6 +473,11 @@ export async function loadCore({ onProgress = () => {}, force = false } = {}) {
       state.stale = Date.now() - cached.loadedAt > FRESH_MS;
       onProgress({ phase: 'cache', done: true, stale: state.stale });
       if (!state.stale) return state;
+      // Stale is not useless. Five minutes old means the pool reserves have
+      // moved a little; it does not mean the reader should watch a spinner
+      // sweep thirteen thousand rows before seeing anything. Hand back what is
+      // here and let the caller refresh behind them.
+      if (swr) return state;
     } else {
       // No cache yet: show the committed snapshot immediately rather than a
       // spinner for fifteen seconds, then keep loading the real thing.

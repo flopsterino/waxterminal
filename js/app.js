@@ -445,11 +445,16 @@ async function boot() {
 
   let loadError = null;
   try {
-    await loadCore({ onProgress: p => {
+    await loadCore({ swr: true, onProgress: p => {
       const m = $('#loadmsg');
       if (m && p.msg) m.textContent = p.msg;
     } });
   } catch (e) { loadError = e; }
+
+  // Cache was there but past its five minutes: the page is already drawable, so
+  // it draws, and the real sweep runs behind the reader instead of in front of
+  // them. Everything repaints when it lands.
+  const refreshBehind = state.stale && state.pools.length;
 
   // Whatever came back — snapshot, cache, or a full read — draw it.
   if (state.pools.length) {
@@ -458,6 +463,11 @@ async function boot() {
     await Promise.race([marks, new Promise(r => setTimeout(r, 2000))]);
     paint();
     if (!marksReady) marks.then(() => paint());
+    if (refreshBehind) {
+      loadCore({ force: true })
+        .then(() => { groups = []; tokRows = null; paint(); })
+        .catch(() => {});
+    }
     if (state.waxUsd) $('#waxPrice').innerHTML = `WAX <b>$${state.waxUsd.toFixed(5)}</b>`;
     // A node roster and a raw pool count are things the author cares about.
     // What a reader wants from a footer is how old the numbers are.
@@ -2240,9 +2250,22 @@ async function renderEarned(account) {
   // and a daily bar answers "was yesterday good" instead.
   let run = 0;
   const cum = s.series.map(d => ({ x: new Date(d.day + 'T12:00:00Z').getTime(), y: (run += d.usd) }));
-  $('#earnSeries')?.appendChild(cum.length > 1
-    ? areaChart(cum, { height: 200, color: 'var(--c3)', fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), label: 'Cumulative payouts' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'One payout so far — a line needs two.' }));
+  const es = $('#earnSeries');
+  if (es) {
+    if (cum.length < 2) {
+      es.innerHTML = '<div class="chart-empty">One payout so far &mdash; a line needs two.</div>';
+    } else {
+      // The real chart, with zoom and a crosshair that reads values, like every
+      // other time series here. Hand-drawn SVG is right for a donut and a
+      // ranking; it is the wrong tool for anything with a time axis.
+      lineSeriesChart(es, cum.map(d => ({ time: Math.floor(d.x / 1000), value: d.y })),
+        { height: 200, color: 'var(--c3)', fmt: usd })
+        .catch(() => {
+          es.innerHTML = '';
+          es.appendChild(areaChart(cum, { height: 200, color: 'var(--c3)', fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), label: 'Cumulative payouts' }));
+        });
+    }
+  }
   $('#earnTokens')?.appendChild(donut(s.tokens.filter(t => t.usd > 0).map(t => ({ label: t.symbol, value: t.usd })), { fmt: usd, top: 6 }));
   lockForeign(account);
 }
