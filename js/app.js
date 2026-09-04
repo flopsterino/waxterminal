@@ -373,6 +373,26 @@ function applyTheme(cfg) {
 let hiddenViews = new Set();
 
 // ----------------------------------------------------------------- boot -----
+
+// Is the server on a newer deploy than this tab? See the note at the call site.
+async function checkForNewer(build) {
+  try {
+    const r = await fetch(`index.html?_=${Date.now()}`, { cache: 'reload' });
+    if (!r.ok) return;
+    const live = ((await r.text()).match(/js\/app\.js\?v=([a-f0-9]+)/) || [])[1];
+    if (!live || live.slice(0, 7) === build) return;
+    const bar = document.createElement('div');
+    bar.className = 'freshbar';
+    bar.style.marginTop = '8px';
+    bar.innerHTML = `A newer build is live &mdash; this tab is running <span class="mono">${esc(build)}</span>.
+      <button class="btn ghost" id="reloadNew">Load it</button>`;
+    $('#banner')?.appendChild(bar);
+    // location.reload() alone can be served the same cached document, so the
+    // stamped URL is what forces the fetch.
+    $('#reloadNew').onclick = () => { location.replace(location.pathname + '?b=' + live.slice(0, 7) + location.hash); };
+  } catch { /* offline, or index.html is not where we think: say nothing */ }
+}
+
 async function boot() {
   try {
     CFG = await (await fetch('theme.json')).json();
@@ -482,6 +502,17 @@ async function boot() {
     const build = (import.meta.url.split('?v=')[1] || '').slice(0, 7);
     if (build) txt += `${txt ? ' · ' : ''}build ${build}`;
     $('#freshness').textContent = txt;
+
+    // Pages sends max-age=600 on index.html and that is not configurable. The
+    // page therefore keeps pointing at the PREVIOUS deploy's stamped modules
+    // for up to ten minutes, and an ordinary reload does not go and look. From
+    // the reader's side a fix that shipped and a fix that never happened are
+    // the same thing, and the only way out was to know to hard-refresh.
+    //
+    // So the page checks. One conditional request for a 12 KB document, and if
+    // the deploy on the server is not the one running here, it says so and
+    // offers the reload that actually works.
+    if (build) checkForNewer(build);
     if (loadError) {
       banner(`<div class="freshbar">Showing the last snapshot, ${ago(new Date(state.loadedAt).toISOString())}.
         Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
@@ -1269,7 +1300,9 @@ function renderTokens() {
     { k: 'price', label: 'Price', r: true, s: true },
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
-    { k: 'vol24', label: 'Volume 24h', r: true, s: true },
+    { k: 'vol24', label: 'Vol 24h', r: true, s: true },
+    { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
+    { k: 'vol30d', label: 'Vol 30d', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
     { k: 'taxBps', label: 'Transfer tax', r: true, s: true },
     { k: 'backing', label: 'Backed by', s: false },
@@ -1312,6 +1345,8 @@ function renderTokens() {
         ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was $${t.priceWas < 0.01 ? t.priceWas.toPrecision(3) : t.priceWas.toFixed(4)}`}">${
         t.change24 == null ? '—' : (t.change24 >= 0 ? '+' : '') + t.change24.toFixed(1) + '%'}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
+      <td class="r num ${t.vol7d > 0 ? '' : 'dim'}">${t.vol7d > 0 ? usd(t.vol7d) : '—'}</td>
+      <td class="r num ${t.vol30d > 0 ? '' : 'dim'}">${t.vol30d > 0 ? usd(t.vol30d) : '—'}</td>
       ${tokFilters.lens === 'trending' ? `<td class="r num" title="${usd(t.vol24)} today against ${usd((t.vol7d || 0) / 7)} a day over the week">${t.heat.toFixed(1)}&times;</td>` : ''}
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num ${t.taxBps > 0 ? 'neg' : 'dim'}" title="${t.taxBps > 0

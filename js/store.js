@@ -441,8 +441,12 @@ async function applyVolume(pools) {
     for (const [id, row] of Object.entries(volumeFile.alcor || {})) {
       const pool = byId.get(`alcor:${id}`);
       if (!pool) continue;
-      const [v1, v7, ch] = row;
+      // Older files carry three fields, newer ones five. Reading past the end
+      // of the short form gives undefined, which is exactly right for "we did
+      // not record that yet" — so both shapes load without a version check.
+      const [v1, v7, ch, v30, chw] = row;
       pool.vol24 = v1; pool.vol7d = v7; pool.change24 = ch;
+      pool.vol30d = v30 ?? null; pool.change7d = chw ?? null;
       pool.turnover = (v1 > 0 && pool.tvlReal > 0) ? v1 / pool.tvlReal : null;
     }
   } catch { /* the snapshot's own figures stand in */ }
@@ -1320,7 +1324,7 @@ export function tokenTable() {
       r = {
         id, symbol: t.symbol, contract: t.contract,
         price: state.prices.get(id)?.usd ?? null,
-        tvl: 0, tvlNominal: 0, vol24: 0, vol7d: 0, pools: 0, venues: new Set(),
+        tvl: 0, tvlNominal: 0, vol24: 0, vol7d: 0, vol30d: 0, pools: 0, venues: new Set(),
         exit: d?.exit ?? 0, solid: !!d?.solid, ratio: d?.ratio ?? 0, depth1: 0, bornAt: null,
         taxBps: d?.taxBps ?? 0, burnBps: d?.burnBps ?? 0, venueTaxBps: d?.venueTaxBps ?? 0,
       };
@@ -1342,6 +1346,10 @@ export function tokenTable() {
       // means token volumes deliberately do not sum to venue volume.
       r.vol24 += p.vol24 || 0;
       r.vol7d += p.vol7d || 0;
+      // A month. A day is noise on anything but the largest tokens and a week
+      // still is: it answers "does this trade at all" rather than "did it trade
+      // on Tuesday", which is the question someone sorting a token list has.
+      r.vol30d += p.vol30d || 0;
       // Depth adds across pools — you can split an order — but only up to what
       // can actually leave. Summing 57 buzzingarden pools gave LADYZ $13,324 of
       // "depth" against a $6,220 exit, because moving it 1% in one pool moves it
