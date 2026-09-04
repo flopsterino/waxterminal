@@ -884,8 +884,15 @@ body { overflow-x: hidden; }
    column so the second one knows where to stop. */
 .tablewrap table th:first-child,
 .tablewrap table td:first-child { position: sticky; left: 0; z-index: 3; width: 46px; min-width: 46px; background: var(--surface); }
+/* A sticky cell has to be opaque AND bounded. Without a width the pair column
+   grows to whatever its longest row needs and then sits on top of the columns
+   scrolling underneath it, which is worse than not freezing it at all. */
 .tablewrap table th:nth-child(2),
-.tablewrap table td:nth-child(2) { position: sticky; left: 46px; z-index: 3; background: var(--surface); }
+.tablewrap table td:nth-child(2) {
+  position: sticky; left: 46px; z-index: 3; background: var(--surface);
+  width: 210px; min-width: 210px; max-width: 210px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* The header sits above the body where they overlap in the corner. */
 .tablewrap table thead th:first-child,
 .tablewrap table thead th:nth-child(2) { z-index: 4; }

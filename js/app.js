@@ -961,12 +961,32 @@ const inRange = (v, r) => {
 
 function wireFilterPanel(panel, store, onChange) {
   panel.querySelectorAll('input[data-f], select[data-f]').forEach(inp => {
-    inp.oninput = () => {
-      const [key, side] = inp.dataset.f.split('.');
+    const [key, side] = inp.dataset.f.split('.');
+    // Start from what the filter actually holds, or the panel opens showing a
+    // state the table is not in.
+    if (!side) {
+      if (inp.type === 'checkbox') inp.checked = !!store[key];
+      else if (store[key] != null && store[key] !== '') {
+        // A <select>'s value is not writable everywhere, so the option is
+        // marked instead — and the whole thing is guarded, because a panel that
+        // cannot show its own state must not take the page down with it.
+        try {
+          if (inp.tagName === 'SELECT') {
+            for (const o of inp.options) o.selected = String(o.value) === String(store[key]);
+          } else inp.value = store[key];
+        } catch { /* leave it at its markup default */ }
+      }
+    }
+    const apply = () => {
       if (side) { store[key] = store[key] || {}; store[key][side] = inp.value === '' ? null : num(inp.value); }
-      else store[key] = inp.value;
+      // A checkbox reports "on", not true. Reading .value here set realOnly to
+      // the string "on" when ticked and "" when not — truthy either way once it
+      // had been touched.
+      else store[key] = inp.type === 'checkbox' ? inp.checked : inp.value;
       onChange();
     };
+    inp.oninput = apply;
+    if (inp.type === 'checkbox') inp.onchange = apply;
   });
 }
 
@@ -1403,7 +1423,7 @@ function renderTokens() {
 // the same question — what is this market worth, and what does it pay — and a
 // reader had to hold one in their head while looking at the other.
 const farmFilters = { q: '', dex: 'all', hideDust: true, farmed: 'any', realOnly: false, expired: false,
-  sort: 'tvlReal', dir: -1, feeWindow: '7d',
+  sort: 'aprAt', dir: -1, feeWindow: '7d',
   // A reference deposit, not a control. The rate a farm quotes is the rate its
   // incumbents get, and on a farm holding three dollars that is a number nobody
   // can act on — your own money is what gives it a denominator. $100 is small
@@ -1483,7 +1503,6 @@ function wireFarms() {
   wireCsv('#view-farms .toolbar', '#farmCount', 'wax-markets', 'markets');
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
-  tog('realOnly', '#fReal');
   tog('hideDust', '#fLiq2');
 
   // One venue selector for the merged page, the way the pools table had it —
@@ -1506,31 +1525,21 @@ function wireFarms() {
 
   // The window the fee APR is annualised from. Anything longer than a week is
   // history rather than a rate you could act on.
-  const setWin = w => {
-    farmFilters.feeWindow = w;
-    $('#fWin24')?.setAttribute('aria-pressed', String(w === '24h'));
-    $('#fWin7d')?.setAttribute('aria-pressed', String(w === '7d'));
-    groups._key = null; renderFarms();
-  };
   $('#fNewPool').onclick = () => renderCreatePool($('#newPoolBox'));
-  $('#fWin24').onclick = () => setWin('24h');
-  $('#fWin7d').onclick = () => setWin('7d');
-
-  $('#fExpired').onclick = e => {
-    farmFilters.expired = !farmFilters.expired;
-    e.target.setAttribute('aria-pressed', String(farmFilters.expired));
-    groups._key = null; renderFarms();
-  };
   // No compute button: the daily job values every Alcor farm, so an APR is
   // either there or honestly absent. Asking a reader to press a button to find
   // out what a farm pays is asking them to do the terminal's work.
   const panel = $('#farmFilterPanel');
-  panel.innerHTML = rangeField('apr', 'APR', farmFilters, { unit: '%' })
+  panel.innerHTML = `<label>Fee APR window<select data-f="feeWindow">
+      <option value="7d">7 days</option><option value="24h">24 hours</option></select></label>
+    <label class="pick"><input type="checkbox" data-f="realOnly"><span>Earnable only</span></label>
+    <label class="pick"><input type="checkbox" data-f="expired"><span>Show expired farms</span></label>`
+    + rangeField('apr', 'APR', farmFilters, { unit: '%' })
     + rangeField('rewards', 'Rewards per day', farmFilters, { unit: 'USD' })
     + rangeField('staked', 'Staked value', farmFilters, { unit: 'USD' })
     + rangeField('tokens', 'Reward tokens', farmFilters, { unit: 'count', step: '1' })
     + `<label>Pays this token<input data-f="reward" placeholder="e.g. WAX" value=""></label>`;
-  wireFilterPanel(panel, farmFilters, renderFarms);
+  wireFilterPanel(panel, farmFilters, () => { groups._key = null; renderFarms(); });
   $('#fMoreFarm').onclick = e => { panel.hidden = !panel.hidden; e.target.setAttribute('aria-pressed', String(!panel.hidden)); };
 }
 
@@ -1661,9 +1670,12 @@ function renderFarms() {
   const pooled = shown.reduce((a, g) => a + (g.pool?.tvlReal || 0), 0);
   const face = shown.reduce((a, g) => a + (g.pool?.tvl || 0), 0);
   const vol = shown.reduce((a, g) => a + (g.pool?.vol24 || 0), 0);
-  const depth = shown.reduce((a, g) => a + (g.pool?.depth1 || 0), 0);
   const farmed = shown.filter(g => g.farms.length);
   const payReal = farmed.reduce((a, g) => a + (g.rewardRealDay || 0), 0);
+  // Yield with a deadline. "64% of what you are looking at is farmed" is a fact
+  // about the filter; this is a fact about money that stops.
+  const soonest = Date.now() + 7 * 86400e3;
+  const soon = farmed.filter(g => g.endsAt && g.endsAt > Date.now() && g.endsAt < soonest);
   const feeDay = shown.reduce((a, g) => {
     const p2 = g.pool; if (!p2) return a;
     const perDay = p2.vol7d > 0 ? p2.vol7d / 7 : (p2.vol24 > 0 ? p2.vol24 : 0);
@@ -1674,9 +1686,8 @@ function renderFarms() {
       face > pooled * 1.05 ? `${usd(face)} at face value` : 'fully backed'}</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">across ${shown.length.toLocaleString()} market${shown.length === 1 ? '' : 's'}</span></div>
     <div class="stat"><span class="v">${usd(feeDay + payReal)}</span><span class="k">paid to providers daily</span><span class="sub">${usd(feeDay)} in trading fees &middot; ${usd(payReal)} from farms</span></div>
-    <div class="stat"><span class="v">${farmed.length.toLocaleString()}</span><span class="k">of them farmed</span><span class="sub">${
-      farmed.length ? `${(farmed.length / shown.length * 100).toFixed(0)}% of what you are looking at` : 'none in this filter'}</span></div>
-    <div class="stat"><span class="v">${usd(depth)}</span><span class="k">tradeable at once</span><span class="sub">before moving any price 1%</span></div>`;
+    <div class="stat"><span class="v">${soon.length.toLocaleString()}</span><span class="k">farms ending in 7 days</span><span class="sub">${
+      soon.length ? `${usd(soon.reduce((a, g) => a + (g.rewardRealDay || 0), 0))} a day stops` : 'nothing runs out this week'}</span></div>`;
   const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
   $('#farmCount').innerHTML = (farmFilters.size > 0
     ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} markets</span>`
