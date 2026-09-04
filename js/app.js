@@ -2406,7 +2406,7 @@ async function renderWalletFarms(account) {
         </tr>`).join('')}</tbody></table></div>
       <div id="wdSteps"></div>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="wdClaim">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting. ` : ''}Estimated &mdash; the claim pays what it pays. <a href="https://cheesehubwax.github.io/cheesehub/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> to stake or create a farm.</p>
+      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting. ` : ''}Estimated. <a href="https://cheesehubwax.github.io/cheesehub/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> to stake or create a farm.</p>
     </div>
   </div>`;
 
@@ -5168,6 +5168,10 @@ async function openFarm(key) {
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:14px"><h3>Is this rate normal?
+      <span class="dim">&mdash; one point per daily snapshot</span></h3>
+      <div id="farmHist"></div></div>
+
     <div class="card" style="margin-bottom:14px"><h3>Getting in</h3>
       <div id="farmMine"></div>
     </div>
@@ -5202,6 +5206,39 @@ async function openFarm(key) {
         rows.filter(f => isLive(f) && f.rewardPerDay > 0)
           .map(f => `${qty(f.rewardPerDay * share)} <b>${esc(f.rewardSymbol)}</b>`).join('<span class="dim"> + </span>')}` : ''}`;
   };
+  // A rate on its own is a number; a rate against its own past is an answer.
+  // "95% APR" reads very differently once you can see it was 95% all week, or
+  // that it was 12% until this morning because someone pulled their stake out.
+  // The daily job has been recording this per farm all along and nothing showed
+  // it.
+  loadHistory().then(hist => {
+    const box = $('#farmHist');
+    if (!box) return;
+    const key = `${g.dex}:${g.poolId}`;
+    const pts = [];
+    for (const row of hist) {
+      const f = (row.farms || []).find(x => x[0] === key);
+      // aprReal is index 6, and a farm the job could not value that day has a
+      // null there — a gap in the line, not a zero.
+      if (f && f[6] != null) pts.push({ x: row.at, y: f[6] });
+    }
+    const days = new Set(pts.map(p2 => new Date(p2.x).toISOString().slice(0, 10))).size;
+    if (days < 3) {
+      box.innerHTML = `<div class="chart-empty">${days} day${days === 1 ? '' : 's'} recorded so far. This needs three.</div>`;
+      return;
+    }
+    const per = new Map();
+    for (const p2 of pts) per.set(new Date(p2.x).toISOString().slice(0, 10), p2);
+    const series = [...per.values()];
+    box.innerHTML = '';
+    lineSeriesChart(box, series.map(p2 => ({ time: Math.floor(p2.x / 1000), value: p2.y })),
+      { height: 160, color: 'var(--c3)', fmt: v => pct(v) })
+      .catch(() => {
+        box.innerHTML = '';
+        box.appendChild(areaChart(series, { height: 160, color: 'var(--c3)', fmtY: pct, fmtX: t => new Date(t).toISOString().slice(5, 10), label: 'Farm APR over time' }));
+      });
+  }).catch(() => {});
+
   $('#farmSize').oninput = earn;
   out.querySelectorAll('[data-fsize]').forEach(b => b.onclick = () => { $('#farmSize').value = b.dataset.fsize; earn(); });
   earn();
@@ -5271,7 +5308,7 @@ async function renderFarmMine(g) {
   } catch {}
 
   if (!mine.length) {
-    box.innerHTML = `<p class="sub" style="margin:0 0 10px">You have no position in this pool, so there is nothing to stake here.</p>
+    box.innerHTML = `<p class="sub" style="margin:0 0 10px">No position in this pool.</p>
       <div class="toolbar" style="margin:0">
         <button class="btn" id="farmOpen">Open one by hand</button>
         <a class="plink" href="${g.pool ? venueUrl[g.dex]?.(g.pool) || '#' : '#'}" target="_blank" rel="noopener">Pool &nearr;</a>
