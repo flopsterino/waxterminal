@@ -12,6 +12,20 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 const el = (n, a = {}) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+// A drawing width that matches the screen it lands on.
+//
+// Every chart here used a 720-wide viewBox with preserveAspectRatio="none",
+// which stretches the drawing to whatever width it gets. On a desktop that is
+// near enough 1:1 and nobody notices. On a 390-point iPhone it squashes the
+// horizontal axis to 0.54 while leaving the vertical at 1, so every label is
+// drawn at half width — legible on the author's laptop, mangled on the device
+// most people actually hold. Matching the viewBox to the viewport keeps the
+// scale at 1:1 on both.
+const chartW = () => (typeof window !== 'undefined' && window.innerWidth > 0
+  ? Math.max(300, Math.min(720, Math.round(window.innerWidth - 60)))
+  : 720);
+
 export const SERIES = i => `var(--c${(i % 8) + 1})`;
 
 // ------------------------------------------------------------- tooltip ------
@@ -42,7 +56,7 @@ export function areaChart(points, { height = 190, color = 'var(--c1)', fmtY = v 
   wrap.className = 'chart';
   if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
 
-  const W = 720, H = height, padL = 46, padR = 12, padT = 12, padB = 24;
+  const W = chartW(), H = height, padL = 46, padR = 12, padT = 12, padB = 24;
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
   svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
 
@@ -116,7 +130,7 @@ export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v =>
   wrap.className = 'chart';
   if (!points.length) { wrap.innerHTML = '<div class="chart-empty">No data in range.</div>'; return wrap; }
 
-  const W = 720, H = height, padL = 46, padR = 12, padT = 12, padB = 24;
+  const W = chartW(), H = height, padL = 46, padR = 12, padT = 12, padB = 24;
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
   svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
 
@@ -300,7 +314,7 @@ export function histogram(values, { bins = 18, fmtX = v => v, color = 'var(--c1)
   for (const v of vals) counts[Math.min(bins - 1, Math.floor(((v - lo) / (hi - lo || 1)) * bins))]++;
   const peak = Math.max(...counts, 1);
 
-  const W = 720, H = height, padB = 22, padT = 8;
+  const W = chartW(), H = height, padB = 22, padT = 8;
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': label });
   svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
   const bw = W / bins;
@@ -632,7 +646,7 @@ export function depthChart(bands, { price, fmtPrice = v => v, fmt = v => v, heig
     for (let i = i0; i <= i1; i++) bins[i] += per / n;
   }
   const peak = Math.max(...bins, 1);
-  const W = 720, H = height, padB = 20, padT = 8;
+  const W = chartW(), H = height, padB = 20, padT = 8;
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Liquidity by price' });
   svg.style.cssText = `width:100%;height:${H}px;display:block;overflow:visible`;
   const bw = W / BINS;

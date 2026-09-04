@@ -875,3 +875,29 @@ body { overflow-x: hidden; }
    for a rate and a daily figure. */
 .earnline { font-size: 12.5px; margin-left: auto; text-align: right; }
 .earnline b { font-variant-numeric: tabular-nums; }
+
+/* A wide table is fine. Losing track of which row you are on is not.
+   "meer kolommen is niet erg zolang ik maar duidelijk kan zien over welke pool
+   het gaat als ik heen en weer scroll" — so the rank and the pair stay put
+   while everything to the right of them moves. Both need an opaque background
+   or the scrolling columns show through them, and a fixed width on the rank
+   column so the second one knows where to stop. */
+.tablewrap table th:first-child,
+.tablewrap table td:first-child { position: sticky; left: 0; z-index: 3; width: 46px; min-width: 46px; background: var(--surface); }
+.tablewrap table th:nth-child(2),
+.tablewrap table td:nth-child(2) { position: sticky; left: 46px; z-index: 3; background: var(--surface); }
+/* The header sits above the body where they overlap in the corner. */
+.tablewrap table thead th:first-child,
+.tablewrap table thead th:nth-child(2) { z-index: 4; }
+/* A hairline so the frozen pair reads as a column and not as part of the next. */
+.tablewrap table th:nth-child(2)::after,
+.tablewrap table td:nth-child(2)::after {
+  content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--line);
+}
+@media (max-width: 700px) {
+  table th, table td { padding: 7px 6px; font-size: 12px; }
+  .tablewrap table th:first-child,
+  .tablewrap table td:first-child { width: 34px; min-width: 34px; }
+  .tablewrap table th:nth-child(2),
+  .tablewrap table td:nth-child(2) { left: 34px; max-width: 130px; }
+}

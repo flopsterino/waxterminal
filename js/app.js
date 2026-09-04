@@ -1703,7 +1703,7 @@ function renderFarms() {
     { k: 'bornAt', label: 'Age', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
-  thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
+  thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable ' : ''}" data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ''}>${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
   thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
     const k = th.dataset.k;
     if (farmFilters.sort === k) farmFilters.dir *= -1; else { farmFilters.sort = k; farmFilters.dir = -1; }
@@ -5120,12 +5120,22 @@ async function runZap(pool, plan, { tickLower, tickUpper, incentiveIds, account,
 // incentives that each pay a different token at a different rate, and a set of
 // stakers sharing it — none of which fits in a card on the pool page, which is
 // why clicking a farm used to land somewhere that answered a different question.
-async function openFarm(key) {
-  const g = seedApr(farmGroups()).find(x => x.key === key);
-  if (!g) return;
-  show('farm', key);
+// A market has one page.
+//
+// It had two: a pool page with the price, the depth and the providers, and a
+// farm page with what it pays and how to get in. The same market, forked in
+// two, so answering one question meant going back out to the list and coming in
+// again the other way. "veel info staat er maar wel op onlogische manieren aan
+// elkaar gelinkt. teveel rondgeklik."
+//
+// So the farm half is a section of the market page now, and #farm/... still
+// resolves — old links keep working, they just land on the whole thing.
+async function openFarm(key) { return openPool(key); }
+
+// The farm half, rendered into whatever container the market page gives it.
+async function renderFarmParts(g, out) {
+  if (!g || !out) return;
   const p = g.pool;
-  const out = $('#farmDetail');
   const now = Date.now();
 
   // Per incentive, because that is the unit a farm is actually funded in: two
@@ -5152,11 +5162,12 @@ async function openFarm(key) {
     : d < 60 ? `${Math.round(d)} days`
     : `${(d / 30).toFixed(1)} months`;
 
+  // No heading and no "the pool holds $x" line: this renders inside the market
+  // page, under a heading that already says both.
   out.innerHTML = `
-    <h2 class="vt">${p ? pairLinks(p) : esc(g.poolId)} <span class="badge ${g.dex}">${g.dex}</span>
-      ${live.length ? `<span class="pill good">${live.length} live</span>` : '<span class="pill">ended</span>'}</h2>
-    <p class="vs">${p ? `${(p.feeBps / 100).toFixed(2)}% fee tier &middot; ` : ''}${poolLink(g.dex, g.poolId, 'the pool')} holds ${usd(p?.tvlReal)}.</p>
-
+    <h3 style="margin-top:4px">The farm ${live.length
+      ? `<span class="pill good">${live.length} live</span>`
+      : '<span class="pill">ended</span>'}</h3>
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
       <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">farm APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
@@ -5428,8 +5439,8 @@ async function openPool(key) {
     <div class="toolbar" style="margin-bottom:16px">
       <span id="poolStar"></span>
       <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
+      <button class="btn" id="poolAddLiq">Add liquidity</button>
       <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
-      ${farms.length ? `<button class="btn" id="poolFarmBtn">See the farm</button>` : ''}
     </div>
     <div class="stats">
       <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">exit value</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
@@ -5441,11 +5452,6 @@ async function openPool(key) {
       <div class="stat"><span class="v">${farms.length}</span><span class="k">live farms</span></div>
       ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
-    ${farms.length ? `<div class="card" style="margin-bottom:12px"><h3>Farms on this pool <button class="chip" id="poolFarmGo" style="margin-left:auto">See the farm</button></h3>
-      ${farms.map(f => `<div style="display:flex;gap:10px;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
-        <span><span class="mono">${qty(f.rewardPerDay)}</span> <b>${tokLink(f.rewardToken, f.rewardSymbol)}</b> / day</span>
-        <span class="num dim">${usd(f.rewardUsdDay)} &middot; ends ${f.periodFinish ? new Date(f.periodFinish).toISOString().slice(0, 10) : 'open'}</span>
-      </div>`).join('')}</div>` : ''}
     <div class="grid g2">
       <div class="card"><h3><span id="poolPair">Price</span> <span class="dim">— candles built from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
@@ -5460,6 +5466,7 @@ async function openPool(key) {
       <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
+    <div id="farmParts" style="margin-top:12px"></div>
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
 
   // Where the money sits across price. One ticks read for the pool you opened,
@@ -5515,18 +5522,23 @@ async function openPool(key) {
     }).catch(() => {});
   }
 
+  // The whole point of the page is that you can act on it. A button that sends
+  // someone to another site, or another page, is a step at which most people
+  // stop.
+  const add = $('#poolAddLiq');
+  if (add) add.onclick = () => {
+    const target = $('#farmZap') || $('#farmParts');
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    $('#zapAmt')?.focus();
+  };
+
+  // The farm half of this market, if it has one. Same page, no second trip.
+  renderFarmParts(seedApr(farmGroups()).find(x => x.key === key), $('#farmParts')).catch(() => {});
+
   wirePromote($('#poolDetail'));
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
 
-  // Both "See the farm" buttons live on this page, but the only code wiring
-  // them sat in openToken, where the pool it named did not exist. So they were
-  // dead where the token page had not run, and threw where it had. They belong
-  // here, next to the pool they are about.
-  for (const sel of ['#poolFarmGo', '#poolFarmBtn']) {
-    const b = $(sel);
-    if (b) b.onclick = () => openFarm(`${p.dex}:${p.id}`);
-  }
 
   // Every venue keeps a state table, so every venue gets a chart and a tape.
   // This used to be Alcor-only, and a TacoSwap or Defibox pool showed two boxes
