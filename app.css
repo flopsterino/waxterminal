@@ -1008,3 +1008,48 @@ td.route-cell, td.pools-cell {
 html, body { max-width: 100%; overflow-x: clip; }
 .wrap { max-width: 100%; }
 .section, .card, .stats, .grid { max-width: 100%; }
+
+/* ------------------------------------------------- rows, boxes and tables ---
+   The remaining fixed layouts. Each is a row of five or six columns that fits
+   a laptop and cannot fit a phone, so on a narrow screen they wrap into two
+   lines instead of running off the side.
+
+   "niet enkel de grafieken, ook alle tabellen en andere vakken moeten goed
+   schalen." */
+@media (max-width: 700px) {
+  /* Six columns of reward: mark, symbol, amount, rate, worth, source. Two rows
+     of three, with the numbers still right-aligned against each other. */
+  .acc-row { grid-template-columns: auto 1fr auto; row-gap: 2px; padding: 8px 10px; }
+  .acc-row .rate { grid-column: 2 / -1; text-align: left; font-size: 10.5px; }
+  .acc-row .src  { grid-column: 1 / -1; justify-self: start; }
+  .acc-row .usd  { min-width: 0; }
+
+  /* Four figures across a position card is 90px each on a phone. */
+  .pc-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* A bar's label column has a 74px floor that leaves the bar itself no room
+     once the value is a WAX figure. */
+  .bars .bar { grid-template-columns: minmax(0, 1.4fr) 1.6fr auto; gap: 7px; }
+
+  /* Every table cell is nowrap so numbers line up, which is right — the table
+     scrolls. But it should not be able to scroll further than it has to. */
+  .tablewrap { max-height: 68vh; }
+  .tablewrap table { font-size: 11.5px; }
+
+  /* .planline is a grid of a 74px label beside its value, not a flex row — so
+     it needs a column count, not flex-wrap. The label goes above on a phone,
+     where 74px of it is a quarter of the screen. */
+  .planline { grid-template-columns: 1fr; gap: 1px; margin-bottom: 6px; }
+  .planline .k { font-size: 10px; }
+  /* These are flex rows and only need permission to wrap. */
+  .obmid, .walletbar { flex-wrap: wrap; }
+  /* Four tabs across a phone: let them scroll rather than stack. */
+  .subtabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .subtabs button { white-space: nowrap; }
+}
+
+/* Below a phone in portrait, two figures per card is still one too many. */
+@media (max-width: 400px) {
+  .pc-figs { grid-template-columns: 1fr; }
+  .stat .v { font-size: 17px; }
+}
