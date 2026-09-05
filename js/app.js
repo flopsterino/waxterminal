@@ -433,6 +433,18 @@ async function boot() {
     // rather than patched — a half-converted table is worse than either unit.
     redrawCurrent();
   };
+  // Charts are drawn at the width they were built for, so a rotation or a
+  // resized window leaves them stretched — the exact distortion the viewport-
+  // width viewBox exists to avoid. Redraw when the width actually changes by
+  // enough to matter; a soft keyboard opening is not a resize.
+  let lastW = window.innerWidth;
+  window.addEventListener('resize', debounce(() => {
+    const w = window.innerWidth;
+    if (Math.abs(w - lastW) < 80) return;
+    lastW = w;
+    redrawCurrent();
+  }, 250));
+
   $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
   $('#farmBack').onclick = () => show(lastView || 'farms');
   $('#poolBack').onclick = () => show(lastView || 'pools');

@@ -976,3 +976,35 @@ td.route-cell, td.pools-cell {
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 @media (max-width: 700px) { td.route-cell, td.pools-cell { max-width: 110px; } }
+
+/* ------------------------------------------------------ narrow screens -----
+   Every remaining fixed minimum, relaxed. Each of these is a sensible floor on
+   a laptop and a horizontal scrollbar on a phone: a 180px search box plus two
+   chips, a 190px filter column doubled, a 170px legend beside a donut. They are
+   all "never smaller than this" rules written on a screen where that was never
+   going to be tested. */
+@media (max-width: 700px) {
+  .search { flex: 1 1 100%; min-width: 0; max-width: none; }
+  .filters { grid-template-columns: 1fr; }
+  .donut { gap: 12px; }
+  .donut .legend { min-width: 0; flex-basis: 100%; }
+  .pc-farm > div { min-width: 0; flex-basis: 100%; }
+  .rangebar { min-width: 0; }
+  .pc-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .card { padding: 12px 12px; }
+  .wrap { padding-left: 10px; padding-right: 10px; }
+  /* A route, a memo or an account name must be allowed to end rather than push
+     the page sideways. */
+  .route, .mono, .pairbig { overflow-wrap: anywhere; }
+}
+
+/* Nothing may make the document itself scroll sideways. Where something wide is
+   genuinely needed — a twelve-column table, a chart — it scrolls inside its own
+   box, which is what .tablewrap and .chart are for. */
+/* clip, not hidden. overflow:hidden makes the element a scroll container, and
+   a sticky header inside one sticks to THAT instead of to the viewport — the
+   top bar would come unstuck the moment this was added. clip does the same job
+   without creating one. */
+html, body { max-width: 100%; overflow-x: clip; }
+.wrap { max-width: 100%; }
+.section, .card, .stats, .grid { max-width: 100%; }
