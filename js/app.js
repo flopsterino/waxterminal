@@ -1919,8 +1919,16 @@ async function renderTradeFlow(account) {
     <div class="card"><div class="tablewrap" style="border:0"><table style="font-size:12.5px">
       <thead><tr><th>When</th><th>Sold</th><th>Got</th><th class="r">Worth</th><th>Route</th></tr></thead>
       <tbody>${trades.map(t => {
-        const sold = t.sold.map(x => `${qty(x.amount)} ${esc(x.symbol)}`).join(' + ');
-        const got = t.bought.map(x => `${qty(x.amount)} ${esc(x.symbol)}`).join(' + ');
+        // The biggest leg is the trade; the rest are the change. Listing every
+        // leg made an arbitrage cycle unreadable, because it names the same
+        // tokens on both sides.
+        const leg = xs => {
+          const sorted = [...xs].sort((a, b) => b.amount - a.amount);
+          const head = `${qty(sorted[0].amount)} ${esc(sorted[0].symbol)}`;
+          return sorted.length > 1 ? `${head} <span class="dim">+${sorted.length - 1}</span>` : head;
+        };
+        const all = xs => xs.map(x => `${qty(x.amount)} ${x.symbol}`).join(' + ');
+        const sold = leg(t.sold), got = leg(t.bought);
         // Priced off whichever side we can price. A trade is one value, and
         // quoting both sides invites the reader to add them up.
         const val = [...t.sold, ...t.bought]
@@ -1928,8 +1936,8 @@ async function renderTradeFlow(account) {
           .find(v => v != null) ?? null;
         return `<tr>
           <td class="num dim"><a href="${trxUrl(t.trx)}" target="_blank" rel="noopener" title="${new Date(t.ts).toISOString()}">${ago(new Date(t.ts).toISOString())} &nearr;</a></td>
-          <td class="neg">${sold}</td>
-          <td class="pos">${got}</td>
+          <td class="neg" title="${esc(all(t.sold))}">${sold}</td>
+          <td class="pos" title="${esc(all(t.bought))}">${got}</td>
           <td class="r num ${val != null ? '' : 'dim'}">${val != null ? usd(val) : '—'}</td>
           <td class="route-cell dim" title="${t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : ''}">${
             t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : `<span class="dim">${esc(t.venue)}</span>`}</td>
@@ -2374,14 +2382,32 @@ async function renderFarmAccrual(account, positions, joined) {
     // The same rows drive the figure on each position card, so a card and the
     // counter above it can never disagree.
     const perPos = new Map();
+    // What each position is owed, BY TOKEN. A converted total answers "is this
+    // worth a transaction"; it does not answer "what am I being paid", and on a
+    // farm paying something the price table cannot price it answers nothing at
+    // all — those rewards are real and the money figure skips them entirely.
+    const tokPos = new Map();
     for (const r of rows) {
+      const amt = pendingAt(r, now);
+      if (amt > 0) {
+        let m = tokPos.get(r.posId);
+        if (!m) { m = new Map(); tokPos.set(r.posId, m); }
+        m.set(r.symbol, (m.get(r.symbol) || 0) + amt);
+      }
       if (r.price == null) continue;
-      perPos.set(r.posId, (perPos.get(r.posId) || 0) + pendingAt(r, now) * r.price);
+      perPos.set(r.posId, (perPos.get(r.posId) || 0) + amt * r.price);
     }
     document.querySelectorAll('[data-farmpend]').forEach(elp => {
-      const v = perPos.get(elp.dataset.farmpend);
-      elp.textContent = v > 0 ? usd4(v) : '—';
-      elp.classList.toggle('dim', !(v > 0));
+      const id = elp.dataset.farmpend;
+      const v = perPos.get(id);
+      const toks = [...(tokPos.get(id) || new Map())].sort((a, b) => b[1] - a[1]);
+      elp.textContent = v > 0 ? usd4(v) : (toks.length ? qtyFine(toks[0][1]) + ' ' + toks[0][0] : '—');
+      elp.classList.toggle('dim', !(v > 0) && !toks.length);
+      // The tokens themselves, under the figure, ticking with it.
+      const sub = elp.closest('.fig')?.querySelector('.figsub');
+      if (sub) sub.innerHTML = toks.length
+        ? toks.map(([sym, a]) => `${qtyFine(a)} <b>${esc(sym)}</b>`).join(' &middot; ')
+        : '';
     });
 
     const tot = $('#accTotal'), rt = $('#accRate');
@@ -2854,7 +2880,7 @@ function positionCard(p, mine = false) {
 
     <div class="pc-figs">
       ${fig('Fees waiting', usd(p.feesUsd), p.feesUsd > 0 ? 'accent' : 'dim')}
-      ${fig('Farm rewards', `<span data-farmpend="${p.posId}" class="dim">&mdash;</span>`, '')}
+      ${fig('Farm rewards', `<span data-farmpend="${p.posId}" class="dim">&mdash;</span>`, '', '&nbsp;')}
       ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim',
         feeDay + farmDay > 0
           ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}`
