@@ -1512,7 +1512,7 @@ function poolShare(g, size) {
 }
 
 function wireFarms() {
-  wireCsv('#view-farms .toolbar', '#farmCount', 'wax-markets', 'markets');
+  wireCsv('#view-farms .toolbar', '#farmCount', 'wax-markets', 'farms');
   $('#farmSearch').oninput = e => { farmFilters.q = e.target.value.trim().toLowerCase(); renderFarms(); };
   const tog = (key, id) => $(id).onclick = e => { farmFilters[key] = !farmFilters[key]; e.target.setAttribute('aria-pressed', String(farmFilters[key])); renderFarms(); };
   tog('hideDust', '#fLiq2');
@@ -1700,12 +1700,6 @@ function renderFarms() {
     <div class="stat"><span class="v">${usd(feeDay + payReal)}</span><span class="k">paid to providers daily</span><span class="sub">${usd(feeDay)} in trading fees &middot; ${usd(payReal)} from farms</span></div>
     <div class="stat"><span class="v">${soon.length.toLocaleString()}</span><span class="k">farms ending in 7 days</span><span class="sub">${
       soon.length ? `${usd(soon.reduce((a, g) => a + (g.rewardRealDay || 0), 0))} a day stops` : 'nothing runs out this week'}</span></div>`;
-  const enterable = rows.filter(g => !g.tooSmall && g.aprAt != null).length;
-  $('#farmCount').innerHTML = (farmFilters.size > 0
-    ? `${enterable.toLocaleString()} can take ${usd(farmFilters.size)}<span class="dim"> &middot; ${rows.length.toLocaleString()} markets</span>`
-    : `${rows.length.toLocaleString()} markets`)
-    + (rows.length > 250 ? '<span class="dim"> &middot; top 250 listed</span>' : '');
-
   // One row per market: what it holds, what it trades, what it pays. The two
   // rates stay in two columns and are never added — fee income does not stop
   // when an incentive does, and a single number would hide which half is which.
@@ -1731,7 +1725,8 @@ function renderFarms() {
     renderFarms();
   });
 
-  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets');
+  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets')
+    + `<span class="dim"> &middot; farm rates at ${usd(farmFilters.size)}</span>`;
   $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
@@ -1779,7 +1774,7 @@ function renderFarms() {
     const aprCell = rate != null
         ? `<span class="apr"${g.aprStatus === 'nightly' ? ' title="Staked value from last night\u2019s pass. Refreshes live for the rows on screen."' : ''}>${pct(rate)}</span>`
         : `<span class="dim" title="${esc(why[1])}">${esc(why[0])}</span>`;
-    const rw = g.runwayDays;
+    const rw = g.endsAt ? (g.endsAt - Date.now()) / 86400e3 : null;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}<span data-star="p|${esc(g.dex)}:${esc(String(g.poolId))}|${esc(g.pool ? g.pool.symA + '/' + g.pool.symB : String(g.poolId))}"></span></td>
       <td>${pool}</td>
@@ -2843,7 +2838,8 @@ function tacoCard(p) {
     </div>
     <div class="pc-figs">
       <div class="fig"><span class="k">Pool size</span><span class="v">${pool.tvl != null ? usd(pool.tvl) : '&mdash;'}</span></div>
-      <div class="fig"><span class="k">Earning / day</span><span class="v ${tacoDay > 0 ? '' : 'dim'}">${tacoDay > 0 ? usd(tacoDay) : '&mdash;'}</span></div>
+      <div class="fig"><span class="k">Earning / day</span><span class="v ${tacoDay > 0 ? '' : 'dim'}">${tacoDay > 0 ? usd(tacoDay) : '&mdash;'}</span>${
+        tacoDay > 0 ? '<span class="figsub">trading fees</span>' : ''}</div>
       <div class="fig"><span class="k">Fee tier</span><span class="v">${(pool.feeBps / 100).toFixed(2)}%</span></div>
     </div>
     <footer class="pc-act"><a class="plink" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">Open the pool on TacoSwap &nearr;</a></footer>
@@ -4382,7 +4378,7 @@ async function openToken(id) {
       ? `<b class="warnish">${qty(stats.maxSupply - stats.supply)} more</b> <span class="dim">the issuer can still create</span>`
       : '<span class="ok">no</span> <span class="dim">— the whole maximum is already issued</span>');
     set('#fBurned', stats.burned > 0
-      ? `${qty(stats.burned)} <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>`
+      ? `${qty(stats.burned)}${stats.supply > 0 ? ` <span class="dim">(${(stats.burned / stats.supply * 100).toFixed(2)}% of supply)</span>` : ''}`
       : '<span class="dim">none</span>');
     const lockPct = stats.supply > 0 ? stats.locked / stats.supply * 100 : 0;
     const unlockDay = stats.nextUnlock ? new Date(stats.nextUnlock * 1000).toISOString().slice(0, 10) : null;
@@ -4406,7 +4402,7 @@ async function openToken(id) {
       // actually be sold, so when they differ it says by how much.
       const paper = stats.supply * t.price;
       const real = stats.circulating * t.price;
-      set('#tokCapSub', `${(t.tvl / real * 100).toFixed(1)}% of it is pooled`
+      set('#tokCapSub', `${real > 0 ? (t.tvl / real * 100).toFixed(1) + '% of it is pooled' : 'nothing left circulating'}`
         + (paper > real * 1.05 ? ` &middot; ${usd(paper)} on paper supply` : ''));
     }
   });
@@ -4608,12 +4604,15 @@ async function openToken(id) {
       // only covers the pools that were replayed, so it never overwrites the
       // all-venue number when there is one.
       const v24 = all.filter(s => s.ts >= Date.now() - 86400000).reduce((a, s) => a + (s.usd || 0), 0);
-      if (!(t.vol24 > 0) && v24 > 0) {
-        const e = $('#tokVol'); if (e) e.textContent = usd(v24);
+      if (!(t.vol24 > 0)) {
+        // A replay that finds nothing is an answer, not a state to sit in.
+        // "measuring…" stayed on the tile for the life of the page whenever the
+        // true figure was zero, which is the most common case on a quiet token.
+        const e = $('#tokVol'); if (e) e.textContent = v24 > 0 ? usd(v24) : usd(0);
         const s = $('#tokVolSub');
-        if (s) s.textContent = tradePools.length > use.length
-          ? `measured now, on its ${use.length} busiest pools`
-          : 'measured now, from the pools themselves';
+        if (s) s.textContent = v24 > 0
+          ? (tradePools.length > use.length ? `measured now, on its ${use.length} busiest pools` : 'measured now, from the pools themselves')
+          : 'no trades found in the last 24 hours';
       }
 
       const tape = $('#tokTape');
@@ -5724,7 +5723,39 @@ async function openPool(key) {
   if (nf) nf.onclick = () => renderCreateFarm($('#newFarmBox'), p);
 
   // The farm half of this market, if it has one. Same page, no second trip.
-  renderFarmParts(seedApr(farmGroups()).find(x => x.key === key), $('#farmParts')).catch(() => {});
+  const grp = seedApr(farmGroups()).find(x => x.key === key);
+  if (grp) {
+    renderFarmParts(grp, $('#farmParts')).catch(() => {});
+  } else if (p.dex === 'alcor' && p.sqrtX64) {
+    // No farm here, but you can still open a position — and two thirds of the
+    // markets on this site have no farm, so without this the page's primary
+    // button scrolled to an empty div on most of them.
+    const box = $('#farmParts');
+    box.innerHTML = `<div class="card"><h3>Open a position <span class="dim">&mdash; two ways in</span></h3>
+      <div class="toolbar" style="margin:0 0 10px">
+        <span class="sub">I have</span>
+        <button class="chip" data-how="one" aria-pressed="true">One token</button>
+        <button class="chip" data-how="both" aria-pressed="false">Both tokens</button>
+        <span class="dim" id="howNote" style="font-size:12px"></span>
+      </div>
+      <div id="farmZap"></div><div id="farmNewPos"></div></div>`;
+    const showHow = how => {
+      box.querySelectorAll('[data-how]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.how === how)));
+      const note = $('#howNote');
+      if (note) note.textContent = how === 'one'
+        ? 'sells part of it and deposits both sides'
+        : 'you supply both sides yourself, nothing is sold';
+      $('#farmZap').hidden = how !== 'one';
+      $('#farmNewPos').hidden = how !== 'both';
+      if (how === 'both' && !$('#farmNewPos').dataset.built) {
+        $('#farmNewPos').dataset.built = '1';
+        renderNewPosition(wallet.account(), p.id, $('#farmNewPos'));
+      }
+    };
+    box.querySelectorAll('[data-how]').forEach(b => b.onclick = () => showHow(b.dataset.how));
+    renderZap($('#farmZap'), p, { incentiveIds: [], account: wallet.account(), embedded: true });
+    showHow('one');
+  }
 
   wirePromote($('#poolDetail'));
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));

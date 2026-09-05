@@ -380,6 +380,19 @@ async function loadSnapshot() {
     if (solid) state.solidTokens.add(id);
   }
   // Yesterday's prices, so a 24h change is a subtraction rather than a guess.
+  // The counterparty model is pure arithmetic over pools and prices, both of
+  // which the snapshot carries — and it was only ever run on the chain sweep.
+  // Since the snapshot became the default load, nothing computed it: "Backed
+  // by" was empty in 100% of rows and the transfer-tax column in 80%.
+  try { state.facing = counterparties(state.pools); } catch { state.facing = new Map(); }
+  for (const [id, dd] of state.depth) {
+    const f = state.facing.get(id);
+    dd.topPartner = f?.top ?? null;
+    dd.sameIssuerShare = f?.sameIssuerShare ?? 0;
+    dd.partners = f?.partners ?? [];
+    dd.concentrated = (f?.top?.share ?? 0) > 0.5;
+  }
+
   state.prevPrices = new Map((d.prevPrices || []).map(([id, usd]) => [id, usd]));
   state.prevAt = d.prevAt ?? null;
 
