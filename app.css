@@ -954,3 +954,25 @@ body { overflow-x: hidden; }
   .hero-num  { font-size: 22px; }
   .earnline  { margin-left: 0; text-align: left; }
 }
+
+/* ------------------------------------------------------------- overflow ----
+   A grid item defaults to min-width:auto, which means "never narrower than my
+   content". A table with a route column like WAX -> CHEESE -> HOLE -> WAX and
+   nowrap cells therefore widens its own grid column instead of scrolling
+   inside it, and the column beside it collapses to make room. That is what
+   made "Trades" and "Who trades it" mega-wide and the rest of the page thin.
+   Grid and flex children get an explicit zero minimum so the scroll container
+   inside them does its job. */
+.grid > *, .stats > *, .toolbar > * { min-width: 0; }
+/* min-width alone is what stops a card being widened by its own table. Adding
+   overflow:hidden would also clip anything positioned out of it, sticky headers
+   included, so it is not worth the risk. */
+.card { min-width: 0; }
+.card > .tablewrap { max-width: 100%; }
+
+/* A route is worth a glance, not a column of its own width. It truncates and
+   keeps the whole thing in the tooltip. */
+td.route-cell, td.pools-cell {
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 700px) { td.route-cell, td.pools-cell { max-width: 110px; } }

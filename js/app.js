@@ -15,7 +15,7 @@ import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
-import { accountInfo, valueBalances } from './account.js';
+import { accountInfo, valueBalances, accountSwaps, tradeFlow } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -1833,6 +1833,59 @@ async function autoApr() {
   } finally { autoAprRunning = false; }
 }
 
+
+// --------------------------------------------------- WHAT THEY ARE DOING ----
+// Dumping or accumulating, per token, over a week.
+//
+// A balance says what a wallet holds. A trade list says it was busy. Neither
+// answers the question anyone actually has about somebody else's account —
+// whether they are getting out of something or getting into it — and answering
+// it needs both sides of every swap, because what you sent a venue and what the
+// venue sent back are two different tokens.
+//
+// Round-tripping nets to roughly nothing, which is how an arbitrage bot reads
+// here, and that is correct: it is not accumulating anything.
+async function renderTradeFlow(account) {
+  const box = $('#walletFlow');
+  if (!box) return;
+  box.innerHTML = '';
+  let swaps = [];
+  try { swaps = await accountSwaps(account, { hours: 168 }); } catch { return; }
+  if (!swaps.length) return;
+  const rows = tradeFlow(swaps, state.prices).filter(r => r.trades > 0).slice(0, 14);
+  if (!rows.length) return;
+
+  const netUsd = rows.reduce((a, r) => a + (r.netUsd || 0), 0);
+  const sinceDays = Math.max(1, Math.round((Date.now() - Math.min(...swaps.map(s => s.ts))) / 86400e3));
+  box.innerHTML = `<div class="section"><h3>What they have been trading
+      <span class="dim">&mdash; ${swaps.length.toLocaleString()} swap legs over ${sinceDays} day${sinceDays === 1 ? '' : 's'}</span></h3>
+    <div class="card">
+      <div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
+        <thead><tr><th>Token</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">Net</th><th class="r">Worth now</th><th></th></tr></thead>
+        <tbody>${rows.map(r => {
+          const dir = r.net > 0 ? 'accumulating' : r.net < 0 ? 'getting out' : 'round-tripping';
+          // A wallet that bought and sold nearly the same amount is not taking
+          // a position, whatever the size of either leg.
+          // Keeping 7% of everything you moved is not taking a position, it is
+          // an arbitrage bot leaving a rounding error behind. The line is where
+          // the net stops being a by-product of the turnover.
+          const churn = (r.bought + r.sold) > 0 ? Math.abs(r.net) / (r.bought + r.sold) : 0;
+          const label = churn < 0.15 ? 'round-tripping' : dir;
+          return `<tr>
+            <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span>${tokLink(r.id, r.symbol)}</td>
+            <td class="r num ${r.bought > 0 ? 'pos' : 'dim'}">${r.bought > 0 ? qty(r.bought) : '—'}</td>
+            <td class="r num ${r.sold > 0 ? 'neg' : 'dim'}">${r.sold > 0 ? qty(r.sold) : '—'}</td>
+            <td class="r num ${r.net > 0 ? 'pos' : r.net < 0 ? 'neg' : 'dim'}">${r.net > 0 ? '+' : ''}${qty(r.net)}</td>
+            <td class="r num ${r.priced ? '' : 'dim'}">${r.priced ? usd(r.netUsd) : 'unpriced'}</td>
+            <td><span class="pill ${label === 'accumulating' ? 'good' : label === 'getting out' ? 'bad' : ''}">${label}</span></td>
+          </tr>`;
+        }).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">Net ${usd(netUsd)} across everything priced.
+        Both legs of each swap, so a token bought with another shows on both rows.</p>
+    </div></div>`;
+  fillMarks(box);
+}
+
 // --------------------------------------------------------------- WALLET -----
 function wireWallet() {
   // Connected already means the question has an answer, so asking it again is
@@ -2800,6 +2853,7 @@ async function lookupWallet(account) {
   renderPepperClaims(account).catch(() => {});
   renderEarned(account).catch(() => {});
   renderWalletBalances(account).catch(() => {});
+  renderTradeFlow(account).catch(() => {});
 
   const out = $('#walletOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span id="wmsg">Looking up…</span></div>';
@@ -4557,12 +4611,12 @@ async function openToken(id) {
           <thead><tr><th>When</th><th>Through</th><th></th><th class="r">${esc(t.symbol)}</th><th class="r">Value</th></tr></thead>
           <tbody>${all.slice(0, cap('tokenTape')).map(s => `<tr>
             <td class="num dim"><a href="${blockUrl(s.block)}" target="_blank" rel="noopener" title="Open this block on waxblock">${ago(new Date(s.ts).toISOString())} &nearr;</a></td>
-            <td>${s.pools.map(esc).join('<span class="dim"> + </span>')}</td>
+            <td class="pools-cell" title="${esc(s.pools.join(' + '))}">${s.pools.map(esc).join('<span class="dim"> + </span>')}</td>
             <td class="${s.side === 'bought' ? 'pos' : s.side === 'sold' ? 'neg' : 'dim'}">${s.side}</td>
             <td class="r num">${qty(s.amount)}</td>
             <td class="r num">${s.usd != null ? usd(s.usd) : '<span class="dim">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div>
-          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown..</p>`;
+          <p class="sub" style="margin:9px 0 0">${all.length.toLocaleString()} trades, newest ${Math.min(all.length, cap('tokenTape')).toLocaleString()} shown.</p>`;
         // The whole reconstruction, not the shown slice: a reader who wants to
         // do their own arithmetic on it should get every trade this page read,
         // and a tape is exactly the shape a spreadsheet is for.
@@ -4657,7 +4711,7 @@ async function openToken(id) {
           <td class="mono">${acctLink(r.acct)}</td>
           <td class="r num">${r.n}</td>
           <td class="r num">${qty(r.amount)}</td>
-          <td>${top ? `<span class="route">${esc(top[0])}</span>${hops > 2 ? ' <span class="badge warn">multi-hop</span>' : ''}` : '<span class="dim">out only</span>'}</td>
+          <td class="route-cell" title="${top ? esc(top[0]) : ''}">${top ? `<span class="route">${esc(top[0])}</span>${hops > 2 ? ' <span class="badge warn">multi-hop</span>' : ''}` : '<span class="dim">out only</span>'}</td>
         </tr>`;
       }).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">${capNote(list.length, Math.min(list.length, cap('routes')), 'accounts', { filterable: false })} ${complete ? 'in 24h' : `back to ${ago(new Date(covered).toISOString())}`}. &ldquo;Out only&rdquo; means they received ${esc(t.symbol)} rather than sent it.</p>`;

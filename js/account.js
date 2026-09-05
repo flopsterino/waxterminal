@@ -90,18 +90,64 @@ export async function accountSwaps(account, { hours = 168, maxPages = 3 } = {}) 
   const out = [];
   for (const a of dropEchoes(rows)) {
     const x = a.act?.data;
-    if (!x || x.from !== account || !VENUES.has(x.to)) continue;
+    if (!x) continue;
+    // Both directions. What someone SENT a venue is what they sold; what the
+    // venue sent BACK is what they bought. Reading only the outgoing leg — which
+    // is all this did — can tell you somebody traded and never what they ended
+    // up holding, so it cannot answer whether they are accumulating a token or
+    // getting out of it.
+    const sending = x.from === account && VENUES.has(x.to);
+    const receiving = x.to === account && VENUES.has(x.from);
+    if (!sending && !receiving) continue;
     const memo = String(x.memo || '');
     const route = memo.toLowerCase().startsWith('swapexactin#')
       ? memo.split('#')[1]?.split(',').filter(Boolean) ?? null : null;
-    if (!route) continue;                    // a deposit or a fee, not a trade
+    // The outgoing leg carries the route in its memo; the leg coming back is
+    // the venue paying out and carries none, so a missing route disqualifies
+    // only the side that should have had one.
+    if (sending && !route) continue;         // a deposit or a fee, not a trade
     const [amt, sym] = String(x.quantity || '').split(' ');
     out.push({
       ts: new Date(a.timestamp + (a.timestamp.endsWith('Z') ? '' : 'Z')).getTime(),
-      trx: a.trx_id, venue: x.to, route,
+      trx: a.trx_id, venue: sending ? x.to : x.from, route,
+      side: sending ? 'sold' : 'bought',
       amount: parseFloat(amt) || 0, symbol: sym, contract: a.act.account,
     });
   }
   out.sort((a, b) => b.ts - a.ts);
+  return out;
+}
+
+
+// What an account has been accumulating and what it has been getting out of.
+//
+// Per token: what they sold into a venue, what a venue paid them, and the
+// difference. A trader who is round-tripping nets to roughly nothing; one who
+// is dumping shows a large negative; one who is buying shows the opposite. It
+// is the question "what is this wallet actually doing" reduced to a column of
+// numbers.
+export function tradeFlow(swaps, prices) {
+  const by = new Map();
+  for (const s of swaps) {
+    const id = `${s.symbol}@${s.contract}`;
+    let r = by.get(id);
+    if (!r) { r = { id, symbol: s.symbol, contract: s.contract, bought: 0, sold: 0, trades: 0, last: 0 }; by.set(id, r); }
+    if (s.side === 'bought') r.bought += s.amount; else r.sold += s.amount;
+    r.trades++;
+    if (s.ts > r.last) r.last = s.ts;
+  }
+  const out = [];
+  for (const r of by.values()) {
+    const px = prices?.get(r.id)?.usd ?? null;
+    const net = r.bought - r.sold;
+    out.push({
+      ...r, net, priced: px != null,
+      netUsd: px != null ? net * px : null,
+      turnoverUsd: px != null ? (r.bought + r.sold) * px : null,
+    });
+  }
+  // Biggest movement first, priced where we can and by token amount where we
+  // cannot — a wallet's largest position change is the thing worth seeing.
+  out.sort((a, b) => Math.abs(b.netUsd ?? 0) - Math.abs(a.netUsd ?? 0) || Math.abs(b.net) - Math.abs(a.net));
   return out;
 }
