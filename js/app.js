@@ -15,7 +15,7 @@ import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
-import { accountInfo, valueBalances, accountSwaps, tradeFlow } from './account.js';
+import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -223,6 +223,14 @@ const acctLink = name => `<span class="xlink acct-link" data-acct="${esc(name)}"
 const tokLink = (id, label = null) => `<span class="xlink" data-tokid="${esc(id)}" title="Open ${esc(label || String(id).split('@')[0])}">${esc(label || String(id).split('@')[0])}</span>`;
 const poolLink = (dex, id, label) => `<span class="xlink" data-poolkey="${esc(dex)}:${esc(id)}" title="Open this pool">${label}</span>`;
 const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)}`;
+
+// A pool id as a pair anyone can read. A route printed as "1252 → 314" is a
+// list of database keys; the same route as "CHEESE/WAX → WAX/WAXUSDC" is a
+// sentence about what happened.
+const poolPairName = pid => {
+  const p = state.pools.find(x => x.dex === 'alcor' && String(x.id) === String(pid));
+  return p ? `${p.symA}/${p.symB}` : `#${pid}`;
+};
 
 // A row is the least specific thing under the cursor. When a click lands on a
 // token, pool, farm or account link inside it, that link owns the click and the
@@ -1875,6 +1883,7 @@ async function renderTradeFlow(account) {
   if (!stillWallet(account)) return;
   if (!swaps.length) return;
   const rows = tradeFlow(swaps, state.prices).filter(r => r.trades > 0).slice(0, 14);
+  const trades = tradeList(swaps, { limit: 60 });
   if (!rows.length) return;
 
   const netUsd = rows.reduce((a, r) => a + (r.netUsd || 0), 0);
@@ -1904,6 +1913,30 @@ async function renderTradeFlow(account) {
         }).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">Net ${usd(netUsd)} across everything priced.
         Both legs of each swap, so a token bought with another shows on both rows.</p>
+    </div></div>
+
+    <div class="section"><h3>Recent trades <span class="dim">&mdash; newest first</span></h3>
+    <div class="card"><div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+      <thead><tr><th>When</th><th>Sold</th><th>Got</th><th class="r">Worth</th><th>Route</th></tr></thead>
+      <tbody>${trades.map(t => {
+        const sold = t.sold.map(x => `${qty(x.amount)} ${esc(x.symbol)}`).join(' + ');
+        const got = t.bought.map(x => `${qty(x.amount)} ${esc(x.symbol)}`).join(' + ');
+        // Priced off whichever side we can price. A trade is one value, and
+        // quoting both sides invites the reader to add them up.
+        const val = [...t.sold, ...t.bought]
+          .map(x => { const px = state.prices.get(`${x.symbol}@${x.contract}`)?.usd; return px != null ? x.amount * px : null; })
+          .find(v => v != null) ?? null;
+        return `<tr>
+          <td class="num dim"><a href="${trxUrl(t.trx)}" target="_blank" rel="noopener" title="${new Date(t.ts).toISOString()}">${ago(new Date(t.ts).toISOString())} &nearr;</a></td>
+          <td class="neg">${sold}</td>
+          <td class="pos">${got}</td>
+          <td class="r num ${val != null ? '' : 'dim'}">${val != null ? usd(val) : '—'}</td>
+          <td class="route-cell dim" title="${t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : ''}">${
+            t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : `<span class="dim">${esc(t.venue)}</span>`}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${trades.length} of ${swaps.length.toLocaleString()} legs, paired by transaction.
+        A leg with no counterpart is a deposit or a payout, not a trade.</p>
     </div></div>`;
   fillMarks(box);
 }

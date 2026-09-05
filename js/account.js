@@ -151,3 +151,29 @@ export function tradeFlow(swaps, prices) {
   out.sort((a, b) => Math.abs(b.netUsd ?? 0) - Math.abs(a.netUsd ?? 0) || Math.abs(b.net) - Math.abs(a.net));
   return out;
 }
+
+// The trades themselves, newest first.
+//
+// accountSwaps returns transfer LEGS: one row for what went to the venue and
+// one for what came back. A person does not think in legs — they think "I sold
+// 400 CHEESE and got 1.2 WAX" — and those two rows share a transaction id, so
+// pairing on it turns a feed of movements back into a list of trades.
+//
+// A route can pay out in more than one leg when the venue splits it, so both
+// sides are lists rather than single values.
+export function tradeList(swaps, { limit = 60 } = {}) {
+  const byTrx = new Map();
+  for (const s of swaps) {
+    let t = byTrx.get(s.trx);
+    if (!t) { t = { trx: s.trx, ts: s.ts, venue: s.venue, sold: [], bought: [], route: null }; byTrx.set(s.trx, t); }
+    if (s.ts < t.ts) t.ts = s.ts;
+    if (s.side === 'sold') { t.sold.push(s); if (s.route) t.route = s.route; }
+    else t.bought.push(s);
+  }
+  return [...byTrx.values()]
+    // A leg with no counterpart is a deposit or a payout we could not pair —
+    // real, but not a trade, and showing it as one would invent a direction.
+    .filter(t => t.sold.length && t.bought.length)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, limit);
+}
