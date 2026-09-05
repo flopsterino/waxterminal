@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildCreatePool, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
@@ -4891,6 +4891,105 @@ const aprWhy = st => st === 'no_stake' ? 'nobody has staked, so there is no rate
   : 'not computed yet';
 
 
+
+// ------------------------------------------------------- CREATE A FARM ------
+// Paying people to provide liquidity in a pool you care about.
+//
+// Two signatures, and the reason is in tx.js: the funding transfer has to name
+// the incentive in its memo, and that id does not exist until the first action
+// has run. Predicting it and being wrong funds a stranger's farm irreversibly,
+// so this creates it, reads back the id the chain actually assigned, and then
+// funds that one.
+function renderCreateFarm(box, pool) {
+  if (!box || !pool) return;
+  if (box.dataset.open === '1') { box.dataset.open = '0'; box.innerHTML = ''; return; }
+  box.dataset.open = '1';
+
+  const toks = [...state.tokens.values()].filter(t => t.symbol && t.contract)
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  let days = 30;
+  box.innerHTML = `<div class="card"><h3>Create a farm on ${esc(pool.symA)}/${esc(pool.symB)}</h3>
+    <div class="filters" style="display:grid;gap:8px;margin:0">
+      <label>Reward token<select id="nfTok">${toks.map(t =>
+        `<option value="${esc(t.id)}"${t.id === pool.tokenA ? ' selected' : ''}>${esc(t.symbol)} &mdash; ${esc(t.contract)}</option>`).join('')}</select></label>
+      <label>Total to pay out<input id="nfAmt" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+    </div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <span class="sub">Over</span>
+      ${[[30, '30 days'], [90, '90 days'], [180, '180 days'], [360, '360 days']].map(([v, l]) =>
+        `<button class="chip" data-nfd="${v}"${v === 30 ? ' aria-pressed="true"' : ''}>${l}</button>`).join('')}
+    </div>
+    <div id="nfOut" style="margin-top:10px"></div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <button class="btn ghost" id="nfClose">Cancel</button>
+      <button class="btn" id="nfGo">Create</button>
+    </div></div>`;
+
+  const q = sel => box.querySelector(sel);
+  const paint = () => {
+    const t = state.tokens.get(q('#nfTok').value);
+    const amt = num(q('#nfAmt').value) || 0;
+    const out = q('#nfOut');
+    if (!t || !(amt > 0)) { out.innerHTML = '<p class="sub" style="margin:0">Pick a token and how much to pay out in total.</p>'; return; }
+    const px = state.prices.get(t.id)?.usd ?? null;
+    const perDay = amt / days;
+    const staked = pool.tvlReal || 0;
+    // The rate it would advertise on day one, against what is in the pool now.
+    const apr = (px != null && staked > 0) ? (perDay * px * 365 / staked) * 100 : null;
+    out.innerHTML = `<div class="planline"><span class="k">Pays</span><span>${qty(perDay)} ${esc(t.symbol)} a day for ${days} days${
+      px != null ? ` <span class="dim">&mdash; ${usd(perDay * px)} a day</span>` : ''}</span></div>
+      ${apr != null ? `<div class="planline"><span class="k">Would advertise</span><span><b>${pct(apr)}</b>
+        <span class="dim">&mdash; against the ${usd(staked)} in the pool today, before anyone joins</span></span></div>` : ''}
+      <div class="planline"><span class="k">Signs</span><span>two &mdash; create it, then fund it once the chain has given it an id</span></div>`;
+  };
+
+  box.querySelectorAll('[data-nfd]').forEach(b => b.onclick = () => {
+    days = Number(b.dataset.nfd);
+    box.querySelectorAll('[data-nfd]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    paint();
+  });
+  q('#nfTok').onchange = paint; q('#nfAmt').oninput = paint;
+  q('#nfClose').onclick = () => { box.dataset.open = '0'; box.innerHTML = ''; };
+  q('#nfGo').onclick = async () => {
+    const out = q('#nfOut');
+    const btn = q('#nfGo');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const t = state.tokens.get(q('#nfTok').value);
+    const amt = num(q('#nfAmt').value) || 0;
+    btn.disabled = true;
+    try {
+      const me = wallet.account();
+      // Which ids exist before we add one, so the new row cannot be confused
+      // with somebody else's.
+      const before = await findNewFarm({ poolId: pool.id, me }).catch(() => null);
+      const since = before ? Number(before.id) : 0;
+
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      const c = buildCreateFarm({ poolId: pool.id, rewardToken: t.id, days, me });
+      await wallet.transact(c.actions, { verify: true });
+
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading back which id the chain gave it…</span></div>';
+      let row = null;
+      for (let i = 0; i < 8 && !row; i++) {
+        await new Promise(r => setTimeout(r, 1200));
+        row = await findNewFarm({ poolId: pool.id, me, since }).catch(() => null);
+      }
+      if (!row) throw new Error('The farm was created but its id has not appeared yet. Reopen this panel in a minute to fund it.');
+
+      out.innerHTML = `<div class="loading"><span class="spinner"></span><span>Farm #${row.id} created. Waiting for your wallet to fund it…</span></div>`;
+      const f = buildFundFarm({ incentiveId: row.id, rewardToken: t.id, amount: amt, me });
+      const r2 = await wallet.transact(f.actions, { verify: true });
+
+      out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)">
+        <b>Live.</b> Farm #${row.id} pays ${qty(amt)} ${esc(t.symbol)} over ${days} days on ${esc(pool.symA)}/${esc(pool.symB)}.
+        <br><a class="mono" style="font-size:11px" href="${trxUrl(r2.id)}" target="_blank" rel="noopener">${r2.id.slice(0, 16)}… &nearr;</a></div>`;
+    } catch (e) {
+      out.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`;
+    } finally { btn.disabled = false; }
+  };
+  paint();
+}
+
 // ------------------------------------------------------- CREATE A POOL ------
 // The market that does not exist yet.
 //
@@ -5527,6 +5626,7 @@ async function openPool(key) {
       <span id="poolStar"></span>
       <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
       <button class="btn" id="poolAddLiq">Add liquidity</button>
+      <button class="btn ghost" id="poolNewFarm">Create a farm</button>
       <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
     </div>
     <div class="stats">
@@ -5553,6 +5653,7 @@ async function openPool(key) {
       <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
+    <div id="newFarmBox" style="margin-top:12px"></div>
     <div id="farmParts" style="margin-top:12px"></div>
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
 
@@ -5618,6 +5719,9 @@ async function openPool(key) {
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     $('#zapAmt')?.focus();
   };
+
+  const nf = $('#poolNewFarm');
+  if (nf) nf.onclick = () => renderCreateFarm($('#newFarmBox'), p);
 
   // The farm half of this market, if it has one. Same page, no second trip.
   renderFarmParts(seedApr(farmGroups()).find(x => x.key === key), $('#farmParts')).catch(() => {});

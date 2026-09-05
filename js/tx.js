@@ -1104,3 +1104,75 @@ export function buildCreatePool({ tokenA, tokenB, price, feeBps, me = account(),
     }],
   };
 }
+
+// ------------------------------------------------------------- new farm -----
+// Paying people to provide liquidity in your pool.
+//
+// TWO transactions, and not because it is tidier. The funding transfer's memo
+// has to name the incentive it is funding — `incentreward#4165` — and that id
+// does not exist until newincentive has executed. Predicting it means reading
+// the table, adding one, and hoping nobody creates an incentive in the same
+// block; get it wrong and the tokens fund a stranger's farm irreversibly.
+//
+// So: create it, read back which id the chain actually gave you, then fund
+// that. The shape of both is taken from a real transaction on chain
+// (966e113a…, 4 September) rather than from the ABI alone, because the ABI does
+// not say that the declared quantity is zero or what the memo looks like.
+const ALCOR_MIN_FARM_DAYS = 1;
+
+export function buildCreateFarm({ poolId, rewardToken, days, me = account(), auth = null }) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const t = tokenMeta(rewardToken);
+  if (!t?.contract) throw new Error('Pick a reward token this terminal knows.');
+  const d = Math.round(Number(days));
+  if (!(d >= ALCOR_MIN_FARM_DAYS)) throw new Error('A farm has to run for at least a day.');
+  return {
+    actions: [{
+      account: ALCOR, name: 'newincentive', authorization: auth,
+      data: {
+        creator: me,
+        poolId: Number(poolId),
+        // Symbol and precision only. The amount is the funding transfer's job.
+        rewardToken: { quantity: asset(0, t.symbol, t.decimals), contract: t.contract },
+        duration: d * 86400,
+      },
+    }],
+    days: d, symbol: t.symbol,
+  };
+}
+
+// Which incentive the chain just made. Newest first, matched on creator and
+// pool, so a second person creating one in the same block cannot be mistaken
+// for yours.
+export async function findNewFarm({ poolId, me = account(), since = 0 }) {
+  const { getRows } = await import('./chain.js');
+  const d = await getRows(ALCOR, ALCOR, 'incentives', { limit: 30, reverse: true });
+  const who = String(me);
+  for (const r of d.rows || []) {
+    if (String(r.creator) !== who) continue;
+    if (String(r.poolId) !== String(poolId)) continue;
+    if (Number(r.id) <= since) continue;
+    return r;
+  }
+  return null;
+}
+
+export function buildFundFarm({ incentiveId, rewardToken, amount, me = account(), auth = null }) {
+  me = signer(me);
+  auth = auth || [{ actor: me, permission: 'active' }];
+  const t = tokenMeta(rewardToken);
+  if (!(amount > 0)) throw new Error('Enter how much to fund it with.');
+  if (parseFloat(dec(amount, t.decimals)) <= 0) throw new Error(`Below one ${t.symbol} unit.`);
+  if (!(Number(incentiveId) > 0)) throw new Error('No incentive id to fund.');
+  return {
+    actions: [{
+      account: t.contract, name: 'transfer', authorization: auth,
+      data: {
+        from: me, to: ALCOR,
+        quantity: asset(amount, t.symbol, t.decimals),
+        memo: `incentreward#${Number(incentiveId)}`,
+      },
+    }],
+  };
+}
