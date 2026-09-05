@@ -692,7 +692,7 @@ function renderOverview() {
   const withApr = groups.filter(g => g.aprAt != null && !g.tooSmall && g.aprAt < 500);
 
   $('#ovStats').innerHTML = `
-    <div class="stat"><span class="v">${usd(realisable)}</span><span class="k">pooled value</span><span class="sub">${usd(nominal)} at face value &middot; ${(selfBackedVal / nominal * 100).toFixed(0)}% of that in tokens that mostly back each other</span></div>
+    <div class="stat"><span class="v">${usd(realisable)}</span><span class="k">pooled value</span><span class="sub">${usd(nominal)} at face value &middot; ${nominal > 0 ? (selfBackedVal / nominal * 100).toFixed(0) + '% of that in tokens that mostly back each other' : 'nothing priced yet'}</span></div>
     <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
@@ -1283,10 +1283,20 @@ async function renderUnlocks() {
   if (unlocksDrawn) return;
   const box = $('#unlockTable'), sec = $('#unlockSection');
   if (!box || !sec) return;
-  let rows = [];
-  try { rows = await upcomingUnlocks({ limit: 25 }); } catch { return; }
-  if (!rows.length) return;
+  // Claim it before the await, not after: two quick clicks on the tab fired two
+  // full waxdaolocker reads.
   unlocksDrawn = true;
+  let rows = [];
+  try { rows = await upcomingUnlocks({ limit: 25 }); }
+  catch {
+    // A locker read that failed is not the same as nothing unlocking, and
+    // hiding both said the same thing.
+    sec.hidden = false;
+    box.innerHTML = '<div class="chart-empty">Could not read the lock table just now.</div>';
+    unlocksDrawn = false;
+    return;
+  }
+  if (!rows.length) { sec.hidden = false; box.innerHTML = '<div class="chart-empty">Nothing unlocks in the period we track.</div>'; return; }
   sec.hidden = false;
 
   const priced = id => state.prices.get(id)?.usd ?? null;
@@ -1608,6 +1618,10 @@ function renderFarms() {
       g.vol24 = g.pool?.vol24 ?? null;
       g.vol7d = g.pool?.vol7d ?? null;
       g.tvlReal = g.pool?.tvlReal ?? null;
+      // Emissions outrunning the pool. The rate is real and the token cannot
+      // survive paying it, which is worth seeing and not worth ranking first.
+      g.runaway = g.pool?.tvlReal > 0 && g.rewardRealDay > g.pool.tvlReal * 0.5;
+      g.tooSmall = false;
       g.turnover = g.pool?.turnover ?? null;
       g.change24 = g.pool?.change24 ?? null;
       g.bornAt = g.pool?.bornAt ?? null;
@@ -1858,6 +1872,7 @@ async function renderTradeFlow(account) {
   box.innerHTML = '';
   let swaps = [];
   try { swaps = await accountSwaps(account, { hours: 168 }); } catch { return; }
+  if (!stillWallet(account)) return;
   if (!swaps.length) return;
   const rows = tradeFlow(swaps, state.prices).filter(r => r.trades > 0).slice(0, 14);
   if (!rows.length) return;
@@ -1959,6 +1974,7 @@ async function renderWalletResources(account) {
 
   let r;
   try { r = await resourcesOf(account); } catch { out.innerHTML = ''; return; }
+  if (!stillWallet(account)) return;
 
   const cheese = state.tokens.get('CHEESE@cheeseburger') || { symbol: 'CHEESE', contract: 'cheeseburger', decimals: 4 };
   const meter = (label, frac, detail) => `
@@ -2071,9 +2087,12 @@ async function renderWalletResources(account) {
   $('#pwGo').onclick = async () => {
     const box = $('#pwOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-    const built = pwTok === 'wax'
-      ? await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
-      : buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
+    let built;
+    try {
+      built = pwTok === 'wax'
+        ? await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
+        : buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
+    } catch (e) { box.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; return; }
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span>`} to power up <span class="mono">${esc(account)}</span>.
       <br><span class="dim">One transfer. The service burns the CHEESE.</span>
@@ -2339,6 +2358,7 @@ async function renderFarmAccrual(account, positions, joined) {
       : 'not growing — every farm here has ended';
   };
   paint();
+  stopAccrual();                       // whatever started while we were awaiting
   accrualTimer = setInterval(paint, 1000);
   lockForeign(account);
 }
@@ -2351,6 +2371,7 @@ async function renderEarned(account) {
   let hist;
   try { hist = await earningsHistory(account); }
   catch (e) { out.innerHTML = `<div class="err">Could not read your payout history: ${esc(e.message)}</div>`; return; }
+  if (!stillWallet(account)) return;
 
   if (!hist.rows.length) {
     out.innerHTML = `<div class="empty">No LP fees, farm rewards or WaxDAO claims found for <span class="mono">${esc(account)}</span>.</div>`;
@@ -2540,6 +2561,7 @@ async function renderWalletBalances(account) {
 
   let info;
   try { info = await accountInfo(account); } catch { out.innerHTML = ''; return; }
+  if (!stillWallet(account)) return;
   const v = valueBalances(info.balances, state.prices, state.depth);
   const priced = v.rows.filter(r => r.usd != null);
 
@@ -2658,6 +2680,14 @@ function reviewSend(account, rows) {
 
 // Which account the wallet view is currently showing, so entering it again
 // does not re-sweep positions that are already on screen.
+// Is this still the account on screen? Every wallet panel resolves on its own
+// schedule and writes into shared containers, so looking up one account and
+// then another before the first finishes let the slower reply land under the
+// newer heading — the Balances card showing one wallet's tokens beside the
+// other's name, with a Send form built from the wrong rows. walletShown existed
+// for exactly this and only one caller ever read it.
+const stillWallet = acct => walletShown === acct;
+
 let walletShown = null;
 // An interrupted compound reopens on the wallet now, so the record has to
 // survive the navigation and be picked up once the cards exist.
@@ -4733,12 +4763,12 @@ async function openToken(id) {
     if (stale()) return;
     const box = $('#tokLps'); if (!box) return;
     if (!lps.length) { box.innerHTML = '<div class="chart-empty">No positions found.</div>'; return; }
-    const tot = lps.reduce((s, l) => s + l.amount, 0);
+    const tot = lps.reduce((s, l) => s + l.amount, 0) || 0;
     box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px"><tbody>${
       lps.slice(0, 10).map((l, i) => `<tr><td class="rank">${i + 1}</td>
         <td class="mono">${acctLink(l.account)}</td>
         <td class="r num">${qty(l.amount)}</td>
-        <td class="r num dim">${(l.amount / tot * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>
+        <td class="r num dim">${tot > 0 ? (l.amount / tot * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">${lps.length} accounts supply ${esc(t.symbol)}.</p>`;
   }).catch(() => { const b = $('#tokLps'); if (b) b.innerHTML = '<div class="chart-empty">Positions unavailable.</div>'; });
 
@@ -4955,6 +4985,13 @@ function renderCreateFarm(box, pool) {
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     const t = state.tokens.get(q('#nfTok').value);
     const amt = num(q('#nfAmt').value) || 0;
+    // Check BEFORE the first signature. Everything after newincentive is a
+    // second transaction, so a validation failure between them leaves a farm on
+    // chain that can never be funded and cannot be removed.
+    if (!t) { out.innerHTML = '<div class="err">Pick a reward token.</div>'; return; }
+    if (!(amt > 0)) { out.innerHTML = '<div class="err">Enter how much to pay out in total, before creating it. The farm cannot be funded afterwards if this is blank.</div>'; return; }
+    try { buildFundFarm({ incentiveId: 1, rewardToken: t.id, amount: amt, me: wallet.account() }); }
+    catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
     btn.disabled = true;
     try {
       const me = wallet.account();
@@ -5611,11 +5648,19 @@ async function renderTacoFarmMine(g, me, box) {
 }
 
 // ---------------------------------------------------------- POOL DETAIL -----
+let poolGen = 0;
 async function openPool(key) {
   const [dex, id] = key.split(':');
   const p = state.pools.find(x => x.dex === dex && x.id === id);
   if (!p) return;
   show('pool', key);
+  // Every panel below lands on its own schedule and finds its element by id,
+  // which the NEXT pool reuses. Without this, opening 11051 and then 314 before
+  // the ticks read finishes writes 11051's depth and lock figures into 314's
+  // page, under 314's own column headers. openToken has had this guard all
+  // along; openPool did not.
+  const gen = ++poolGen;
+  const stale = () => gen !== poolGen;
   const farms = state.farms.filter(f => f.poolDex === dex && f.poolId === id && !f.ended);
 
   $('#poolDetail').innerHTML = `
@@ -5667,6 +5712,7 @@ async function openPool(key) {
       if (!box) return;
       try {
         const rows = await getAllRows('swap.alcor', String(p.id), 'ticks');
+        if (stale()) return;
         const bands = bandValues(liquidityBands(rows), p);
         const price = p.priceAB;
         box.innerHTML = '';
@@ -5695,6 +5741,7 @@ async function openPool(key) {
   // signal and says so.
   if (p.dex === 'taco' && p.lpSupply > 0) {
     lockedSupply().then(m => {
+      if (stale()) return;
       const lk = m.get(`${p.id}@swap.taco`);
       const el = $('#poolLock');
       if (!el || !lk || !(lk.locked > 0)) return;
@@ -5808,6 +5855,7 @@ async function openPool(key) {
     // quiet pool and then reports that as "no swaps", which is a statement
     // about the feed rather than about the pool.
     deltasP.then(rows => {
+      if (stale()) return;
       const box = $('#poolSwaps');
       const sw = swapsFromDeltas(rows).reverse();
       if (!sw.length) { box.innerHTML = '<div class="empty">No trades in the window the history node keeps.</div>'; return; }

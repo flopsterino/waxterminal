@@ -48,7 +48,18 @@ const signer = me => {
   return String(who);
 };
 
-const tokenMeta = id => state.tokens.get(id) || { symbol: id.split('@')[0], contract: id.split('@')[1], decimals: 8 };
+// A token this terminal has never seen gets eight decimals invented for it,
+// which is right for most WAX tokens and wrong for the rest — and a wrong
+// precision is only discovered by the chain rejecting a transfer the holder has
+// already signed. The fallback stays, because a display path would rather guess
+// than break, but it says it guessed so the money paths can refuse.
+const tokenMeta = id => state.tokens.get(id)
+  || { symbol: id.split('@')[0], contract: id.split('@')[1], decimals: 8, guessed: true };
+const knownToken = id => {
+  const t = tokenMeta(id);
+  if (t.guessed) throw new Error(`This terminal has never seen ${t.symbol}@${t.contract}, so it cannot be sure of its precision. Open its pool first.`);
+  return t;
+};
 const priceOf = id => state.prices.get(id)?.usd ?? null;
 
 // --------------------------------------------------------------- routing ----
@@ -1077,8 +1088,7 @@ export function sqrtPriceX64(price, decA, decB) {
 export function buildCreatePool({ tokenA, tokenB, price, feeBps, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
-  const x = tokenMeta(tokenA), y = tokenMeta(tokenB);
-  if (!x?.contract || !y?.contract) throw new Error('Pick two tokens this terminal knows.');
+  const x = knownToken(tokenA), y = knownToken(tokenB);
   if (tokenA === tokenB) throw new Error('A pool needs two different tokens.');
   const [a, b] = orderPair(x, y);
   const fee = Number(feeBps);
@@ -1123,8 +1133,7 @@ const ALCOR_MIN_FARM_DAYS = 1;
 export function buildCreateFarm({ poolId, rewardToken, days, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
-  const t = tokenMeta(rewardToken);
-  if (!t?.contract) throw new Error('Pick a reward token this terminal knows.');
+  const t = knownToken(rewardToken);
   const d = Math.round(Number(days));
   if (!(d >= ALCOR_MIN_FARM_DAYS)) throw new Error('A farm has to run for at least a day.');
   return {
@@ -1161,7 +1170,7 @@ export async function findNewFarm({ poolId, me = account(), since = 0 }) {
 export function buildFundFarm({ incentiveId, rewardToken, amount, me = account(), auth = null }) {
   me = signer(me);
   auth = auth || [{ actor: me, permission: 'active' }];
-  const t = tokenMeta(rewardToken);
+  const t = knownToken(rewardToken);
   if (!(amount > 0)) throw new Error('Enter how much to fund it with.');
   if (parseFloat(dec(amount, t.decimals)) <= 0) throw new Error(`Below one ${t.symbol} unit.`);
   if (!(Number(incentiveId) > 0)) throw new Error('No incentive id to fund.');
