@@ -1053,3 +1053,27 @@ html, body { max-width: 100%; overflow-x: clip; }
   .pc-figs { grid-template-columns: 1fr; }
   .stat .v { font-size: 17px; }
 }
+
+/* --------------------------------------------------------------- live tape --
+   A trade tape reads at a glance or not at all: the side is a coloured word,
+   the newest row flashes once as it arrives, and a dot says the feed is alive. */
+.livedot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
+  background: var(--good); box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent);
+  animation: livepulse 1.8s ease-out infinite; vertical-align: middle; }
+.livedot.down { background: var(--muted); animation: none; }
+@keyframes livepulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 55%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.side { display: inline-block; min-width: 38px; text-align: center; font-size: 10.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; }
+.side.buy  { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+.side.sell { color: var(--bad);  background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.livetape tr.flash td { animation: tapeflash 1.6s ease-out; }
+@keyframes tapeflash { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } to { background: transparent; } }
+.livetape td.acct-cell { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The live tape is the one table where the first two columns are not a name,
+   so it opts out of the frozen-pair treatment the market tables use. */
+.livetape table th:first-child, .livetape table td:first-child,
+.livetape table th:nth-child(2), .livetape table td:nth-child(2) {
+  position: static; width: auto; min-width: 0; max-width: none; }
+.livetape table th:nth-child(2)::after, .livetape table td:nth-child(2)::after { display: none; }
+@media (prefers-reduced-motion: reduce) { .livedot, .livetape tr.flash td { animation: none; } }

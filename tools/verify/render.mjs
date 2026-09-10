@@ -120,4 +120,8 @@ for (const arg of process.argv.slice(3).filter(a => /^--(click|toggle|type)=/.te
   await new Promise(r => setTimeout(r, Number(process.env.CLICK_WAIT || 12) * 1000));
 }
 
-console.log(document.documentElement.outerHTML);
+// A live page keeps timers running by design — the trade tape polls every few
+// seconds — and that holds a one-shot render open forever. Print and leave, but
+// only once the write has drained: exiting straight after a large console.log
+// into a pipe cuts the tail of the document off.
+process.stdout.write(document.documentElement.outerHTML + '\n', () => process.exit(0));

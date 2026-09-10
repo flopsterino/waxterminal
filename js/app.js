@@ -13,6 +13,7 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
+import { watchPoolTrades, tradeSide, tradePrice } from './live.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
@@ -623,6 +624,9 @@ function redrawCurrent() {
 }
 
 function show(v, arg = null) {
+  // A live tape polls Alcor for the pool on screen. Leaving that pool must stop
+  // it, or every market ever opened keeps a request going every seven seconds.
+  if (stopLive && !(v === 'pool' && arg)) { stopLive(); stopLive = null; }
   // Pools and farms are one table now. Old links, bookmarks and the partner's
   // own config still say "pools", and they should still arrive somewhere.
   if (v === 'pools') v = 'farms';
@@ -5765,6 +5769,67 @@ async function renderTacoFarmMine(g, me, box) {
   return lp.valueUsd;
 }
 
+
+// ------------------------------------------------------------- LIVE TAPE ----
+// The market's trades as they happen, the way a DexScreener pair page shows
+// them: newest on top, buys green and sells red, price, both amounts, the
+// dollar value, who did it and a link to the transaction. See live.js for why
+// it polls one pool, gently, and only while you can see it.
+let stopLive = null;
+function startLiveTape(p, stale) {
+  if (stopLive) { stopLive(); stopLive = null; }
+  const box = $('#poolSwaps');
+  if (!box) return;
+  const pxUsdOf = price => (p.priceUsdB != null ? price * p.priceUsdB : null);
+  const row = (x, fresh) => {
+    const side = tradeSide(x);
+    const a = Math.abs(Number(x.tokenA)), b = Math.abs(Number(x.tokenB));
+    const price = tradePrice(x, p.decA, p.decB);
+    const pu = price != null ? pxUsdOf(price) : null;
+    const who = x.sender === x.recipient ? x.sender : `${x.sender}`;
+    return `<tr class="${fresh ? 'flash' : ''}">
+      <td class="num dim" data-ts="${Date.parse(x.time)}">${ago(x.time)}</td>
+      <td><span class="side ${side}">${side === 'buy' ? 'Buy' : 'Sell'}</span></td>
+      <td class="r num">${pu != null ? usdPrice(pu) : (price != null ? sigfig(price) : '—')}</td>
+      <td class="r num ${side === 'buy' ? 'pos' : 'neg'}">${qty(a)}</td>
+      <td class="r num">${qty(b)}</td>
+      <td class="r num">${x.totalUSDVolume != null ? usd(Number(x.totalUSDVolume)) : '—'}</td>
+      <td class="acct-cell">${acctLink(who)}</td>
+      <td class="r"><a class="dim" href="${trxUrl(x.trx_id)}" target="_blank" rel="noopener" title="Open the transaction">&nearr;</a></td>
+    </tr>`;
+  };
+  const head = `<thead><tr><th>Age</th><th>Type</th><th class="r">Price</th>
+    <th class="r">${esc(p.symA)}</th><th class="r">${esc(p.symB)}</th><th class="r">USD</th><th>Maker</th><th></th></tr></thead>`;
+  let drawn = false;
+  const paint = (fresh, all) => {
+    if (stale()) { stopLive?.(); return; }
+    if (!all.length) { box.innerHTML = '<div class="empty">No trades on this pool yet.</div>'; return; }
+    const freshIds = new Set(drawn ? fresh.map(x => x.trx_id || x._id) : []);
+    box.innerHTML = `<div class="tablewrap livetape" style="max-height:360px;border:0"><table>${head}
+      <tbody>${all.map(x => row(x, freshIds.has(x.trx_id || x._id))).join('')}</tbody></table></div>`;
+    drawn = true;
+  };
+  const dot = $('#liveDot'), st = $('#liveState');
+  stopLive = watchPoolTrades(p.id, paint, {
+    onState: s => {
+      if (stale()) return;
+      if (dot) dot.classList.toggle('down', !s.ok);
+      if (st) st.textContent = s.ok ? '' : `paused, retrying in ${Math.round(s.retryIn / 1000)}s`;
+    },
+  });
+  // The ages tick without refetching anything.
+  const ages = setInterval(() => {
+    if (stale()) { clearInterval(ages); return; }
+    box.querySelectorAll('td[data-ts]').forEach(td => { td.textContent = ago(new Date(Number(td.dataset.ts)).toISOString()); });
+  }, 5000);
+  const prevStop = stopLive;
+  stopLive = () => { prevStop(); clearInterval(ages); };
+}
+
+// A token worth a fraction of a cent needs its significant figures, not two
+// decimals: "$0.00" is what a price looks like when it has not been read.
+const usdPrice = v => (v >= 1 ? usd(v) : v > 0 ? '$' + (v >= 0.01 ? v.toFixed(4) : v.toPrecision(3)) : '—');
+
 // ---------------------------------------------------------- POOL DETAIL -----
 let poolGen = 0;
 async function openPool(key) {
@@ -5807,7 +5872,9 @@ async function openPool(key) {
           <button class="chip" id="poolFlip" title="Show the price the other way round">&#8646;</button>
           ${intervalChips('poolPrice')}
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
-      <div class="card"><h3>Recent swaps here</h3><div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading feed…</span></div></div></div>
+      <div class="card"><h3>${p.dex === 'alcor' ? '<span class="livedot" id="liveDot"></span>Live trades' : 'Recent swaps here'}
+        <span class="dim" id="liveState" style="margin-left:auto;font-weight:400;font-size:11px"></span></h3>
+        <div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div></div>
     </div>
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Where the liquidity sits
       <span class="dim">&mdash; ${esc(p.symB)} per ${esc(p.symA)}</span></h3>
@@ -5966,13 +6033,14 @@ async function openPool(key) {
     const flip = $('#poolFlip');
     if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
 
-    const deltasP = chartDeltas(p, 3600);
+    const deltasP = p.dex === 'alcor' ? null : chartDeltas(p, 3600);
+    if (p.dex === 'alcor') startLiveTape(p, stale);
 
     // The tape comes from the same rows, not from the swap feed. Filtering the
     // chain-wide logswap firehose down to one pool finds almost nothing for a
     // quiet pool and then reports that as "no swaps", which is a statement
     // about the feed rather than about the pool.
-    deltasP.then(rows => {
+    if (deltasP) deltasP.then(rows => {
       if (stale()) return;
       const box = $('#poolSwaps');
       const sw = swapsFromDeltas(rows).reverse();
