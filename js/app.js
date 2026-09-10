@@ -1662,6 +1662,7 @@ function renderFarms() {
         turnover: p.turnover ?? null, change24: p.change24 ?? null, bornAt: p.bornAt ?? null,
         apr: null, aprReal: null, aprAt: null, aprStatus: 'no_farm',
         feeApr: fa, tokenCount: 0, newestId: 0, endsAt: null, feesOnly: true,
+        runaway: false, tooSmall: false,
         // A pool without a farm still has providers, and the nightly pass
         // counted them. Leaving this off put a dash in the column for two
         // thirds of the table.
@@ -1682,9 +1683,13 @@ function renderFarms() {
   // A missing value is not a small one. Sorting nulls as -Infinity put every
   // farm we cannot value at the top of a descending APR sort, which is the
   // opposite of useful — they sink to the bottom whichever way you sort.
+  // Coerced, because only farmed rows ever set these. `undefined !== false` is
+  // true, so an unfarmed pool compared as "not too small" against every farm and
+  // all 853 farms sank below the 400-row cap — the whole Farm APR column read
+  // "—" for weeks while every farm was sitting in the array, just past the end.
   rows.sort((a, b) => {
-    if (a.tooSmall !== b.tooSmall) return a.tooSmall ? 1 : -1;
-    if (a.runaway !== b.runaway) return a.runaway ? 1 : -1;
+    if (!!a.tooSmall !== !!b.tooSmall) return a.tooSmall ? 1 : -1;
+    if (!!a.runaway !== !!b.runaway) return a.runaway ? 1 : -1;
     const x = a[farmFilters.sort], y = b[farmFilters.sort];
     const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
     if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0);

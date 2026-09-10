@@ -1291,13 +1291,24 @@ export async function loadHistory({ months = 24 } = {}) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     names.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
-  const files = await Promise.all(names.map(async n => {
+  const one = async n => {
     try {
       const r = await fetch(`data/history/${n}.ndjson`, { cache: 'no-cache' });
-      if (!r.ok) return [];
+      if (!r.ok) return null;
       return (await r.text()).trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    } catch { return []; }
-  }));
+    } catch { return null; }
+  };
+  // The record is contiguous from the month it started, so walking back stops
+  // at the first missing month. Asking for all 24 at once meant 22 404s on
+  // every page load while the history was two months old. The current month is
+  // allowed to be missing: on the 1st, before the first run, it does not exist.
+  const files = [];
+  for (let i = 0; i < names.length; i += 4) {
+    const batch = await Promise.all(names.slice(i, i + 4).map(one));
+    let gap = false;
+    batch.forEach((rows, j) => { if (rows) files.push(rows); else if (i + j > 0) gap = true; });
+    if (gap) break;
+  }
   return files.flat().sort((a, b) => a.at - b.at);
 }
 

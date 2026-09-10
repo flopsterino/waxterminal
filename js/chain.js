@@ -81,9 +81,15 @@ async function once(endpoint, body, host, timeout = REQ_TIMEOUT) {
   let res;
   await pace();
   try {
+    // text/plain, not application/json. A JSON content type makes every read a
+    // "non-simple" cross-origin request, so the browser first sends an OPTIONS
+    // preflight — and wax.greymass.com answers that with a 400, which the
+    // browser reports as a CORS failure. One host in six silently failing every
+    // read in a real browser, while node (no CORS) never saw it. nodeos parses
+    // the body whatever the header says; checked on all six hosts, 2026-09-10.
     res = await fetch(`${host}/v1/chain/${endpoint}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeout),
     });

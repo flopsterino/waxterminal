@@ -124,7 +124,9 @@ const hex = u8 => [...u8].map(b => b.toString(16).padStart(2, '0')).join('');
 // it away would leave "it failed" as the entire diagnosis.
 async function rpc(endpoint, body, host) {
   const res = await fetch(`${host}/v1/chain/${endpoint}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    // text/plain skips the CORS preflight that wax.greymass.com rejects; see
+    // chain.js. nodeos reads the body regardless of the header.
+    method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8' },
     body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
   });
   let json = null;
