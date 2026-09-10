@@ -3122,6 +3122,16 @@ async function lookupWallet(account) {
 async function showCompound(btn, pos, resume = null) {
   const box = btn.closest('.poscard, .card')?.querySelector('.cplan');
   if (!box) return;
+  // An earlier attempt on THIS position may have claimed and then failed to put
+  // it back. Opening the panel again planned a fresh compound, found nothing
+  // left to claim, and stopped — the harvest sitting in the wallet with no way
+  // to finish from here. The record of that attempt only ever surfaced as a
+  // banner on the next page load. It is picked up here, where the person is.
+  if (!resume) {
+    const r = loadResume();
+    if (r && String(r.posId) === String(pos.posId) && r.account === pos.owner
+        && Date.now() - r.at < 6 * 3600e3) resume = r;
+  }
   const label = btn.dataset.label || (btn.dataset.label = btn.textContent);
   if (!box.hidden) { box.hidden = true; btn.textContent = label; return; }
   box.hidden = false;
@@ -3360,8 +3370,30 @@ let noSwap = (() => { try { return localStorage.getItem(NOSWAP_KEY) === '1'; } c
 const saveNoSwap = v => { try { localStorage.setItem(NOSWAP_KEY, v ? '1' : '0'); } catch {} };
 
 const RESUME_KEY = 'wt.compound.pending';
-const loadResume = () => { try { return JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; } };
-const saveResume = v => { try { v ? localStorage.setItem(RESUME_KEY, JSON.stringify(v)) : localStorage.removeItem(RESUME_KEY); } catch {} };
+// `before` is a Map of token id to balance, and JSON.stringify turns a Map into
+// {} — silently, with no error. So every record this ever wrote lost the one
+// thing it existed to keep: what the wallet held before the claim. On resume,
+// buildRedeposit read undefined for both sides, took NaN as the harvest, and
+// refused with "the harvest produced nothing to redeposit". The resume path has
+// never been able to finish a compound. That is the "tokens are already claimed
+// so compounding no longer works" report, exactly.
+//
+// Stored as entries, restored as a Map.
+const loadResume = () => {
+  try {
+    const r = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null');
+    if (r && Array.isArray(r.before)) r.before = new Map(r.before);
+    else if (r && r.before && !(r.before instanceof Map)) r.before = null;   // an old, emptied record
+    return r;
+  } catch { return null; }
+};
+const saveResume = v => {
+  try {
+    if (!v) { localStorage.removeItem(RESUME_KEY); return; }
+    const out = { ...v, before: v.before instanceof Map ? [...v.before] : v.before };
+    localStorage.setItem(RESUME_KEY, JSON.stringify(out));
+  } catch {}
+};
 
 // `preBalances` is the whole point of the "Compound now" button being one click
 // rather than two. A browser only lets a page open a window during a user
@@ -3435,6 +3467,10 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
         await press(0, 'Claim and convert', 'Your wallet will ask once. Only what you just claimed is converted.');
       }
       const cs = await buildClaimAndSwap({ pool: pos.pool, position: pos, basket: harvest.basket, plan, me });
+      // Written before sending, not after. The wallet can report failure for a
+      // transaction that did land, and the record is the only thing that knows
+      // what the wallet held before the claim.
+      saveResume({ account: pos.owner, poolId: pos.pool.id, posId: pos.posId, before, claimTx: '', sent: true, at: Date.now() });
       render(0, 'Waiting for your wallet…');
       const r1 = await wallet.transact(cs.actions, { verify: true });
       r1id = r1.id;
@@ -3464,13 +3500,36 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
   } catch (e) {
     const m = String(e.message || e);
     const declined = /cancel|reject|declin/i.test(m);
-    render(0, null, {
-      err: declined
-        ? (r1id ? 'You declined that signature. What you already claimed is in your wallet — reopen this position to finish putting it back.' : 'You declined the signature — nothing happened.')
-        : e?.simulated
-          ? `Stopped before sending — a node ran this and it would have failed: ${m}. Nothing was broadcast, so it cost you no CPU or NET.`
-          : `Transaction failed: ${m}`,
-    });
+    const pending = loadResume();
+    const mine = pending && String(pending.posId) === String(pos.posId);
+
+    // Resuming a claim that, it turns out, never landed. The record was written
+    // before sending in case the wallet reported failure for a transaction that
+    // succeeded; when nothing arrived, it was a real failure and the record is
+    // what is wrong. Clear it, so the next press is an ordinary compound.
+    if (/produced nothing to redeposit/i.test(m) && resume && !resume.claimTx) {
+      saveResume(null);
+      render(0, null, { err: 'The earlier claim never went through, so there is nothing waiting in your wallet. Press Compound again to start over.' });
+      return;
+    }
+
+    // Anything that failed once the harvest was out of the farm must be
+    // finishable from here. It used to render an error against step 1 with no
+    // way forward, while the claimed tokens sat in the wallet — and opening the
+    // panel again planned a fresh compound with nothing left to claim.
+    const stuck = !!(r1id || (mine && pending.before));
+    const msg = declined
+      ? (stuck ? 'You declined that signature. What you claimed is in your wallet and can still be put back.' : 'You declined the signature — nothing happened.')
+      : e?.simulated
+        ? `Stopped before sending — a node ran this and it would have failed: ${m}. Nothing was broadcast, so it cost you no CPU or NET.`
+        : `Transaction failed: ${m}`;
+    render(stuck ? 1 : 0, null, { err: msg, cta: stuck ? 'Try putting it back again' : null });
+    if (stuck) {
+      box.querySelector('[data-next]').onclick = () => {
+        const r = loadResume();
+        runOne(box, entry, feeBps, feeAccount, r && String(r.posId) === String(pos.posId) ? r : { ...pending, claimTx: r1id }, null);
+      };
+    }
   }
 }
 
