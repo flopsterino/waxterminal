@@ -407,6 +407,7 @@ async function loadSnapshot() {
   // Alcor farm — that needs two extra calls per pool, which is why the daily job
   // does it — so without this every Alcor APR vanished a few seconds after the
   // page painted, taking the best farms on WAX with it.
+  priceThinRewards();
   state.snapshotFarms = new Map();
   for (const f of (d.farms || [])) {
     if (f.sr == null && f.su == null) continue;
@@ -580,6 +581,7 @@ export async function loadCore({ onProgress = () => {}, force = false, swr = fal
   await applyVolume(pools);
 
   state.pools = pools; state.farms = farms; state.prices = prices; state.tokens = tokens;
+  priceThinRewards();
   stakingMap();          // warm it now; the farms page needs it and it takes seconds
   state.loadedAt = Date.now(); state.stale = false; state.fromSnapshot = false;
   state.waxUsd = prices.get('WAX@eosio.token')?.usd ?? null;
@@ -598,6 +600,7 @@ function hydrate(c) {
   state.tokens = new Map(c.tokens);
   const byId = new Map(c.pools.map(p => [`${p.dex}:${p.id}`, p]));
   state.farms = c.farms.map(f => ({ ...f, pool: byId.get(`${f.poolDex}:${f.poolId}`) }));
+  priceThinRewards();
   state.loadedAt = c.loadedAt;
   state.waxUsd = state.prices.get('WAX@eosio.token')?.usd ?? null;
 }
@@ -1177,6 +1180,46 @@ export function toCandles(rows, { bucketSec = 300 } = {}) {
 }
 
 
+// ------------------------------------------------------- thin reward prices --
+// 527 of 853 farmed pools pay a token this terminal would not price, because
+// its deepest market holds less than the $40 the price model insists on before
+// it stands behind a figure — GTAP alone is the reward on 102 farms and its
+// best pool holds eleven dollars. That floor is right for valuing holdings and
+// wrong for showing what a farm pays: Alcor quotes these farms off the spot
+// price, and a terminal that shows a dash where the venue shows a rate reads as
+// broken rather than careful.
+//
+// So a reward with no price gets the spot price of its deepest pool against a
+// token that does have one — marked thin, so the rate it produces is shown as
+// a face-value rate on a market you could not actually sell into. The
+// sellable figure (rewardRealDay) is left at nothing, which is the truth.
+function thinPrice(tokenId) {
+  let best = null, bestSide = 0;
+  for (const p of state.pools) {
+    const isA = p.tokenA === tokenId, isB = p.tokenB === tokenId;
+    if (!isA && !isB || !(p.priceAB > 0)) continue;
+    const other = isA ? p.tokenB : p.tokenA;
+    const ou = state.prices.get(other)?.usd;
+    if (!(ou > 0)) continue;
+    const sideUsd = (isA ? p.reserveB : p.reserveA) * ou;
+    if (!(sideUsd >= 1) || sideUsd <= bestSide) continue;
+    bestSide = sideUsd;
+    best = isA ? p.priceAB * ou : ou / p.priceAB;
+  }
+  return best;
+}
+export function priceThinRewards() {
+  const memo = new Map();
+  for (const f of state.farms) {
+    if (f.rewardUsdDay != null || !(f.rewardPerDay > 0) || !f.rewardToken) continue;
+    if (!memo.has(f.rewardToken)) memo.set(f.rewardToken, thinPrice(f.rewardToken));
+    const px = memo.get(f.rewardToken);
+    if (!(px > 0)) continue;
+    f.rewardUsdDay = f.rewardPerDay * px;
+    f.rewardThin = true;
+  }
+}
+
 // ------------------------------------------------------- farm grouping ------
 // A pool is what a user farms, not an incentive. Measured on chain: 633 of 1,883
 // farmed pools run several incentives at once, sometimes ten, and users think of
@@ -1233,6 +1276,7 @@ export function farmGroups({ liveOnly = true } = {}) {
     g.tokenCount = new Set(g.rewards.map(r => r.token)).size;
     g.rewardRealDay = g.farms.reduce((s, f) => s + (f.rewardRealDay || 0), 0);
     g.rewardsSolid = g.farms.some(f => f.rewardSolid);
+    g.rewardThin = g.farms.some(f => f.rewardThin);
     if (g.stakedReal >= MIN_STAKE_FOR_APR_USD && g.rewardRealDay > 0) {
       g.aprReal = (g.rewardRealDay * 365 / g.stakedReal) * 100;
     } else g.aprReal = null;

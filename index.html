@@ -7,7 +7,7 @@
 <meta name="description" content="Pools, farms and liquidity across the WAX blockchain. Reads Alcor and TacoSwap directly from chain — no backend.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23E8A33D'/><rect x='7' y='9' width='18' height='4' rx='1' fill='%23171104'/><rect x='7' y='16' width='11' height='4' rx='1' fill='%23171104'/><rect x='7' y='23' width='15' height='4' rx='1' fill='%23171104'/></svg>">
@@ -24,13 +24,19 @@
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   <button role="tab" data-view="leaders" aria-selected="false">Leaders</button>
   </nav>
+  <div class="gsearch" role="search">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.6 10.6 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <input id="gSearch" type="search" placeholder="Search token, pair or account" autocomplete="off" spellcheck="false" aria-label="Search tokens, pairs and accounts">
+    <kbd>/</kbd>
+    <div class="gresults" id="gResults" role="listbox" hidden></div>
+  </div>
   <div class="spacer"></div>
+  <button class="datapill" id="dataAge" hidden><span class="dot"></span><span id="dataAgeTxt"></span></button>
   <div class="waxprice" id="waxPrice">WAX <b>—</b></div>
   <button class="chip" id="unitToggle">USD</button>
   <button class="btn" id="connectBtn">Connect wallet</button>
   <div class="acct" id="acctChip" hidden><span class="dot"></span><span id="acctName"></span>
     <button class="iconbtn" id="disconnectBtn" title="Disconnect" aria-label="Disconnect" style="width:20px;height:20px;font-size:11px">&times;</button></div>
-  <button class="iconbtn" id="refreshBtn" title="Reload from chain" aria-label="Reload from chain">&#8635;</button>
   <button class="iconbtn" id="themeBtn" title="Switch theme" aria-label="Switch theme">&#9681;</button>
 </header>
 
@@ -41,7 +47,6 @@
   <!-- --------------------------------------------------------- OVERVIEW -->
   <section class="view active" id="view-overview">
     <h2 class="vt">WAX DeFi</h2>
-    <p class="vs" id="ovTagline">Live from the WAX chain.</p>
     <div class="stats" id="ovStats"></div>
     <div id="ovCharts"></div>
   </section>
@@ -49,7 +54,6 @@
   <!-- ----------------------------------------------------------- TOKENS -->
   <section class="view" id="view-tokens">
     <h2 class="vt">Tokens</h2>
-    <p class="vs">Every token across all four venues.</p>
     <div class="stats" id="tokStats"></div>
     <div class="subtabs" id="tokLens" role="tablist">
       <button class="chip" data-lens="all" aria-pressed="true">All</button>
@@ -65,7 +69,7 @@
       <button class="chip" id="fTokSolid" aria-pressed="true">Tradeable only</button>
       <span class="dim" id="tokCount" style="font-size:12px"></span>
     </div>
-    <div class="tablewrap"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
+    <div class="tablewrap flow"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
     <div class="section" id="unlockSection" hidden><h3>Unlocking soon <span class="dim">&mdash; supply arriving on a date</span></h3>
       <div class="card"><div id="unlockTable"></div></div></div>
   </section>
@@ -73,7 +77,6 @@
   <!-- ------------------------------------------------------------ FARMS -->
   <section class="view" id="view-farms">
     <h2 class="vt">Markets</h2>
-    <p class="vs">Every pool and every farm on it, in one table.</p>
     <div class="stats" id="farmStats"></div>
     <div class="toolbar">
       <input class="search" id="farmSearch" placeholder="Search pool or reward token…" autocomplete="off">
@@ -88,7 +91,7 @@
       <span class="dim" id="farmCount" style="font-size:12px"></span>
     </div>
     <div class="filters" id="farmFilterPanel" hidden></div>
-    <div class="tablewrap"><table id="farmTable"><thead></thead><tbody></tbody></table></div>
+    <div class="tablewrap flow"><table id="farmTable"><thead></thead><tbody></tbody></table></div>
     <div id="newPoolBox" style="margin-top:14px"></div>
   </section>
 
@@ -138,7 +141,6 @@
   <!-- ---------------------------------------------------------- LEADERS -->
   <section class="view" id="view-leaders">
     <h2 class="vt">Leaders</h2>
-    <p class="vs">Measured from the chain.</p>
     <div class="stats" id="ldStats"></div>
     <div class="note" id="ldBurn" hidden></div>
     <div class="subtabs" id="ldTabs" role="tablist">
@@ -154,7 +156,6 @@
   <!-- --------------------------------------------------------- ACTIVITY -->
   <section class="view" id="view-activity">
     <h2 class="vt">Activity</h2>
-    <p class="vs">Every trade across Alcor, TacoSwap, Defibox and A-DEX, as it happens.</p>
     <div class="toolbar">
       <button class="btn" id="actRefresh">Reload feed</button>
       <button class="chip" data-win="15" aria-pressed="true">15 min</button>

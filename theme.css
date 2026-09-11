@@ -7,34 +7,42 @@
 
 :root {
   /* --- type ------------------------------------------------------------- */
-  --font-ui:   'Chivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-data: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  /* One family for words and figures. A monospace for every number made the
+     tables a third wider than their content and read as a code listing; Inter
+     with tabular figures lines digits up just as well at a trading-screen
+     density. Monospace is kept for what actually is code: hashes and ids. */
+  --font-ui:   'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-data: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-code: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
   /* --- shape ------------------------------------------------------------ */
   --r-sm: 4px;
-  --r:    7px;
-  --r-lg: 11px;
+  --r:    6px;
+  --r-lg: 10px;
 
-  /* --- dark palette (default) ------------------------------------------- */
-  --ground:     #0F1418;
-  --surface:    #161C21;
-  --surface-2:  #1D252B;
-  --surface-3:  #263138;
-  --line:       #27333A;
-  --line-2:     #38474F;
-  --ink:        #E9EEF1;
-  --ink-2:      #A7B5BE;
-  --muted:      #6D7E89;
+  /* --- dark palette (default) -------------------------------------------
+     Near-black ground, surfaces separated by hairlines rather than shadows,
+     and the green/red every exchange uses, so a trader reads direction before
+     reading the number. */
+  --ground:     #0B0E11;
+  --surface:    #11161A;
+  --surface-2:  #171D22;
+  --surface-3:  #20272D;
+  --line:       #1F272D;
+  --line-2:     #2E3840;
+  --ink:        #E7EBEE;
+  --ink-2:      #A4AFB8;
+  --muted:      #6C7883;
   --accent:     #E8A33D;
   --accent-ink: #F2BC6A;
-  --accent-soft:#3A2B14;
+  --accent-soft:#2E2312;
   --on-accent:  #171104;
-  --good:       #46C48D;
-  --good-soft:  #143129;
-  --bad:        #E3644F;
-  --bad-soft:   #361915;
+  --good:       #2EBD85;
+  --good-soft:  #0F2A21;
+  --bad:        #F6465D;
+  --bad-soft:   #331419;
   --info:       #5AA9E6;
-  --shadow:     0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.9);
+  --shadow:     none;
 
   /* --- chart series ------------------------------------------------------
      Fixed order, never cycled. These eight are validated as a set against this
@@ -60,12 +68,12 @@
   --accent-ink: #8F5A0D;
   --accent-soft:#FBEFD9;
   --on-accent:  #FFFFFF;
-  --good:       #157D56;
-  --good-soft:  #DCF1E8;
-  --bad:        #B53723;
-  --bad-soft:   #FBE4E0;
+  --good:       #0E9F6E;
+  --good-soft:  #DDF4EA;
+  --bad:        #D9304A;
+  --bad-soft:   #FBE3E6;
   --info:       #1F6FB2;
-  --shadow:     0 1px 2px rgba(18,26,32,.06), 0 10px 26px -18px rgba(18,26,32,.35);
+  --shadow:     none;
 
   --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100;
   --c5: #e87ba4; --c6: #008300; --c7: #4a3aa7; --c8: #e34948;

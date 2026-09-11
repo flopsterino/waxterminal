@@ -13,6 +13,7 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
+import { STABLES } from './price.js';
 import { watchPoolTrades, tradeSide, tradePrice } from './live.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
@@ -79,7 +80,8 @@ function qty(v) {
   if (a >= 1e6) return (v / 1e6).toFixed(2) + 'M';
   if (a >= 1e3) return (v / 1e3).toFixed(1) + 'k';
   if (a >= 1)   return v.toFixed(2);
-  if (a > 0)    return v.toPrecision(3);
+  if (a >= 1e-4) return v.toPrecision(3);
+  if (a > 0)    return (v < 0 ? '-' : '') + pxNum(a);
   return '0';
 }
 const sigfig = v => {
@@ -87,7 +89,8 @@ const sigfig = v => {
   const a = Math.abs(v);
   if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
   if (a >= 1) return v.toPrecision(4).replace(/\.?0+$/, '');
-  return v.toPrecision(3);
+  if (a >= 1e-4) return v.toPrecision(3);
+  return (v < 0 ? '-' : '') + pxNum(a);
 };
 // Money at a fixed precision. Both of these honour the unit switch: choosing
 // WAX and still being shown dollars everywhere the number actually matters —
@@ -115,9 +118,46 @@ const qtyFine = v => {
   if (v === 0) return '0';
   if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (v >= 1e-6) return v.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 8 });
-  return v.toPrecision(3);
+  return pxNum(v);
 };
-const pct = v => (v == null || !isFinite(v)) ? '—' : (v >= 1000 ? 'off the scale' : v.toFixed(1) + '%');
+// Four-digit rates are printed, not hidden behind "off the scale": a column of
+// numbers that suddenly contains words reads as a rendering fault.
+const pct = v => (v == null || !isFinite(v)) ? '—'
+  : v >= 1e6 ? '>999,999%'
+  : v >= 1000 ? Math.round(v).toLocaleString('en-US') + '%'
+  : v.toFixed(1) + '%';
+
+// A price is read, not computed. "$7.71e-7" is how a float prints and
+// "$77783.5696" is how a float with four decimals prints; neither is how a price
+// is read. Every DEX screen uses the same two conventions: separators on large
+// prices, and for tiny ones the count of zeros after the point in subscript —
+// $0.0₆771 is 0.000000771. Three significant digits either way.
+const SUBSCRIPT = '₀₁₂₃₄₅₆₇₈₉';
+const subDigits = n => String(n).split('').map(d => SUBSCRIPT[d]).join('');
+function pxNum(v) {
+  if (v == null || !isFinite(v) || v <= 0) return '—';
+  if (v >= 1000) return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (v >= 1) return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: v >= 100 ? 2 : 4 });
+  // Four decimals under a dollar, so a stablecoin at 0.9996 is not rounded
+  // into looking pegged.
+  if (v >= 0.01) return v.toFixed(4);
+  if (v >= 0.0001) return v.toPrecision(3);
+  const zeros = -Math.floor(Math.log10(v)) - 1;
+  let digits = Math.round(v * 10 ** (zeros + 3));
+  if (digits >= 1000) digits = Math.round(digits / 10);
+  return `0.0${subDigits(zeros)}${String(digits).replace(/0+$/, '') || '0'}`;
+}
+// A token's price in the unit the header is set to. Unlike usd(), this never
+// abbreviates: $1.2k is a fine pool size and a useless price.
+function px(v) {
+  if (v == null || !isFinite(v) || v <= 0) return '—';
+  if (UNIT === 'wax') { const w = inWax(v); if (w != null) return pxNum(w) + ' WAX'; }
+  return '$' + pxNum(v);
+}
+// A change is coloured by its direction, and a change that rounds to nothing
+// has no direction — a green +0.0% is a claim the number does not make.
+const chgCls = v => (v == null || !isFinite(v) || Math.abs(v) < 0.05) ? 'dim' : v > 0 ? 'pos' : 'neg';
+const chgTxt = v => (v == null || !isFinite(v)) ? '—' : Math.abs(v) < 0.05 ? '0.0%' : (v > 0 ? '+' : '') + v.toFixed(Math.abs(v) >= 100 ? 0 : 1) + '%';
 const ago = t => {
   const s = (Date.now() - new Date(t + (String(t).endsWith('Z') ? '' : 'Z')).getTime()) / 1000;
   if (s < 60) return Math.max(0, Math.round(s)) + 's ago';
@@ -132,7 +172,7 @@ function age(ts) {
   const d = (Date.now() - ts) / 86400000;
   if (d < 1) return Math.max(1, Math.round(d * 24)) + 'h';
   if (d < 60) return Math.round(d) + 'd';
-  if (d < 730) return Math.round(d / 30) + 'mo';
+  if (d < 365) return Math.round(d / 30) + 'mo';
   return (d / 365).toFixed(1) + 'y';
 }
 // Seeing that CHEESE/LSWAX is the best farm on WAX is only half of it; the other
@@ -224,6 +264,23 @@ const acctLink = name => `<span class="xlink acct-link" data-acct="${esc(name)}"
 const tokLink = (id, label = null) => `<span class="xlink" data-tokid="${esc(id)}" title="Open ${esc(label || String(id).split('@')[0])}">${esc(label || String(id).split('@')[0])}</span>`;
 const poolLink = (dex, id, label) => `<span class="xlink" data-poolkey="${esc(dex)}:${esc(id)}" title="Open this pool">${label}</span>`;
 const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)}`;
+// Two pools on the same pair are different markets — a 0.3% and a 1% WAX/LEEF
+// pay and move differently — and without the tier they read as one row listed
+// twice.
+// Which side of a pair is the thing being traded and which is the money it is
+// priced in. WAX/LEEF is a LEEF market priced in WAX, whichever way round the
+// pool stores it — and a tape saying "Buy" when someone bought WAX, at WAX's
+// price, on a LEEF page, was reading the pool's storage order back at you.
+// Stablecoins quote everything, WAX quotes everything else, a staked-WAX token
+// quotes what is left; two tokens of equal rank keep the pool's order.
+const quoteRank = id => STABLES.has(id) ? 3 : id === 'WAX@eosio.token' ? 2 : /^(LSWAX|SWAX|WAXUSDT|PARAUSD)@/.test(id) ? 1 : 0;
+function pairOrient(p) {
+  const baseIsA = quoteRank(p.tokenA) <= quoteRank(p.tokenB);
+  return baseIsA
+    ? { baseIsA, baseId: p.tokenA, baseSym: p.symA, quoteId: p.tokenB, quoteSym: p.symB, baseUsd: p.priceUsdA, quoteUsd: p.priceUsdB }
+    : { baseIsA, baseId: p.tokenB, baseSym: p.symB, quoteId: p.tokenA, quoteSym: p.symA, baseUsd: p.priceUsdB, quoteUsd: p.priceUsdA };
+}
+const tierTag = p => `<span class="tier" title="${esc(venueName[p.dex] || p.dex)}, ${(p.feeBps / 100).toFixed(2)}% fee">${p.dex === 'alcor' ? '' : esc(venueName[p.dex] || p.dex) + ' '}${+(p.feeBps / 100).toFixed(2)}%</span>`;
 
 // A pool id as a pair anyone can read. A route printed as "1252 → 314" is a
 // list of database keys; the same route as "CHEESE/WAX → WAX/WAXUSDC" is a
@@ -454,7 +511,6 @@ async function boot() {
     redrawCurrent();
   }, 250));
 
-  $('#refreshBtn').onclick = async () => { await clearCache(); location.reload(); };
   $('#farmBack').onclick = () => show(lastView || 'farms');
   $('#poolBack').onclick = () => show(lastView || 'pools');
   $('#tokBack').onclick = () => show(lastView || 'tokens');
@@ -463,7 +519,7 @@ async function boot() {
   // first render off a progress callback meant one early return anywhere in
   // that path left the page on a spinner with no error — which is exactly what
   // happened, and only on the path that reads the chain.
-  wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders();
+  wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders(); wireSearch();
 
   // Start the nightly file on the way past. It is 30 KB and it carries the farm
   // APR denominator, so having it in flight before the first table is drawn is
@@ -535,23 +591,28 @@ async function boot() {
     // the deploy on the server is not the one running here, it says so and
     // offers the reload that actually works.
     if (build) checkForNewer(build);
-    if (loadError) {
-      banner(`<div class="freshbar">Showing the last snapshot, ${ago(new Date(state.loadedAt).toISOString())}.
-        Live chain read failed &mdash; wallet lookups and the trade feed need it. <button class="btn ghost" id="goLive">Try again</button></div>`);
-    } else if (state.fromSnapshot) {
-      banner(`<div class="freshbar">Snapshot from ${ago(new Date(state.loadedAt).toISOString())}, rebuilt every two hours. Pools and wallets you open are read live.
-        <button class="btn ghost" id="goLive">Refresh from chain</button></div>`);
-    } else banner('');
+    // How old the numbers are lives in the header, where a reader looks for
+    // it, not as a full-width banner across the top of every page. The pill is
+    // also the refresh: the one reason to want to know the age is to ask for
+    // newer, so that is what clicking it does.
+    banner('');
+    paintDataAge({ failed: !!loadError });
+    setInterval(() => paintDataAge(), 60000);
+    $('#dataAge').onclick = async () => {
+      const b = $('#dataAge');
+      if (b.disabled) return;
+      b.disabled = true;
+      $('#dataAgeTxt').textContent = 'reading chain…';
+      try {
+        await loadCore({ force: true, onProgress: p => { if (p.msg) $('#dataAgeTxt').textContent = p.msg; } });
+        groups = []; tokRows = null; paint();
+        b.disabled = false; paintDataAge();
+      } catch {
+        b.disabled = false; paintDataAge({ failed: true });
+      }
+    };
     // Money left mid-flight outranks anything else on the page.
     resumeBanner().catch(() => {});
-    const b = $('#goLive');
-    if (b) b.onclick = async () => {
-      b.disabled = true; b.textContent = 'Reading chain…';
-      try {
-        await loadCore({ force: true, onProgress: p => { if (p.msg) b.textContent = p.msg; } });
-        groups = []; tokRows = null; paint(); banner('');
-      } catch { b.disabled = false; b.textContent = 'Still unreachable — try again'; }
-    };
   } else {
     banner(`<div class="err"><b>Could not load any data.</b> ${esc(loadError?.message || 'unknown')}<br>
       The public WAX nodes may be rate-limiting. Reloading usually fixes it.</div>`);
@@ -560,25 +621,162 @@ async function boot() {
 
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
+}
 
-  // The full chain sweep is ~15 seconds and re-reads 19,820 pools to change
-  // numbers by a fraction of a percent. Doing that on every visit made the
-  // terminal feel broken. The committed snapshot is the default source; a live
-  // read is a deliberate act, and anything you actually open (a pool, a wallet,
-  // a compound) reads live state for that one thing anyway.
-  if (state.fromSnapshot) {
-    banner(`<div class="freshbar">Showing the last snapshot, ${ago(new Date(state.loadedAt).toISOString())}.
-      Pools and wallets you open are read live. <button class="btn ghost" id="goLive">Refresh everything from chain</button></div>`);
-    const b = $('#goLive');
-    if (b) b.onclick = async () => {
-      b.disabled = true; b.textContent = 'Reading chain…';
-      try {
-        await loadCore({ force: true, onProgress: p => { if (p.msg) b.textContent = p.msg; } });
-        groups = []; renderFarms(); renderOverview();
-        banner('');
-      } catch (e) { b.disabled = false; b.textContent = 'Refresh failed — try again'; }
+// ---------------------------------------------------------------- SEARCH ----
+// One box that reaches everything. Finding a token meant opening Tokens and
+// typing; a pair meant Markets and typing; a wallet meant My wallet and typing
+// — three pages to learn for one question, "take me to X". Everything it
+// searches is already in memory, so it answers as you type.
+function searchIndex(q) {
+  const out = { tokens: [], pools: [], account: null };
+  if (!q) return out;
+  if (!tokRows || tokRows._at !== state.loadedAt) { tokRows = tokenTable(); tokRows._at = state.loadedAt; }
+  const pair = q.includes('/') ? q.split('/').map(x => x.trim()) : null;
+  const farmBy = new Map((groups || []).filter(g => g.farms?.length).map(g => [g.key, g]));
+  if (pair) {
+    const [a, b] = pair;
+    out.pools = state.pools.filter(p => {
+      const x = p.symA.toLowerCase(), y = p.symB.toLowerCase();
+      return (x.startsWith(a) && (!b || y.startsWith(b))) || (y.startsWith(a) && (!b || x.startsWith(b)));
+    });
+  } else {
+    const score = t => {
+      const sym = t.symbol.toLowerCase();
+      if (sym === q) return 4;
+      if (sym.startsWith(q)) return 3;
+      if (sym.includes(q)) return 2;
+      if ((t.contract || '').toLowerCase().includes(q)) return 1;
+      return 0;
     };
+    out.tokens = tokRows.map(t => [t, score(t)]).filter(([, sc]) => sc > 0)
+      .sort((x, y) => y[1] - x[1] || (y[0].tvl || 0) - (x[0].tvl || 0)).slice(0, 6).map(([t]) => t);
+    out.pools = state.pools.filter(p => p.symA.toLowerCase().startsWith(q) || p.symB.toLowerCase().startsWith(q)
+      || (/^\d+$/.test(q) && String(p.id) === q));
   }
+  out.pools = out.pools.sort((x, y) => (y.tvlReal || 0) - (x.tvlReal || 0)).slice(0, 6)
+    .map(p => ({ p, g: farmBy.get(`${p.dex}:${p.id}`) }));
+  // Anything shaped like a WAX account can be looked up, whether or not it
+  // happens to also be a token contract.
+  if (/^[a-z1-5.]{1,12}$/.test(q)) out.account = q;
+  return out;
+}
+
+function wireSearch() {
+  const inp = $('#gSearch'), box = $('#gResults');
+  if (!inp || !box) return;
+  // A phone gives the box about a hundred and fifty pixels; the long hint was
+  // cut to "Search token, pa".
+  if (window.matchMedia?.('(max-width: 860px)').matches) inp.placeholder = 'Search';
+  let items = [], on = 0;
+  const close = () => { box.hidden = true; items = []; };
+  const go = i => {
+    const it = items[i];
+    if (!it) return;
+    close(); inp.value = ''; inp.blur();
+    it.open();
+  };
+  const paintOn = () => box.querySelectorAll('.it').forEach((el, i) => el.classList.toggle('on', i === on));
+  const run = () => {
+    const q = inp.value.trim().toLowerCase();
+    if (!q || !state.pools.length) { close(); return; }
+    const r = searchIndex(q);
+    items = [];
+    let html = '';
+    if (r.tokens.length) {
+      html += '<div class="grp">Tokens</div>';
+      for (const t of r.tokens) {
+        const i = items.push({ open: () => openToken(t.id) }) - 1;
+        html += `<div class="it" data-i="${i}" role="option"><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span>
+          <span class="nm">${esc(t.symbol)}</span><span class="ct">${esc(t.contract)}</span>
+          <span class="meta"><b>${t.price != null ? px(t.price) : '—'}</b><span class="${chgCls(t.change24)}">${t.change24 != null ? chgTxt(t.change24) : ''}</span></span></div>`;
+      }
+    }
+    if (r.pools.length) {
+      html += '<div class="grp">Markets</div>';
+      for (const { p, g } of r.pools) {
+        const i = items.push({ open: () => openPool(`${p.dex}:${p.id}`) }) - 1;
+        const apr = g ? (g.aprReal ?? g.apr) : null;
+        html += `<div class="it" data-i="${i}" role="option"><span data-pm="${esc(p.tokenA)}|${esc(p.symA)}|${esc(p.tokenB)}|${esc(p.symB)}"></span>
+          <span class="nm">${esc(p.symA)}/${esc(p.symB)}</span><span class="ct">${esc(venueName[p.dex] || p.dex)} · ${(p.feeBps / 100).toFixed(2)}%</span>
+          <span class="meta"><b>${usd(p.tvlReal ?? p.tvl)}</b>${apr != null ? `<span class="pos">${pct(apr)}</span>` : ''}</span></div>`;
+      }
+    }
+    if (r.account) {
+      html += '<div class="grp">Wallet</div>';
+      const acct = r.account;
+      const i = items.push({ open: () => { show('wallet', acct); $('#walletInput').value = acct; lookupWallet(acct); } }) - 1;
+      html += `<div class="it" data-i="${i}" role="option"><span class="acctmark">@</span><span class="nm">${esc(acct)}</span><span class="meta">balances, positions, trades</span></div>`;
+    }
+    if (!items.length) html = '<div class="none">Nothing matches.</div>';
+    box.innerHTML = html;
+    fillMarks(box);
+    on = 0; paintOn();
+    box.hidden = false;
+  };
+  inp.addEventListener('input', debounce(run, 60));
+  inp.addEventListener('focus', () => { if (inp.value.trim()) run(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); on = Math.min(items.length - 1, on + 1); paintOn(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); on = Math.max(0, on - 1); paintOn(); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(on); }
+    else if (e.key === 'Escape') { close(); inp.blur(); }
+  });
+  // mousedown, not click: a click lands after the input's blur has closed the
+  // list, so the item would already be gone.
+  box.addEventListener('mousedown', e => {
+    const el = e.target.closest('.it');
+    if (el) { e.preventDefault(); go(Number(el.dataset.i)); }
+  });
+  inp.addEventListener('blur', () => setTimeout(close, 120));
+  // "/" from anywhere that is not already a text field, the way every trading
+  // screen and code host does it.
+  document.addEventListener('keydown', e => {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    e.preventDefault(); inp.focus(); inp.select();
+  });
+}
+
+// ------------------------------------------------------------ sticky heads ---
+// The big tables flow with the page instead of scrolling inside a box of their
+// own: a second scrollbar in the middle of the page, with the table cut off at
+// the bottom of the screen, is the single most amateur thing a data site can
+// do. But a header has to follow you down 400 rows, and CSS sticky cannot do
+// that from inside a horizontally scrolling wrapper — any overflow makes the
+// wrapper the sticky container. So the offset is computed here, once a frame
+// while scrolling, and the header cells are translated by it.
+function stickyHeads() {
+  const top = $('header.top')?.getBoundingClientRect().bottom ?? 0;
+  document.querySelectorAll('.tablewrap.flow > table').forEach(t => {
+    const head = t.tHead;
+    if (!head) return;
+    if (!t.offsetParent) { t.style.setProperty('--stick', '0px'); head.classList.remove('stuck'); return; }
+    const r = t.getBoundingClientRect();
+    const h = head.getBoundingClientRect().height;
+    const off = Math.max(0, Math.min(top - r.top, r.height - h * 2));
+    t.style.setProperty('--stick', off + 'px');
+    head.classList.toggle('stuck', off > 0);
+  });
+}
+let stickyFrame = 0;
+const stickySoon = () => { if (!stickyFrame) stickyFrame = requestAnimationFrame(() => { stickyFrame = 0; stickyHeads(); }); };
+window.addEventListener('scroll', stickySoon, { passive: true });
+window.addEventListener('resize', stickySoon, { passive: true });
+
+function paintDataAge({ failed = false } = {}) {
+  const b = $('#dataAge');
+  if (!b || !state.loadedAt) return;
+  const at = new Date(state.loadedAt);
+  const mins = (Date.now() - state.loadedAt) / 60000;
+  b.hidden = false;
+  b.classList.toggle('old', failed || mins > 180);
+  $('#dataAgeTxt').textContent = failed ? 'chain unreachable' : (state.fromSnapshot ? ago(at.toISOString()) : 'live · ' + ago(at.toISOString()));
+  b.title = (failed ? 'Reading the chain failed; showing the last snapshot. ' : '')
+    + (state.fromSnapshot
+      ? `Snapshot from ${at.toLocaleString()}, rebuilt every two hours. Pools and wallets you open are read live. Click to read everything from chain now.`
+      : `Read from chain at ${at.toLocaleString()}. Click to read again.`);
 }
 
 const banner = html => { $('#banner').innerHTML = html; };
@@ -642,6 +840,7 @@ function show(v, arg = null) {
   const hash = arg ? `#${v}/${arg}` : `#${v}`;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   window.scrollTo(0, 0);
+  stickySoon();
 }
 
 // A view worth looking at is worth linking to: #farms, #pool/alcor:314,
@@ -880,7 +1079,7 @@ function renderOverview() {
         const got = await candlesFor(waxPool, waxIv,
           d => { el.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} of WAX…</span></div>`; });
         if (!got.candles.length) { el.innerHTML = '<div class="chart-empty">No price history for this pool.</div>'; return; }
-        await candleChart(el, got.candles, { height: 260, precision: precisionFor(got.candles.at(-1)?.close) })
+        await candleChart(el, got.candles, { height: 260, precision: precisionFor(got.candles.at(-1)?.close), fmt: pxNum, visible: 140 })
           .catch(() => { el.innerHTML = '<div class="chart-empty">Chart library unavailable.</div>'; });
         const note = $('#ovWaxNote');
         if (note) note.textContent = `${got.candles.length.toLocaleString()} candles, back to ${new Date(got.candles[0].time * 1000).toISOString().slice(0, 10)}`
@@ -950,9 +1149,16 @@ function fillMarks(root) {
 // it will not stand behind. Shown next to our depth verdict: two independent
 // methods agreeing is worth more than either alone, and where they disagree the
 // reader should see that rather than be handed a silent winner.
-function trustChip(tokenId) {
+function trustChip(tokenId, { compact = false } = {}) {
   const m = tokenMeta(tokenId);
   if (!m) return '';
+  // A table cell has room for a mark, not a sentence: "unpriced by Alcor" was
+  // cut to "unpriced b" by the column edge on a third of the rows.
+  if (compact) {
+    if (m.scam) return `<span class="flag" title="Alcor has flagged this token as a scam">!</span>`;
+    if (m.safeUsd === 0) return `<span class="flag soft" title="Alcor quotes no price for this token">!</span>`;
+    return '';
+  }
   if (m.scam) return `<span class="trust bad" title="Alcor has flagged this token as a scam">flagged</span>`;
   // "no safe price" was Alcor's internal field name leaking onto the page. What
   // it means to a reader is that the exchange will not stand behind a price.
@@ -1161,7 +1367,7 @@ function renderWatchlist(groups) {
   sec.hidden = false;
 
   const LABEL = { price: 'price', pooled: 'pooled', vol24: '24h volume', apr: 'APR', paysDay: 'pays daily', staked: 'staked' };
-  const fmtOf = f => (f === 'apr' ? (v => pct(v)) : f === 'price' ? (v => (v >= 0.01 ? '$' + v.toFixed(4) : '$' + v.toPrecision(3))) : usd);
+  const fmtOf = f => (f === 'apr' ? (v => pct(v)) : f === 'price' ? px : usd);
 
   box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
     <tbody>${items.map(it => {
@@ -1418,13 +1624,11 @@ function renderTokens() {
   $('#tokTable tbody').innerHTML = rows.slice(0, cap('tokens')).map((t, i) => `
     <tr class="clickable" data-tok="${esc(t.symbol)}" data-tokid="${esc(t.id)}">
       <td class="rank">${i + 1}<span data-star="t|${esc(t.id)}|${esc(t.symbol)}"></span></td>
-      <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>
-        <span class="sub">${esc(t.contract)}</span>${trustChip(t.id)}</td>
-      <td class="r num">${t.price == null ? '<span class="dim">—</span>' : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3))}</td>
+      <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>${trustChip(t.id, { compact: true })}<span class="sub">${esc(t.contract)}</span></td>
+      <td class="r num">${t.price == null ? '<span class="dim">—</span>' : px(t.price)}</td>
       <td class="r num">${usd(t.tvl)}</td>
-      <td class="r num ${t.change24 == null ? 'dim' : t.change24 >= 0 ? 'pos' : 'neg'}" title="${t.change24 == null
-        ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was $${t.priceWas < 0.01 ? t.priceWas.toPrecision(3) : t.priceWas.toFixed(4)}`}">${
-        t.change24 == null ? '—' : (t.change24 >= 0 ? '+' : '') + t.change24.toFixed(1) + '%'}</td>
+      <td class="r num ${chgCls(t.change24)}" title="${t.change24 == null
+        ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was ${px(t.priceWas)}`}">${chgTxt(t.change24)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
       <td class="r num ${t.vol7d > 0 ? '' : 'dim'}">${t.vol7d > 0 ? usd(t.vol7d) : '—'}</td>
       <td class="r num ${t.vol30d > 0 ? '' : 'dim'}">${t.vol30d > 0 ? usd(t.vol30d) : '—'}</td>
@@ -1678,23 +1882,44 @@ function renderFarms() {
     // denominator worth dividing by, and on a farm holding three dollars your
     // own deposit is what provides one. With no amount entered the floor blocks
     // 197 of 400 rows and the table looks broken.
-    g.aprAt = aprAtSize(g, farmFilters.size || 0) ?? (g.aprReal ?? g.apr);
+    // The rate stakers earn now — the same figure the overview, the market page
+    // and Alcor itself show. This column used to quote what a $100 deposit would
+    // earn after diluting the pot, so WAX/LEEF read 207% here and 354% one click
+    // away. What your own deposit does is shown where you make it.
+    g.aprAt = aprAtSize(g, 0) ?? (g.aprReal ?? g.apr);
+    g.aprThin = false;
+    // Every farm that pays something priceable to someone gets a rate. Below
+    // the $25 floor, or paid in a token priced off a pool of a few dollars, the
+    // rate is arithmetic on very little — so it is shown, marked, and ranked
+    // under the farms whose rate you could actually collect, instead of being
+    // replaced by a dash. Hiding them was why "only a small selection" of farm
+    // APRs ever appeared: 527 of 853 farms pay a token under the price floor.
+    if (g.aprAt == null && g.farms.length) {
+      const st = g.stakedReal > 0 ? g.stakedReal : g.stakedUsd > 0 ? g.stakedUsd : null;
+      const pay = g.rewardRealDay > 0 ? g.rewardRealDay : g.rewardUsdDay > 0 ? g.rewardUsdDay : null;
+      if (st && pay) { g.aprAt = pay * 365 / st * 100; g.aprThin = true; }
+    }
+    if (g.farms.length) g.tooSmall = g.aprThin || !!g.rewardThin && !(g.rewardRealDay > 0);
   }
   // A missing value is not a small one. Sorting nulls as -Infinity put every
   // farm we cannot value at the top of a descending APR sort, which is the
   // opposite of useful — they sink to the bottom whichever way you sort.
-  // Coerced, because only farmed rows ever set these. `undefined !== false` is
-  // true, so an unfarmed pool compared as "not too small" against every farm and
-  // all 853 farms sank below the 400-row cap — the whole Farm APR column read
-  // "—" for weeks while every farm was sitting in the array, just past the end.
+  // A missing value sinks whichever way you sort — a farm we cannot value is
+  // not a small one. Among rows that have a rate, a thin or burning-out one
+  // ranks under a solid one, but only when ranking BY rate, and never under
+  // rows with no rate at all: demoting them below every unfarmed pool (a bare
+  // `tooSmall !== tooSmall`, with undefined on one side) is how all 853 farms
+  // once landed past the 400-row cap and the column read "—" top to bottom.
+  const byRate = farmFilters.sort === 'aprAt';
   rows.sort((a, b) => {
-    if (!!a.tooSmall !== !!b.tooSmall) return a.tooSmall ? 1 : -1;
-    if (!!a.runaway !== !!b.runaway) return a.runaway ? 1 : -1;
     const x = a[farmFilters.sort], y = b[farmFilters.sort];
     const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
-    if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0);
-    if (xn) return 1;
-    if (yn) return -1;
+    if (xn !== yn) return xn ? 1 : -1;
+    if (xn && yn) return (b.rewardUsdDay || 0) - (a.rewardUsdDay || 0) || (b.tvlReal || 0) - (a.tvlReal || 0);
+    if (byRate) {
+      const da = !!(a.tooSmall || a.runaway), db = !!(b.tooSmall || b.runaway);
+      if (da !== db) return da ? 1 : -1;
+    }
     return (x - y) * farmFilters.dir;
   });
 
@@ -1737,7 +1962,7 @@ function renderFarms() {
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
-    { k: 'aprAt', label: 'Farm APR', r: true, s: true, title: `What a ${usd(farmFilters.size)} deposit would earn, after joining dilutes the pot` },
+    { k: 'aprAt', label: 'Farm APR', r: true, s: true, title: 'What stakers earn now, valuing rewards at what they could be sold for' },
     { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
     { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
@@ -1756,12 +1981,11 @@ function renderFarms() {
     renderFarms();
   });
 
-  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets')
-    + `<span class="dim"> &middot; farm rates at ${usd(farmFilters.size)}</span>`;
+  $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets');
   $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool
       ? `<span data-pm="${esc(g.pool.tokenA)}|${esc(g.pool.symA)}|${esc(g.pool.tokenB)}|${esc(g.pool.symB)}"></span>
-         <span class="pairbig">${pairLinks(g.pool)}</span>
+         <span class="pairbig">${pairLinks(g.pool)}</span>${tierTag(g.pool)}
          ${g.runaway ? `<span class="badge bad" title="Pays ${usd(g.rewardRealDay)} a day into a pool holding ${usd(g.pool.tvlReal)}.">burning out</span>` : ''}`
       : `<span class="dim">${esc(g.poolId)}</span>`;
     // What it pays and how much of it: several incentives can pay the same token,
@@ -1802,8 +2026,13 @@ function renderFarms() {
       : !(g.stakedReal > 0 || g.stakedUsd > 0) ? ['nobody staked', 'Nobody has staked, so there is no rate yet']
       : g.stakedReal == null ? ['not measured', 'The nightly pass has not reached this pool']
       : [`only ${usd(g.stakedReal ?? g.stakedUsd)} staked`, 'Too little staked to divide by'];
+    const thinWhy = g.aprThin
+      ? (!(g.rewardRealDay > 0) && g.rewardThin
+          ? `Paid in a token priced off a very small pool — a face-value rate on rewards you could not sell at that price. ${usd(g.stakedReal ?? g.stakedUsd)} staked.`
+          : `Only ${usd(g.stakedReal ?? g.stakedUsd)} staked: this rate halves the moment someone adds as much again.`)
+      : '';
     const aprCell = rate != null
-        ? `<span class="apr"${g.aprStatus === 'nightly' ? ' title="Staked value from last night\u2019s pass. Refreshes live for the rows on screen."' : ''}>${pct(rate)}</span>`
+        ? `<span class="apr${g.aprThin ? ' thin' : ''}" title="${esc(g.aprThin ? thinWhy : g.aprStatus === 'nightly' ? 'Staked value from last night\u2019s pass. Refreshes live for the rows on screen.' : '')}">${pct(rate)}</span>`
         : `<span class="dim" title="${esc(why[1])}">${esc(why[0])}</span>`;
     const rw = g.endsAt ? (g.endsAt - Date.now()) / 86400e3 : null;
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
@@ -1822,8 +2051,7 @@ function renderFarms() {
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
       <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
-      <td class="r num ${g.pool?.change24 > 0 ? 'pos' : g.pool?.change24 < 0 ? 'neg' : 'dim'}">${
-        g.pool?.change24 == null ? '—' : (g.pool.change24 > 0 ? '+' : '') + g.pool.change24.toFixed(1) + '%'}</td>
+      <td class="r num ${chgCls(g.pool?.change24)}">${chgTxt(g.pool?.change24)}</td>
       <td class="r num dim">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${cols.length}" class="empty">Nothing matches.</td></tr>`;
@@ -4323,7 +4551,7 @@ async function openToken(id) {
   const venues = [...t.venues];
 
   const priceStr = t.price == null ? '—'
-    : '$' + (t.price >= 0.01 ? t.price.toFixed(4) : t.price.toPrecision(3));
+    : px(t.price);
   // Everyone here holds WAX and prices things against it, so the dollar alone
   // makes people do arithmetic they should not have to.
   const inWax = (t.price != null && state.waxUsd > 0 && t.symbol !== 'WAX')
@@ -4368,8 +4596,7 @@ async function openToken(id) {
     </div>` : ''}
 
     <div class="section"><h3>The token itself</h3>
-      <div class="grid g2">
-        <div class="card"><dl class="facts" id="tokFacts">
+      <div class="card"><dl class="facts cols" id="tokFacts">
           <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
           <dt>Symbol</dt><dd class="mono">${esc(t.symbol)}</dd>
           <dt>Decimals</dt><dd class="mono" id="fDec">—</dd>
@@ -4383,9 +4610,9 @@ async function openToken(id) {
           <dt>Holders</dt><dd class="mono" id="fHolders">—</dd>
           <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
           <dt>Rated by Alcor</dt><dd class="mono">${meta?.score != null ? `${meta.score}/100` : '<span class="dim">not rated</span>'}</dd>
-        </dl></div>
-        <div class="card"><h3>Transfer tax</h3><div id="tokTax"><div class="loading"><span class="spinner"></span><span>Reading the contract&rsquo;s tables…</span></div></div></div>
-      </div>
+          <dt>Transfer tax</dt><dd class="mono" id="fTax"><span class="dim">reading…</span></dd>
+        </dl>
+        <div id="tokTax" hidden></div></div>
     </div>
 
     ${deepest ? `<div class="section"><h3>Price</h3>
@@ -4500,15 +4727,18 @@ async function openToken(id) {
   // ---- transfer tax --------------------------------------------------------
   tokenTax(t.contract, t.symbol).then(tax => {
     if (stale()) return;
-    const el = $('#tokTax');
+    const el = $('#tokTax'), fact = $('#fTax');
     if (!el) return;
     const venueBps = t.venueTaxBps || 0;
     if (!tax.bps) {
       // Absence of evidence. Some contracts hold the rate in code rather than
-      // in a readable table, so this cannot promise there is none.
-      el.innerHTML = `<p class="sub" style="margin:0">None in this contract&rsquo;s tables. A rate held in code is invisible from outside.</p>`;
+      // in a readable table, so this cannot promise there is none. One line in
+      // the facts, not a card of its own that is mostly empty space.
+      if (fact) fact.innerHTML = `none found <span class="dim" title="A rate held in the contract's code rather than a table is invisible from outside">&mdash; tables only</span>`;
       return;
     }
+    if (fact) fact.innerHTML = `<b class="neg">${(tax.bps / 100).toFixed(2)}%</b> <span class="dim">per transfer</span>`;
+    el.hidden = false;
     const burn = tax.parts.filter(x => x.to === 'eosio.null').reduce((a, x) => a + x.bps, 0);
     el.innerHTML = `<div class="stat" style="padding:0 0 10px"><span class="v neg">${(tax.bps / 100).toFixed(2)}%</span><span class="k">taken from every transfer</span></div>
       <dl class="facts">${tax.parts.map(x => `<dt>${(x.bps / 100).toFixed(2)}% to</dt><dd class="mono">${esc(x.to)}${x.to === 'eosio.null' ? ' <span class="dim">burned</span>' : ''}</dd>`).join('')}
@@ -4518,7 +4748,7 @@ async function openToken(id) {
           : '<span class="ok">exempt</span> <span class="dim">&mdash; a real deposit into swap.alcor paid nothing, whatever the table says</span>'}</dd>
       </dl>
       <p class="sub" style="margin:10px 0 0">${burn > 0 ? `The ${(burn / 100).toFixed(2)}% to eosio.null is destroyed. ` : ''}Charged at every hop of a route.</p>`;
-  }).catch(() => { const el = $('#tokTax'); if (el) el.innerHTML = '<div class="chart-empty">Could not read the contract.</div>'; });
+  }).catch(() => { const f = $('#fTax'); if (f) f.innerHTML = '<span class="dim">could not read the contract</span>'; });
 
   // ---- supply, burn, market cap -------------------------------------------
   // Kicked off, not awaited: the holder table and the distribution donut need
@@ -4610,7 +4840,7 @@ async function openToken(id) {
         const shown = flipped ? invertCandles(got.candles) : got.candles;
         const pair = $('#tokPair');
         if (pair) pair.textContent = flipped ? `${deepest.symB}/${deepest.symA}` : `${deepest.symA}/${deepest.symB}`;
-        await candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close) })
+        await candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
           .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
         const note = box.nextElementSibling?.classList?.contains('chartspan') ? box.nextElementSibling : (() => {
           const n = document.createElement('p'); n.className = 'sub chartspan'; n.style.marginTop = '8px'; box.after(n); return n;
@@ -5506,8 +5736,6 @@ async function renderFarmParts(g, out) {
       : '<span class="pill">ended</span>'}</h3>
     <div class="stats">
       <div class="stat"><span class="v">${usd(liveDay)}</span><span class="k">paid out a day</span><span class="sub">${live.length} live incentive${live.length === 1 ? '' : 's'}${potDay > liveDay ? ` &middot; ${usd(potDay - liveDay)} in ended ones` : ''}</span></div>
-      <div class="stat"><span class="v">${pct(g.aprReal ?? g.apr)}</span><span class="k">farm APR</span><span class="sub">${g.aprReal != null || g.apr != null ? '' : aprWhy(g.aprStatus)}</span></div>
-      <div class="stat"><span class="v">${pct(feeApr(p))}</span><span class="k">fee APR</span><span class="sub">${esc(feeAprWhy(p))}</span></div>
       <div class="stat"><span class="v" id="farmStaked">${usd(g.stakedReal ?? g.stakedUsd)}</span><span class="k">staked in it</span><span class="sub">${g.dex === 'taco' ? 'held as LP tokens' : stakers ? `${stakers} position${stakers === 1 ? '' : 's'}` : 'nobody yet'}</span></div>
       <div class="stat"><span class="v">${soonest ? forHowLong(days(soonest)) : live.length ? 'open' : '—'}</span><span class="k">${soonest ? 'until the first ends' : 'runs until'}</span><span class="sub">${
         soonest ? (endsAt && endsAt !== soonest ? `last runs ${forHowLong(days(endsAt))}` : new Date(soonest).toISOString().slice(0, 10))
@@ -5575,7 +5803,16 @@ async function renderFarmParts(g, out) {
     }
     const per = new Map();
     for (const p2 of pts) per.set(new Date(p2.x).toISOString().slice(0, 10), p2);
-    const series = [...per.values()];
+    let series = [...per.values()].filter(p2 => isFinite(p2.y));
+    // A day when the stake was briefly pulled reads as a rate in the tens of
+    // thousands of percent. Drawn raw, that one day sets the scale and every
+    // other day becomes a flat line along the bottom — which is what this
+    // chart showed. Spikes are held at four times the typical day and said so.
+    const sorted = series.map(p2 => p2.y).sort((x, y) => x - y);
+    const typical = sorted[Math.floor(sorted.length / 2)] || 0;
+    const ceiling = typical > 0 ? typical * 4 : Infinity;
+    const clipped = series.filter(p2 => p2.y > ceiling).length;
+    series = series.map(p2 => ({ x: p2.x, y: Math.min(p2.y, ceiling) }));
     const vals = series.map(p2 => p2.y);
     const lo = Math.min(...vals), hi = Math.max(...vals), latest = vals[vals.length - 1];
     // The answer in a sentence, because a line that has not moved looks
@@ -5586,7 +5823,7 @@ async function renderFarmParts(g, out) {
       : latest <= lo * 1.02 ? 'at its lowest this week'
       : 'moving';
     box.innerHTML = `<p class="sub" style="margin:0 0 8px"><b>${pct(latest)}</b> today &middot;
-      ${pct(lo)} to ${pct(hi)} over ${series.length} days &middot; <b>${verdict}</b></p><div id="farmHistChart"></div>`;
+      ${pct(lo)} to ${pct(hi)} over ${series.length} days &middot; <b>${verdict}</b>${clipped ? ` &middot; ${clipped} spike${clipped === 1 ? '' : 's'} above ${pct(ceiling)} cut off` : ''}</p><div id="farmHistChart"></div>`;
     const cbox = $('#farmHistChart');
     lineSeriesChart(cbox, series.map(p2 => ({ time: Math.floor(p2.x / 1000), value: p2.y })),
       { height: 150, color: 'var(--c3)', fmt: v => pct(v) })
@@ -5785,26 +6022,31 @@ function startLiveTape(p, stale) {
   if (stopLive) { stopLive(); stopLive = null; }
   const box = $('#poolSwaps');
   if (!box) return;
-  const pxUsdOf = price => (p.priceUsdB != null ? price * p.priceUsdB : null);
+  // Everything on the tape is read from the traded token's side: whether it
+  // was bought or sold, what it cost, how much of it moved.
+  const o = pairOrient(p);
   const row = (x, fresh) => {
-    const side = tradeSide(x);
-    const a = Math.abs(Number(x.tokenA)), b = Math.abs(Number(x.tokenB));
-    const price = tradePrice(x, p.decA, p.decB);
-    const pu = price != null ? pxUsdOf(price) : null;
-    const who = x.sender === x.recipient ? x.sender : `${x.sender}`;
+    const aSide = tradeSide(x);
+    const side = o.baseIsA ? aSide : (aSide === 'buy' ? 'sell' : 'buy');
+    const amtA = Math.abs(Number(x.tokenA)), amtB = Math.abs(Number(x.tokenB));
+    const [baseAmt, quoteAmt] = o.baseIsA ? [amtA, amtB] : [amtB, amtA];
+    const bPerA = tradePrice(x, p.decA, p.decB);
+    const inQuote = bPerA > 0 ? (o.baseIsA ? bPerA : 1 / bPerA) : null;
+    const inUsd = inQuote != null && o.quoteUsd != null ? inQuote * o.quoteUsd : null;
+    const who = x.sender;
     return `<tr class="${fresh ? 'flash' : ''}">
       <td class="num dim" data-ts="${Date.parse(x.time)}">${ago(x.time)}</td>
       <td><span class="side ${side}">${side === 'buy' ? 'Buy' : 'Sell'}</span></td>
-      <td class="r num">${pu != null ? usdPrice(pu) : (price != null ? sigfig(price) : '—')}</td>
-      <td class="r num ${side === 'buy' ? 'pos' : 'neg'}">${qty(a)}</td>
-      <td class="r num">${qty(b)}</td>
+      <td class="r num" title="${inQuote != null ? esc(pxNum(inQuote) + ' ' + o.quoteSym) : ''}">${inUsd != null ? px(inUsd) : inQuote != null ? pxNum(inQuote) + ' <span class="dim">' + esc(o.quoteSym) + '</span>' : '—'}</td>
+      <td class="r num ${side === 'buy' ? 'pos' : 'neg'}">${qty(baseAmt)}</td>
+      <td class="r num">${qty(quoteAmt)}</td>
       <td class="r num">${x.totalUSDVolume != null ? usd(Number(x.totalUSDVolume)) : '—'}</td>
       <td class="acct-cell">${acctLink(who)}</td>
       <td class="r"><a class="dim" href="${trxUrl(x.trx_id)}" target="_blank" rel="noopener" title="Open the transaction">&nearr;</a></td>
     </tr>`;
   };
   const head = `<thead><tr><th>Age</th><th>Type</th><th class="r">Price</th>
-    <th class="r">${esc(p.symA)}</th><th class="r">${esc(p.symB)}</th><th class="r">USD</th><th>Maker</th><th></th></tr></thead>`;
+    <th class="r">${esc(o.baseSym)}</th><th class="r">${esc(o.quoteSym)}</th><th class="r">USD</th><th>Maker</th><th></th></tr></thead>`;
   let drawn = false;
   const paint = (fresh, all) => {
     if (stale()) { stopLive?.(); return; }
@@ -5833,7 +6075,7 @@ function startLiveTape(p, stale) {
 
 // A token worth a fraction of a cent needs its significant figures, not two
 // decimals: "$0.00" is what a price looks like when it has not been read.
-const usdPrice = v => (v >= 1 ? usd(v) : v > 0 ? '$' + (v >= 0.01 ? v.toFixed(4) : v.toPrecision(3)) : '—');
+const usdPrice = v => px(v);
 
 // ---------------------------------------------------------- POOL DETAIL -----
 let poolGen = 0;
@@ -5851,28 +6093,45 @@ async function openPool(key) {
   const stale = () => gen !== poolGen;
   const farms = state.farms.filter(f => f.poolDex === dex && f.poolId === id && !f.ended);
 
+  // The header a trader expects: which token, priced in what, what it costs
+  // now and how it moved, then the market's size, flow and yield. The pool's
+  // storage order decided all of this before, so WAX/LEEF headlined "25.3k
+  // LEEF per WAX" — a true number nobody prices LEEF in.
+  const o = pairOrient(p);
+  const grp0 = seedApr(farmGroups()).find(x => x.key === key);
+  const inQuote = p.priceAB > 0 ? (o.baseIsA ? p.priceAB : 1 / p.priceAB) : null;
+  const nowUsd = state.prices.get(o.baseId)?.usd ?? o.baseUsd ?? null;
+  const wasUsd = state.prevPrices.get(o.baseId);
+  const ch24 = nowUsd > 0 && wasUsd > 0 ? (nowUsd / wasUsd - 1) * 100 : null;
+  const [resBase, resQuote] = o.baseIsA ? [p.reserveA, p.reserveB] : [p.reserveB, p.reserveA];
+  const farmRate = grp0 ? (aprAtSize(grp0, 0) ?? grp0.aprReal ?? grp0.apr) : null;
+  const fee = feeApr(p);
   $('#poolDetail').innerHTML = `
-    <h2 class="vt">${pairLinks(p)} <span class="badge ${p.dex}">${p.dex}</span> <span class="dim" style="font-weight:400">#${esc(p.id)}</span></h2>
-    <p class="vs">${(p.feeBps / 100).toFixed(2)}% fee tier on ${p.dex === 'alcor' ? 'Alcor' : p.dex === 'taco' ? 'TacoSwap' : p.dex === 'defibox' ? 'Defibox' : 'A-DEX'}${p.bornAt ? ` &middot; first seen ${age(p.bornAt)} ago` : ''}</p>
-    <div class="toolbar" style="margin-bottom:16px">
+    <div class="ph">
+      <span data-pm="${esc(o.baseId)}|${esc(o.baseSym)}|${esc(o.quoteId)}|${esc(o.quoteSym)}"></span>
+      <h2 class="vt">${tokLink(o.baseId, o.baseSym)}<span class="dim"> / </span>${tokLink(o.quoteId, o.quoteSym)}</h2>
+      ${tierTag(p)}<span class="badge ${p.dex}">${esc(venueName[p.dex] || p.dex)}</span>
+      <span class="dim ph-meta">#${esc(p.id)}${p.bornAt ? ` &middot; ${age(p.bornAt)} old` : ''}</span>
       <span id="poolStar"></span>
-      <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade this pair &nearr;</a>
-      <button class="btn" id="poolAddLiq">Add liquidity</button>
-      <button class="btn ghost" id="poolNewFarm">Create a farm</button>
-      <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">Open the pool &nearr;</a>
+      <div class="ph-act">
+        <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade &nearr;</a>
+        <button class="btn" id="poolAddLiq">Add liquidity</button>
+        <button class="btn ghost" id="poolNewFarm">Create a farm</button>
+        <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">${esc(venueName[p.dex] || p.dex)} &nearr;</a>
+      </div>
     </div>
     <div class="stats">
-      <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">exit value</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
-      <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span>${p.turnover > 0 ? `<span class="sub">${p.turnover.toFixed(2)}× its own liquidity</span>` : ''}</div>
-      <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
-      <div class="stat"><span class="v">${qty(p.priceAB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} per ${tokLink(p.tokenA, p.symA)}</span></div>
-      <div class="stat"><span class="v">${qty(p.reserveA)}</span><span class="k">${tokLink(p.tokenA, p.symA)} in pool</span><span class="sub">${usd(p.priceUsdA ? p.reserveA * p.priceUsdA : null)}</span></div>
-      <div class="stat"><span class="v">${qty(p.reserveB)}</span><span class="k">${tokLink(p.tokenB, p.symB)} in pool</span><span class="sub">${usd(p.priceUsdB ? p.reserveB * p.priceUsdB : null)}</span></div>
-      <div class="stat"><span class="v">${farms.length}</span><span class="k">live farms</span></div>
+      <div class="stat"><span class="v">${nowUsd != null ? px(nowUsd) : '—'}${ch24 != null ? ` <span class="chg ${chgCls(ch24)}">${chgTxt(ch24)}</span>` : ''}</span><span class="k">${esc(o.baseSym)} price</span><span class="sub">${inQuote != null ? esc(pxNum(inQuote)) + ' ' + esc(o.quoteSym) : ''}</span></div>
+      <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">liquidity</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
+      <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span><span class="sub">${p.vol7d > 0 ? usd(p.vol7d) + ' in 7 days' : ''}</span></div>
+      <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">depth &plusmn;1%</span><span class="sub">trade size that moves it 1%</span></div>
+      <div class="stat"><span class="v ${fee > 0 ? '' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
+      <div class="stat"><span class="v ${farmRate != null ? 'pos' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${usd(grp0.rewardRealDay)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
+      <div class="stat"><span class="v">${qty(resBase)}</span><span class="k">${esc(o.baseSym)} pooled</span><span class="sub">${qty(resQuote)} ${esc(o.quoteSym)}</span></div>
       ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
     <div class="grid g2">
-      <div class="card"><h3><span id="poolPair">Price</span> <span class="dim">— candles built from pool state changes</span>
+      <div class="card"><h3><span id="poolPair">Price</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" id="poolFlip" title="Show the price the other way round">&#8646;</button>
           ${intervalChips('poolPrice')}
@@ -6011,7 +6270,8 @@ async function openPool(key) {
     // of a busy pool is 1.7 days, which is fine at five minutes a candle and
     // useless at one a day — the long intervals looked cut off because there
     // was nothing older to draw.
-    let iv = 3600, flipped = false, busy = false;
+    // Default to the traded token priced in its quote, like the header.
+    let iv = 3600, flipped = !o.baseIsA, busy = false;
     const draw = async () => {
       const box = $('#poolChart');
       if (!box || busy) return;
@@ -6024,9 +6284,12 @@ async function openPool(key) {
         const [num, den] = flipped ? [p.symA, p.symB] : [p.symB, p.symA];
         const pair = $('#poolPair');
         if (pair) pair.textContent = `${den}/${num}`;
-        note.textContent = `${shown.length.toLocaleString()} candles back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)} · ${num} per ${den}`
-          + (got.source === 'alcor' ? ' · the whole life of the pool, from Alcor.' : ' · rebuilt from pool state changes.');
-        await candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close) })
+        note.textContent = `${den} priced in ${num} · ${shown.length.toLocaleString()} candles back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
+          + (got.source === 'alcor' ? '' : ' · rebuilt from pool state changes');
+        // The last few days in view, not the pool's whole life: one launch-day
+        // spike otherwise sets the scale and every candle since is a flat line
+        // along the bottom. Zooming out is a scroll away.
+        await candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
           .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
       } catch (e) {
         const box2 = $('#poolChart');

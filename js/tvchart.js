@@ -21,6 +21,23 @@ async function load() {
 
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
+// A canvas cannot read CSS. Callers pass theme colours as `var(--c1)`, which
+// SVG understands and a canvas rejects — and appending '44' for the area fill
+// made 'var(--c1)44', which throws inside the library, so every line chart on
+// the overview, the token pages and the market pages drew nothing at all in a
+// real browser. Resolve the variable, then express opacity as rgba().
+function solid(c, fallback) {
+  const m = /^var\((--[\w-]+)\)$/.exec(String(c || '').trim());
+  return (m ? cssVar(m[1]) : c) || fallback;
+}
+function alpha(c, a) {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+  if (!hex) return c;
+  const h = hex[1].length === 3 ? [...hex[1]].map(x => x + x).join('') : hex[1];
+  const n = parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
 // Read the theme rather than hard-coding: a rebrand must restyle the price
 // chart too, and the token set is the single source for that.
 function themeOptions() {
@@ -91,16 +108,18 @@ function mount(container, createChart, options, height) {
 }
 
 // candles: [{time, open, high, low, close, volume}] with time in SECONDS.
-export async function candleChart(container, candles, { height = 320, precision = 6 } = {}) {
+export async function candleChart(container, candles, { height = 320, precision = 6, fmt = null, visible = 0 } = {}) {
   const { createChart, CandlestickSeries, HistogramSeries } = await load();
   const { chart, stop } = mount(container, createChart, themeOptions(), height);
-  const up = cssVar('--good') || '#4c9';
-  const down = cssVar('--bad') || '#c54';
+  const up = solid('var(--good)', '#44cc99');
+  const down = solid('var(--bad)', '#cc5544');
 
   const price = chart.addSeries(CandlestickSeries, {
     upColor: up, downColor: down, borderUpColor: up, borderDownColor: down,
     wickUpColor: up, wickDownColor: down,
-    priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
+    // A custom formatter where one is given, so the axis reads $0.0₆771 like
+    // the rest of the page instead of 0.00000077 or 7.7e-7.
+    priceFormat: fmt ? { type: 'custom', formatter: fmt, minMove: 10 ** -precision } : { type: 'price', precision, minMove: 10 ** -precision },
   });
   price.setData(candles.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
 
@@ -112,11 +131,13 @@ export async function candleChart(container, candles, { height = 320, precision 
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
     vol.setData(candles.map(c => ({
       time: c.time, value: c.volume,
-      color: c.close >= c.open ? up + '55' : down + '55',
+      color: alpha(c.close >= c.open ? up : down, 0.33),
     })));
   }
 
-  chart.timeScale().fitContent();
+  if (visible && candles.length > visible) {
+    chart.timeScale().setVisibleLogicalRange({ from: candles.length - visible, to: candles.length + 2 });
+  } else chart.timeScale().fitContent();
   return {
     chart,
     destroy: () => { stop(); try { chart.remove(); } catch {} },
@@ -136,7 +157,7 @@ export async function histogramChart(container, points, { height = 170, color = 
     // price scale is formatted as money rather than as a quote.
     localization: fmt ? { priceFormatter: fmt } : undefined,
   }, height);
-  const c = color || cssVar('--c2') || '#3987e5';
+  const c = solid(color || 'var(--c2)', '#3987e5');
   const s = chart.addSeries(HistogramSeries, { color: c, priceFormat: { type: 'volume' } });
   s.setData(points.map(p => ({ time: p.time, value: p.value })));
   chart.timeScale().fitContent();
@@ -149,9 +170,9 @@ export async function lineSeriesChart(container, points, { height = 240, color =
   const { createChart, AreaSeries } = await load();
   const { chart, stop } = mount(container, createChart,
     { ...themeOptions(), localization: fmt ? { priceFormatter: fmt } : undefined }, height);
-  const c = color || cssVar('--c1') || '#3987e5';
+  const c = solid(color || 'var(--c1)', '#3987e5');
   const s = chart.addSeries(AreaSeries, {
-    lineColor: c, topColor: c + '44', bottomColor: c + '05', lineWidth: 2,
+    lineColor: c, topColor: alpha(c, 0.27), bottomColor: alpha(c, 0.02), lineWidth: 2,
     priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
   });
   s.setData(points.map(p => ({ time: p.time, value: p.value })));
