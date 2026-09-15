@@ -27,6 +27,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         super().end_headers()
 
+    def send_error(self, code, message=None, explain=None):
+        # The app routes on real paths (/markets, /market/alcor:314), which on
+        # GitHub Pages fall through to 404.html and bounce back to index. Do the
+        # same here, or every deep link is a 404 while developing.
+        if code == 404 and 'text/html' in (self.headers.get('Accept') or ''):
+            self.path = '/404.html'
+            try:
+                return SimpleHTTPRequestHandler.do_GET(self)
+            except Exception:
+                pass
+        return super().send_error(code, message, explain)
+
     def log_message(self, fmt, *args):
         if os.environ.get('SERVE_QUIET'):
             return

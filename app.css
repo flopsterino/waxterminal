@@ -1295,3 +1295,25 @@ tbody tr.faded .pairbig, tbody tr.faded .apr { opacity: .8; }
   .minitab { font-size: 12px; }
   .minitab td:first-child { max-width: 130px; }
 }
+
+/* --- staking ------------------------------------------------------------ */
+.stakeimg { width: 22px; height: 22px; border-radius: 5px; object-fit: cover; margin-right: 8px;
+  vertical-align: middle; background: var(--surface-3); flex: none; display: inline-block; }
+.stakeimg.gen { display: inline-grid; place-items: center; font-size: 9px; font-weight: 700; color: var(--muted); }
+.ph .stakeimg { width: 30px; height: 30px; border-radius: 7px; margin-right: 2px; }
+#stakeTable td:first-child { max-width: none; }
+.filterbar { margin: 0 0 10px; }
+.filterbar .search { flex: 1 1 220px; }
+/* Seven tabs and a search box: the brand may not wrap to make room for them. */
+.brand { flex: none; white-space: nowrap; }
+.brand span { white-space: nowrap; }
+@media (max-width: 1240px) { .top { gap: 8px; } nav.tabs button { padding: 6px 8px; font-size: 12.5px; } .gsearch { flex-basis: 220px; } }
+@media (max-width: 1100px) { .brand #brandName { display: none; } }
+nav.tabs button { white-space: nowrap; }
+.ph .stakeimg.gen { font-size: 12px; }
+
+/* A position's band inside a table row: bar first, edges under it. */
+.rangewrap { display: flex; flex-direction: column; gap: 2px; min-width: 110px; }
+.rangebar.mini { height: 8px; min-width: 110px; }
+.rangetxt { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.rangecell { padding-top: 4px; padding-bottom: 4px; }

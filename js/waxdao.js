@@ -16,6 +16,46 @@ import { getRows } from './chain.js';
 
 const CONTRACT = 'farms.waxdao';
 
+// Every farm the contract runs, so they can be browsed rather than only
+// claimed. 135 rows in one read, 21 of them still paying.
+let farmCache = null, farmAt = 0;
+export async function waxdaoFarms({ maxAgeMs = 5 * 60 * 1000 } = {}) {
+  if (farmCache && Date.now() - farmAt < maxAgeMs) return farmCache;
+  let rows = [];
+  try {
+    const d = await getRows(CONTRACT, CONTRACT, 'farms', { limit: 400 });
+    rows = d.rows || [];
+  } catch { return farmCache || []; }
+  farmCache = rows.map(r => {
+    const rewards = (r.reward_pools || []).map(x => {
+      const hourly = parseQty(x.total_hourly_reward);
+      const funds = parseQty(x.total_funds);
+      if (!hourly) return null;
+      return {
+        symbol: hourly.symbol, contract: x.contract, perHour: hourly.amount,
+        perDay: hourly.amount * 24, funds: funds ? funds.amount : 0,
+        // What is left in the pot at the rate it pays, which is the only honest
+        // end date: expiration says when it may stop, funding says when it must.
+        daysLeft: hourly.amount > 0 && funds ? funds.amount / (hourly.amount * 24) : null,
+      };
+    }).filter(Boolean);
+    return {
+      id: Number(r.id), name: r.farmname, creator: r.creator,
+      type: Number(r.farm_type) || 0,
+      collections: r.collections || [],
+      staked: Number(r.total_staked) || 0,
+      createdAt: Number(r.time_created) * 1000,
+      endsAt: Number(r.expiration) * 1000,
+      status: Number(r.status) || 0,
+      rewards,
+      avatar: r.profile?.avatar || '', description: r.profile?.description || '',
+      socials: r.socials || {},
+    };
+  });
+  farmAt = Date.now();
+  return farmCache;
+}
+
 export async function waxdaoStakes(account) {
   let rows = [];
   try {
@@ -30,6 +70,8 @@ export async function waxdaoStakes(account) {
     .map(r => ({
       farm: r.farmname,
       assets: (r.asset_ids || []).length,
+      // The ids themselves, because taking NFTs back out names them.
+      assetIds: (r.asset_ids || []).map(String),
       // The contract holds what has accrued since the last state change, and
       // the hourly rate on top of it — so what is claimable *now* is the stored
       // balance plus the rate times the time since. Shown separately: one is
@@ -38,7 +80,17 @@ export async function waxdaoStakes(account) {
       perHour: (r.rates_per_hour || []).map(parseQty).filter(Boolean),
       since: Number(r.last_state_change) * 1000,
     }))
-    .filter(s => s.stored.length || s.perHour.length);
+    // Everything staked, not only what is still paying: a farm that has run out
+    // still holds the NFTs, and taking them back is the whole reason to look.
+    .filter(s => s.stored.length || s.perHour.length || s.assets > 0);
+}
+
+export function buildWaxdaoUnstake({ account, farm, assetIds, auth = null }) {
+  auth = auth || [{ actor: account, permission: 'active' }];
+  return [{
+    account: CONTRACT, name: 'unstake', authorization: auth,
+    data: { user: account, farmname: farm, asset_ids: assetIds.map(String) },
+  }];
 }
 
 function parseQty(q) {

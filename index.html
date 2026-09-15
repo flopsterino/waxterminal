@@ -2,6 +2,22 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
+<script>
+// Real paths (/markets, /market/alcor:314) mean the address bar no longer says
+// where this page's files are. 404.html bounces a deep link to the app's root
+// and parks the original URL; at THIS moment the address bar is that root, so
+// it is the only reliable moment to pin every relative asset to it. Then the
+// deep link is put back without a reload.
+(function () {
+  var b = document.createElement('base');
+  b.href = location.pathname.replace(/[^/]*$/, '');
+  document.head.appendChild(b);
+  try {
+    var r = sessionStorage.getItem('wt:redirect');
+    if (r) { sessionStorage.removeItem('wt:redirect'); if (r !== location.href) history.replaceState(null, '', r); }
+  } catch (e) {}
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WAX Terminal</title>
 <meta name="description" content="Pools, farms and liquidity across the WAX blockchain. Reads Alcor and TacoSwap directly from chain — no backend.">
@@ -20,6 +36,7 @@
     <button role="tab" data-view="overview" aria-selected="true">Overview</button>
     <button role="tab" data-view="tokens"   aria-selected="false">Tokens</button>
     <button role="tab" data-view="farms"    aria-selected="false">Markets</button>
+    <button role="tab" data-view="staking"  aria-selected="false">Staking</button>
     <button role="tab" data-view="wallet"   aria-selected="false">My wallet</button>
     <button role="tab" data-view="activity" aria-selected="false">Activity</button>
   <button role="tab" data-view="leaders" aria-selected="false">Leaders</button>
@@ -93,6 +110,32 @@
     <div class="filters" id="farmFilterPanel" hidden></div>
     <div class="tablewrap flow"><table id="farmTable"><thead></thead><tbody></tbody></table></div>
     <div id="newPoolBox" style="margin-top:14px"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------- STAKING -->
+  <section class="view" id="view-staking">
+    <h2 class="vt">Staking</h2>
+    <div class="stats" id="stakeStats"></div>
+    <div class="toolbar">
+      <input class="search" id="stakeSearch" placeholder="Search a farm, a token or a collection…" autocomplete="off">
+      <button class="chip" id="stAll" aria-pressed="true">All</button>
+      <button class="chip" id="stPepper" aria-pressed="false">PepperStake</button>
+      <button class="chip" id="stWaxdao" aria-pressed="false">WaxDAO</button>
+      <span class="sep"></span>
+      <button class="chip" id="stToken" aria-pressed="false">Token farms</button>
+      <button class="chip" id="stNft" aria-pressed="false">NFT farms</button>
+      <button class="chip" id="stMine" aria-pressed="false">Only mine</button>
+      <button class="chip" id="stEnded" aria-pressed="false">Show ended</button>
+      <span class="dim" id="stakeCount" style="font-size:12px"></span>
+    </div>
+    <div class="tablewrap flow"><table id="stakeTable"><thead></thead><tbody></tbody></table></div>
+    <p class="sub" id="stakeNote" style="margin-top:10px"></p>
+  </section>
+
+  <!-- --------------------------------------------------- STAKING DETAIL -->
+  <section class="view" id="view-stake">
+    <button class="btn ghost" id="stakeBack" style="margin-bottom:14px">&larr; Back</button>
+    <div id="stakeDetail"></div>
   </section>
 
   <!-- ----------------------------------------------------------- WALLET -->

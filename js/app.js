@@ -21,8 +21,8 @@ import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from '
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
-import { waxdaoStakes, claimableNow, buildWaxdaoClaims } from './waxdao.js';
-import { pepperStakes, buildPepperClaim } from './pepperstake.js';
+import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake } from './waxdao.js';
+import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
@@ -165,6 +165,13 @@ const ago = t => {
   if (s < 86400) return Math.round(s / 3600) + 'h ago';
   return Math.round(s / 86400) + 'd ago';
 };
+// How long from now, in the unit that reads: hours today, days this month,
+// months beyond that.
+const forDays = d => d == null ? '—'
+  : d < 1 ? `${Math.max(1, Math.round(d * 24))}h`
+  : d < 60 ? `${Math.round(d)} days`
+  : `${(d / 30).toFixed(1)} months`;
+
 // How long something has existed. New pools are where both the best yields and
 // the worst rugs are, so it earns a column rather than a footnote.
 function age(ts) {
@@ -189,6 +196,10 @@ const swapUrl = p => p.dex === 'alcor'
 const farmUrl = p => p.dex === 'alcor' ? 'https://wax.alcor.exchange/positions' : 'https://swap.tacocrypto.io/farms';
 
 const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
+
+// The sister site. WaxDAO's front end is gone and is not coming back, so every
+// "go and stake this" link points at CheeseHub, which runs the same contracts.
+const CHEESEHUB = 'https://cheesehubwax.github.io/cheesehub';
 
 // waxblock is the explorer everyone on WAX already reads, so a transaction or a
 // block links straight out to it. An *account* does not: clicking a wallet
@@ -485,6 +496,7 @@ async function boot() {
     if (b.dataset.view === 'leaders') renderLeaders();
     // One extra table read, and only for someone who opened the tokens page.
     if (b.dataset.view === 'tokens') renderUnlocks().catch(() => {});
+    if (b.dataset.view === 'staking') renderStaking().catch(() => {});
   });
   const paintUnit = () => {
     const b = $('#unitToggle');
@@ -511,15 +523,22 @@ async function boot() {
     redrawCurrent();
   }, 250));
 
-  $('#farmBack').onclick = () => show(lastView || 'farms');
-  $('#poolBack').onclick = () => show(lastView || 'pools');
-  $('#tokBack').onclick = () => show(lastView || 'tokens');
+  // "Back" means the page you came from, which the browser already knows. The
+  // fallback is for someone who opened a deep link directly.
+  const goBack = fallback => () => {
+    if (history.state && history.length > 1) history.back();
+    else show(lastView || fallback);
+  };
+  $('#farmBack').onclick = goBack('farms');
+  $('#poolBack').onclick = goBack('farms');
+  $('#tokBack').onclick = goBack('tokens');
+  $('#stakeBack').onclick = goBack('staking');
 
   // Wire everything BEFORE loading. Handlers do not need data, and hanging the
   // first render off a progress callback meant one early return anywhere in
   // that path left the page on a spinner with no error — which is exactly what
   // happened, and only on the path that reads the chain.
-  wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders(); wireSearch();
+  wireFarms(); wireTokens(); wireWallet(); wireActivity(); wireConnect(); wireLeaders(); wireSearch(); wireStaking();
 
   // Start the nightly file on the way past. It is 30 KB and it carries the farm
   // APR denominator, so having it in flight before the first table is drawn is
@@ -621,6 +640,9 @@ async function boot() {
 
   if (!routeFromHash()) show(CFG.content?.defaultView || 'overview');
   window.addEventListener('hashchange', routeFromHash);
+  // Back and forward are navigation, not a page load: re-render from whatever
+  // URL the browser just put us on.
+  window.addEventListener('popstate', () => { if (!routeFromHash()) show(CFG.content?.defaultView || 'overview'); });
 }
 
 // ---------------------------------------------------------------- SEARCH ----
@@ -802,11 +824,15 @@ function redrawCurrent() {
     // Whatever is actually on screen, including the detail pages — the unit
     // switch has to reach every number, and a token page left in dollars while
     // the header says WAX is the worst of both.
-    const [view, arg] = location.hash.replace(/^#/, '').split('/');
-    if (view === 'token' && arg) return void openToken(decodeURIComponent(arg));
-    if (view === 'pool' && arg) return void openPool(decodeURIComponent(arg));
-    if (view === 'farm' && arg) return void openFarm(decodeURIComponent(arg));
-    if (view === 'account' && arg) { const a = decodeURIComponent(arg); show('wallet', a); $('#walletInput').value = a; return void lookupWallet(a); }
+    const path = location.pathname.slice(BASE.length).replace(/^\/+|\/+$/g, '');
+    const [head, ...rest] = path.split('/');
+    const view = PATH_VIEWS[head] || head;
+    const arg = rest.length ? decodeURIComponent(rest.join('/')) : null;
+    if (view === 'token' && arg) return void openToken(arg);
+    if (view === 'pool' && arg) return void openPool(arg);
+    if (view === 'farm' && arg) return void openFarm(arg);
+    if (view === 'stake' && arg) return void openStake(arg);
+    if (view === 'account' && arg) { show('wallet', arg); $('#walletInput').value = arg; return void lookupWallet(arg); }
     if (lastView === 'tokens') renderTokens();
     else if (lastView === 'farms') renderFarms();
     else if (lastView === 'overview') renderOverview();
@@ -830,39 +856,73 @@ function show(v, arg = null) {
   if (v === 'pools') v = 'farms';
   // A view the partner turned off is not a view.
   if (hiddenViews.has(v)) v = CFG?.content?.defaultView && !hiddenViews.has(CFG.content.defaultView) ? CFG.content.defaultView : 'overview';
-  if (!['pool', 'token', 'account', 'farm'].includes(v)) lastView = v;
+  if (!['pool', 'token', 'account', 'farm', 'stake'].includes(v)) lastView = v;
   // A once-a-second recompute has no business running behind a page nobody is
   // looking at, and it holds every incentive row it read alive with it.
   if (v !== 'wallet') stopAccrual();
   hideTip();
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
-  const hash = arg ? `#${v}/${arg}` : `#${v}`;
-  if (location.hash !== hash) history.replaceState(null, '', hash);
+  // A path, not a fragment, and pushed rather than replaced: "back" used to
+  // walk out of the site entirely because every navigation overwrote the same
+  // history entry. /markets, /token/CHEESE@cheeseburger, /wallet/name — each
+  // one is a URL you can send someone, and each one is a step you can undo.
+  const url = routePath(v, arg);
+  if (location.pathname + location.search !== url) history.pushState({ v, arg }, '', url);
   window.scrollTo(0, 0);
   stickySoon();
 }
 
-// A view worth looking at is worth linking to: #farms, #pool/alcor:314,
-// #wallet/someaccount all deep-link straight into the terminal.
+// GitHub Pages serves this app from a subdirectory, so every path is relative
+// to wherever index.html lives. Taken from this module's own URL, not from the
+// address bar: on a deep link like /market/alcor:314 the address bar says
+// nothing about where the app is mounted.
+const BASE = new URL(import.meta.url).pathname.replace(/js\/app\.js$/, '');
+const VIEW_PATHS = { overview: '', farms: 'markets', pools: 'markets', tokens: 'tokens', staking: 'staking',
+  wallet: 'wallet', activity: 'activity', leaders: 'leaders', pool: 'market', farm: 'market', token: 'token',
+  stake: 'farm', account: 'wallet' };
+const PATH_VIEWS = { '': 'overview', markets: 'farms', pools: 'farms', tokens: 'tokens', staking: 'staking',
+  wallet: 'wallet', activity: 'activity', leaders: 'leaders', market: 'pool', token: 'token', farm: 'stake',
+  account: 'wallet', overview: 'overview', farms: 'farms' };
+// @ and : are legal in a path and are half of what a WAX id looks like:
+// /token/CHEESE@cheeseburger reads, /token/CHEESE%40cheeseburger does not.
+const encPath = v => encodeURIComponent(v).replace(/%40/g, '@').replace(/%3A/gi, ':');
+function routePath(v, arg) {
+  const seg = VIEW_PATHS[v] ?? v;
+  return BASE + (seg ? seg + (arg ? '/' + encPath(String(arg)) : '') : '');
+}
+
+// A view worth looking at is worth linking to. Paths are the current form
+// (/markets, /market/alcor:314); the old fragments still work, because links
+// to them are already out there.
 function routeFromHash() {
-  const [view, arg] = location.hash.replace(/^#/, '').split('/');
+  let view, arg;
+  const path = location.pathname.slice(BASE.length).replace(/^\/+|\/+$/g, '');
+  if (path) {
+    const [head, ...rest] = path.split('/');
+    view = PATH_VIEWS[head] || head;
+    arg = rest.length ? decodeURIComponent(rest.join('/')) : undefined;
+  } else if (location.hash) {
+    [view, arg] = location.hash.replace(/^#/, '').split('/');
+    if (arg) arg = decodeURIComponent(arg);
+  }
   if (!view) return false;
-  if (view === 'pool' && arg) { openPool(decodeURIComponent(arg)); return true; }
-  if (view === 'token' && arg) { openToken(decodeURIComponent(arg)); return true; }
+  if (view === 'pool' && arg) { openPool(arg); return true; }
+  if (view === 'token' && arg) { openToken(arg); return true; }
   // #account/<name> was a separate, thinner page. One wallet view now, so an
   // old link still lands somewhere useful.
-  if (view === 'account' && arg) { const a = decodeURIComponent(arg); show('wallet', a); $('#walletInput').value = a; lookupWallet(a); return true; }
+  if (view === 'account' && arg) { show('wallet', arg); $('#walletInput').value = arg; lookupWallet(arg); return true; }
   if (view === 'wallet' && !arg && wallet.account()) { show('wallet'); autoWallet(); return true; }
   if (view === 'wallet' && arg) {
-    const acct = decodeURIComponent(arg);
-    show('wallet'); $('#walletInput').value = acct; lookupWallet(acct); return true;
+    show('wallet', arg); $('#walletInput').value = arg; lookupWallet(arg); return true;
   }
   // #compound/<account> was the old Liquidity page. One positions list now.
-  if (view === 'compound' && arg) { const a = decodeURIComponent(arg); show('wallet', a); $('#walletInput').value = a; lookupWallet(a); return true; }
-  if (view === 'farm' && arg) { openFarm(decodeURIComponent(arg)); return true; }
+  if (view === 'compound' && arg) { show('wallet', arg); $('#walletInput').value = arg; lookupWallet(arg); return true; }
+  if (view === 'farm' && arg) { openFarm(arg); return true; }
+  if (view === 'stake' && arg) { openStake(arg); return true; }
+  if (view === 'staking') { show('staking'); renderStaking(); return true; }
   if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
-  if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity'].includes(view)) {
+  if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'staking'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
     if (view === 'leaders') renderLeaders();
@@ -2169,6 +2229,403 @@ async function renderTradeFlow(account) {
   fillMarks(box);
 }
 
+// ---------------------------------------------------------------- STAKING ---
+// Farms that are not liquidity pools: stake an NFT or a token, collect a
+// different token. Two contracts run almost all of it on WAX — pepperstake and
+// farms.waxdao — and between them they were paying out to nobody's screen:
+// PepperStake's own front end has been down for months while its pools kept
+// accruing, and WaxDAO's farms were only ever visible here as a claim button
+// on your own wallet page.
+//
+// Both are read the same way: one table read for the list, one more for what a
+// pool accepts. Nothing here is written without a signature.
+const stakeFilters = { q: '', venue: 'all', kind: 'all', ended: false, mine: false, sort: 'usdDay', dir: -1 };
+let stakeRows = null;
+// Which of these the connected wallet is actually in. Read once per wallet, so
+// the "only mine" toggle is instant after the first press.
+let myStakeKeys = null, myStakeFor = null;
+async function loadMyStakes() {
+  const me = wallet.account();
+  if (!me) { myStakeKeys = new Set(); myStakeFor = null; return myStakeKeys; }
+  if (myStakeFor === me && myStakeKeys) return myStakeKeys;
+  const [pep, wd] = await Promise.all([pepperStakes(me).catch(() => []), waxdaoStakes(me).catch(() => [])]);
+  myStakeKeys = new Set([...pep.map(s => `pepper:${s.poolId}`), ...wd.map(s => `waxdao:${s.farm}`)]);
+  myStakeFor = me;
+  return myStakeKeys;
+}
+
+// The reward tokens these farms pay are ordinary WAX tokens, so the terminal
+// already knows what they are worth wherever it has a price.
+const priceOf = (symbol, contract) => state.prices.get(`${symbol}@${contract}`)?.usd ?? null;
+
+const ipfs = h => (h && /^Qm|^bafy/.test(h) ? `https://atomichub-ipfs.com/ipfs/${encodeURIComponent(h)}` : '');
+
+function stakeImg(row) {
+  const src = ipfs(row.img);
+  const initials = (row.name || row.title || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '#';
+  return src
+    ? `<img class="stakeimg" src="${esc(src)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'stakeimg gen',textContent:'${esc(initials)}'}))">`
+    : `<span class="stakeimg gen">${esc(initials)}</span>`;
+}
+
+// One shape for both venues, so one table can rank them against each other.
+async function loadStakeRows() {
+  const [pep, wd] = await Promise.all([
+    pepperPools().catch(() => []),
+    waxdaoFarms().catch(() => []),
+  ]);
+  const now = Date.now();
+  const rows = [];
+  for (const p of pep) {
+    if (!p.activated) continue;
+    const px = priceOf(p.reward?.symbol, p.reward?.contract);
+    const usdDay = px != null ? p.rewardPerDay * px : null;
+    const stakePx = p.kind === 'token' ? priceOf(p.acceptSymbol, p.acceptContract) : null;
+    const stakedUsd = stakePx != null ? p.stakedTokens * stakePx : null;
+    rows.push({
+      key: `pepper:${p.id}`, venue: 'pepperstake', venueName: 'PepperStake',
+      id: p.id, name: p.name || `Pool #${p.id}`, img: p.img, kind: p.kind,
+      accepts: p.kind === 'token' ? p.acceptSymbol : 'NFTs',
+      acceptsId: p.kind === 'token' ? `${p.acceptSymbol}@${p.acceptContract}` : null,
+      rewards: p.reward ? [{ symbol: p.reward.symbol, contract: p.reward.contract, perDay: p.rewardPerDay }] : [],
+      usdDay, stakedUsd,
+      staked: p.kind === 'token' ? p.stakedTokens : p.assetPower,
+      stakedLabel: p.kind === 'token' ? `${qty(p.stakedTokens)} ${p.acceptSymbol}` : `${p.assetPower.toLocaleString()} power`,
+      users: p.users, endsAt: p.endsAt, live: p.endsAt > now,
+      apr: (usdDay != null && stakedUsd > 0) ? usdDay * 365 / stakedUsd * 100 : null,
+      raw: p,
+    });
+  }
+  for (const f of wd) {
+    if (f.status === 0) continue;
+    const perDay = f.rewards.reduce((a, r) => a + r.perDay, 0);
+    const usdDay = f.rewards.reduce((a, r) => {
+      const px = priceOf(r.symbol, r.contract);
+      return px != null ? a + r.perDay * px : a;
+    }, 0);
+    rows.push({
+      key: `waxdao:${f.name}`, venue: 'waxdao', venueName: 'WaxDAO',
+      id: f.name, name: f.name, img: f.avatar, kind: 'nft',
+      accepts: f.collections.length ? f.collections.join(', ') : 'NFTs',
+      acceptsId: null,
+      rewards: f.rewards.map(r => ({ symbol: r.symbol, contract: r.contract, perDay: r.perDay })),
+      usdDay: usdDay > 0 ? usdDay : null, stakedUsd: null,
+      staked: f.staked, stakedLabel: `${f.staked.toLocaleString()} NFT${f.staked === 1 ? '' : 's'}`,
+      users: null, endsAt: f.endsAt, live: f.endsAt > now && f.status === 1,
+      apr: null, perDay,
+      raw: f,
+    });
+  }
+  return rows;
+}
+
+async function renderStaking() {
+  const tb = $('#stakeTable tbody');
+  if (!stakeRows) {
+    tb.innerHTML = '<tr><td colspan="9"><div class="loading"><span class="spinner"></span><span>Reading both staking contracts…</span></div></td></tr>';
+    stakeRows = await loadStakeRows();
+  }
+  const f = stakeFilters;
+  let rows = stakeRows.filter(r => {
+    // "Only mine" ignores the live filter on purpose: a farm you are in that
+    // has ended is exactly the one you need to find, to take your NFTs back.
+    if (f.mine && !myStakeKeys?.has(r.key)) return false;
+    if (!f.ended && !f.mine && !r.live) return false;
+    if (f.venue !== 'all' && r.venue !== f.venue) return false;
+    if (f.kind !== 'all' && r.kind !== f.kind) return false;
+    if (f.q) {
+      const hay = `${r.name} ${r.accepts} ${r.venueName} ${r.rewards.map(x => x.symbol).join(' ')} ${r.id}`.toLowerCase();
+      if (!hay.includes(f.q)) return false;
+    }
+    return true;
+  });
+  rows.sort((a, b) => {
+    const x = a[f.sort], y = b[f.sort];
+    const xn = x == null || !isFinite(x), yn = y == null || !isFinite(y);
+    if (xn !== yn) return xn ? 1 : -1;
+    if (xn && yn) return (b.staked || 0) - (a.staked || 0);
+    return (x - y) * f.dir;
+  });
+  lastRendered.staking = rows;
+
+  const live = stakeRows.filter(r => r.live);
+  const dayTotal = live.reduce((a, r) => a + (r.usdDay || 0), 0);
+  $('#stakeStats').innerHTML = `
+    <div class="stat"><span class="v">${live.length}</span><span class="k">farms paying now</span><span class="sub">${stakeRows.length} on both contracts</span></div>
+    <div class="stat"><span class="v">${usd(dayTotal)}</span><span class="k">paid out a day</span><span class="sub">where the reward has a price</span></div>
+    <div class="stat"><span class="v">${live.filter(r => r.kind === 'nft').length}</span><span class="k">take NFTs</span><span class="sub">${live.filter(r => r.kind === 'token').length} take a token</span></div>
+    <div class="stat"><span class="v">${live.filter(r => r.endsAt < Date.now() + 30 * 86400e3).length}</span><span class="k">end within a month</span><span class="sub">at today's schedule</span></div>`;
+
+  const cols = [
+    { k: 'name', label: 'Farm', s: false },
+    { k: 'kind', label: 'Takes', s: false },
+    { k: 'rewards', label: 'Pays per day', s: false },
+    { k: 'usdDay', label: 'Value / day', r: true, s: true },
+    { k: 'staked', label: 'Staked', r: true, s: true },
+    { k: 'apr', label: 'APR', r: true, s: true, title: 'Token farms only: what the rewards are worth against the value staked' },
+    { k: 'users', label: 'Stakers', r: true, s: true },
+    { k: 'endsAt', label: 'Ends', r: true, s: true },
+  ];
+  const thead = $('#stakeTable thead');
+  thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable ' : ''}" data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ''}>${c.label}${f.sort === c.k ? ` <span class="dir">${f.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
+  thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (f.sort === k) f.dir *= -1; else { f.sort = k; f.dir = -1; }
+    renderStaking();
+  });
+
+  $('#stakeCount').textContent = `${rows.length} farm${rows.length === 1 ? '' : 's'}`;
+  tb.innerHTML = rows.map(r => {
+    const ends = r.endsAt ? (r.endsAt - Date.now()) / 86400e3 : null;
+    return `<tr class="clickable" data-stake="${esc(r.key)}">
+      <td>${stakeImg(r)}<span class="pairbig">${esc(r.name)}</span><span class="tier">${esc(r.venueName)}</span></td>
+      <td class="dim">${r.kind === 'nft'
+        ? `<span class="badge">NFT</span>${r.accepts && r.accepts !== 'NFTs' ? ` <span class="sub">${esc(String(r.accepts).slice(0, 26))}</span>` : ''}`
+        : `<span class="badge alcor">token</span> ${esc(r.accepts)}`}</td>
+      <td>${r.rewards.slice(0, 3).map(x => `<span class="rew"><span data-pm="${esc(x.symbol)}@${esc(x.contract)}|${esc(x.symbol)}"></span><b>${qty(x.perDay)}</b>&nbsp;${esc(x.symbol)}</span>`).join('')}${r.rewards.length > 3 ? `<span class="rew more">+${r.rewards.length - 3}</span>` : ''}</td>
+      <td class="r num ${r.usdDay > 0 ? '' : 'dim'}">${r.usdDay > 0 ? usd(r.usdDay) : '—'}</td>
+      <td class="r num ${r.staked > 0 ? '' : 'dim'}">${r.stakedUsd > 0 ? usd(r.stakedUsd) : esc(r.stakedLabel)}</td>
+      <td class="r num ${r.apr != null ? '' : 'dim'}">${r.apr != null ? `<span class="apr">${pct(r.apr)}</span>` : '—'}</td>
+      <td class="r num dim">${r.users != null ? r.users.toLocaleString() : '—'}</td>
+      <td class="r num ${ends != null && ends < 7 ? 'neg' : 'dim'}">${ends == null ? '—' : ends < 0 ? 'ended' : ends < 1 ? Math.round(ends * 24) + 'h' : ends < 400 ? Math.round(ends) + 'd' : '400d+'}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" class="empty">Nothing matches.</td></tr>';
+  fillMarks(tb);
+  tb.querySelectorAll('tr[data-stake]').forEach(tr => tr.onclick = rowClick(() => openStake(tr.dataset.stake)));
+  $('#stakeNote').innerHTML = `Read live from <span class="mono">pepperstake</span> and <span class="mono">farms.waxdao</span>.
+    PepperStake's own site is down; its pools are not.`;
+}
+
+function wireStaking() {
+  wireCsv('#view-staking .toolbar', '#stakeCount', 'wax-staking', 'staking');
+  $('#stakeSearch').oninput = e => { stakeFilters.q = e.target.value.trim().toLowerCase(); renderStaking(); };
+  const venue = v => {
+    stakeFilters.venue = v;
+    [['all', '#stAll'], ['pepperstake', '#stPepper'], ['waxdao', '#stWaxdao']]
+      .forEach(([x, id]) => $(id)?.setAttribute('aria-pressed', String(v === x)));
+    renderStaking();
+  };
+  $('#stAll').onclick = () => venue('all');
+  $('#stPepper').onclick = () => venue('pepperstake');
+  $('#stWaxdao').onclick = () => venue('waxdao');
+  const kind = k => {
+    stakeFilters.kind = stakeFilters.kind === k ? 'all' : k;
+    $('#stToken').setAttribute('aria-pressed', String(stakeFilters.kind === 'token'));
+    $('#stNft').setAttribute('aria-pressed', String(stakeFilters.kind === 'nft'));
+    renderStaking();
+  };
+  $('#stToken').onclick = () => kind('token');
+  $('#stNft').onclick = () => kind('nft');
+  $('#stMine').onclick = async e => {
+    if (!stakeFilters.mine && !wallet.account()) {
+      try { await wallet.connect(); } catch { return; }
+    }
+    stakeFilters.mine = !stakeFilters.mine;
+    e.target.setAttribute('aria-pressed', String(stakeFilters.mine));
+    if (stakeFilters.mine) {
+      e.target.textContent = 'Reading…';
+      await loadMyStakes();
+      e.target.textContent = `Only mine (${myStakeKeys.size})`;
+    } else e.target.textContent = 'Only mine';
+    renderStaking();
+  };
+  $('#stEnded').onclick = e => {
+    stakeFilters.ended = !stakeFilters.ended;
+    e.target.setAttribute('aria-pressed', String(stakeFilters.ended));
+    renderStaking();
+  };
+}
+
+// ---- one farm --------------------------------------------------------------
+let stakeGen = 0;
+async function openStake(key) {
+  if (!stakeRows) stakeRows = await loadStakeRows();
+  const row = stakeRows.find(r => r.key === key);
+  if (!row) return;
+  show('stake', key);
+  const gen = ++stakeGen;
+  const stale = () => gen !== stakeGen;
+  const me = wallet.account();
+  const ends = row.endsAt ? (row.endsAt - Date.now()) / 86400e3 : null;
+  const p = row.raw;
+
+  $('#stakeDetail').innerHTML = `
+    <div class="ph">
+      ${stakeImg(row)}
+      <h2 class="vt">${esc(row.name)}</h2>
+      <span class="badge ${row.venue === 'waxdao' ? 'taco' : 'alcor'}">${esc(row.venueName)}</span>
+      <span class="tier">${row.kind === 'nft' ? 'NFT farm' : 'token farm'}</span>
+      <span class="dim ph-meta">${row.venue === 'pepperstake' ? `#${row.id} &middot; by ${esc(p.owner)}` : `by ${esc(p.creator)}`}</span>
+      <div class="ph-act">
+        ${row.venue === 'pepperstake'
+          ? `<a class="btn ghost" href="https://waxblock.io/account/pepperstake" target="_blank" rel="noopener">Contract &nearr;</a>`
+          : `<a class="btn" href="${CHEESEHUB}/farm/${encodeURIComponent(row.id)}" target="_blank" rel="noopener">Stake on CheeseHub &nearr;</a>`}
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="v">${row.usdDay > 0 ? usd(row.usdDay) : '—'}</span><span class="k">paid out a day</span><span class="sub">${row.rewards.map(x => `${qty(x.perDay)} ${esc(x.symbol)}`).join(' &middot; ') || 'unpriced reward'}</span></div>
+      <div class="stat"><span class="v">${row.stakedUsd > 0 ? usd(row.stakedUsd) : esc(row.stakedLabel)}</span><span class="k">staked in it</span><span class="sub">${row.users != null ? `${row.users} staker${row.users === 1 ? '' : 's'}` : ''}</span></div>
+      <div class="stat"><span class="v ${row.apr != null ? 'pos' : 'dim'}">${row.apr != null ? pct(row.apr) : '—'}</span><span class="k">APR</span><span class="sub">${row.apr != null ? 'rewards against value staked'
+        : row.kind === 'nft' ? 'an NFT farm has no dollar denominator' : 'the reward or the staked token has no price here'}</span></div>
+      <div class="stat"><span class="v ${ends != null && ends < 7 ? 'neg' : ''}">${ends == null ? '—' : ends < 0 ? 'ended' : ends < 1 ? Math.round(ends * 24) + 'h' : ends > 400 ? 'open-ended' : Math.round(ends) + 'd'}</span><span class="k">${ends < 0 ? 'finished' : 'left to run'}</span><span class="sub">${row.endsAt ? (ends > 400 ? `nominally to ${new Date(row.endsAt).toISOString().slice(0, 10)}` : new Date(row.endsAt).toISOString().slice(0, 10)) : ''}</span></div>
+      ${row.venue === 'pepperstake' ? `<div class="stat"><span class="v">${forPeriod(p.periodSec)}</span><span class="k">pays every</span><span class="sub">${p.periods.toLocaleString()} periods in total</span></div>` : ''}
+    </div>
+    <div class="grid g2">
+      <div class="card"><h3>What it takes</h3><div id="stakeAccepts"><div class="loading"><span class="spinner"></span><span>Reading the rules…</span></div></div></div>
+      <div class="card"><h3>Your position</h3><div id="stakeMine">${me ? '<div class="loading"><span class="spinner"></span><span>Reading your stake…</span></div>' : '<p class="sub" style="margin:0">Connect a wallet to stake or claim here.</p>'}</div></div>
+    </div>`;
+
+  // ---- what it accepts
+  const acc = $('#stakeAccepts');
+  if (row.venue === 'waxdao') {
+    acc.innerHTML = `<dl class="facts">
+        <dt>Collections</dt><dd>${p.collections.length ? p.collections.map(c => `<span class="badge">${esc(c)}</span>`).join(' ') : '<span class="dim">set per template inside the farm</span>'}</dd>
+        <dt>Staked now</dt><dd class="mono">${p.staked.toLocaleString()} NFTs</dd>
+        <dt>Pays</dt><dd>${p.rewards.map(r => `${qty(r.perDay)} ${esc(r.symbol)} a day${r.daysLeft != null ? ` <span class="dim">&mdash; funded for ${Math.floor(r.daysLeft)} day${Math.floor(r.daysLeft) === 1 ? '' : 's'}</span>` : ''}`).join('<br>')}</dd>
+        ${p.description ? `<dt>About</dt><dd>${esc(p.description.slice(0, 400))}</dd>` : ''}
+      </dl>
+      <div class="toolbar" style="margin:10px 0 0">
+        <a class="btn" href="${CHEESEHUB}/farm/${encodeURIComponent(row.id)}" target="_blank" rel="noopener">Stake NFTs on CheeseHub &nearr;</a>
+      </div>
+      <p class="sub" style="margin:10px 0 0">WaxDAO's own front end is gone; the contract is not. CheeseHub runs the staking screen, and claiming and unstaking work from here.</p>`;
+  } else if (row.kind === 'nft') {
+    const rules = await pepperPoolAssets(row.id).catch(() => []);
+    if (stale()) return;
+    acc.innerHTML = rules.length ? `<div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+        <thead><tr><th>Collection</th><th>Schema</th><th>${esc(rules[0].key || 'variant')}</th><th class="r">Power</th></tr></thead>
+        <tbody>${rules.flatMap(r => (r.formats.length ? r.formats : [{ value: 'any', power: 1 }]).map(fmt => `<tr>
+          <td><a href="https://wax.atomichub.io/explorer/collection/wax-mainnet/${encodeURIComponent(r.collection)}" target="_blank" rel="noopener">${esc(r.collection)}</a></td>
+          <td class="dim">${esc(r.schema || 'any')}</td>
+          <td class="dim">${esc(String(fmt.value).slice(0, 44))}</td>
+          <td class="r num">${fmt.power.toLocaleString()}</td></tr>`)).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">Power decides the share: your power over the pool's ${p.assetPower.toLocaleString()} is what you are paid on.</p>`
+      : '<p class="sub" style="margin:0">This pool lists no asset rules on chain.</p>';
+  } else {
+    const stakePx = priceOf(p.acceptSymbol, p.acceptContract);
+    acc.innerHTML = `<dl class="facts">
+        <dt>Stake</dt><dd class="mono">${esc(p.acceptSymbol)} <span class="dim">${esc(p.acceptContract)}</span></dd>
+        <dt>Staked now</dt><dd class="mono">${qty(p.stakedTokens)} ${esc(p.acceptSymbol)}${stakePx ? ` <span class="dim">${usd(p.stakedTokens * stakePx)}</span>` : ''}</dd>
+        <dt>Minimum</dt><dd class="mono">${p.minStake ? `${qty(p.minStake.amount)} ${esc(p.minStake.symbol)}` : '—'}</dd>
+        <dt>Maximum</dt><dd class="mono">${p.maxStake && p.maxStake.amount > 0 ? `${qty(p.maxStake.amount)} ${esc(p.maxStake.symbol)}` : 'no cap'}</dd>
+        <dt>Unstake wait</dt><dd class="mono">${forPeriod(p.unstakeSec)}</dd>
+        <dt>Pays</dt><dd class="mono">${qty(p.reward.amount)} ${esc(p.reward.symbol)} every ${forPeriod(p.periodSec)}</dd>
+      </dl>`;
+  }
+
+  // ---- your position
+  if (!me) return;
+  const box = $('#stakeMine');
+  if (row.venue === 'waxdao') {
+    const stakes = await waxdaoStakes(me).catch(() => []);
+    if (stale()) return;
+    const mine = stakes.find(s => s.farm === row.id);
+    box.innerHTML = mine
+      ? `<dl class="facts"><dt>Staked</dt><dd class="mono">${mine.assets} NFT${mine.assets === 1 ? '' : 's'}</dd>
+          <dt>Waiting</dt><dd class="mono">${claimableNow(mine).map(t => `${qty(t.amount)} ${esc(t.symbol)}`).join(' &middot; ') || 'nothing yet'}</dd></dl>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="stakeClaim">Claim</button></div><div id="stakeSteps"></div>`
+      : '<p class="sub" style="margin:0">Nothing of yours is staked in this farm.</p>';
+    const cb = $('#stakeClaim');
+    if (cb) cb.onclick = () => runStakeTx($('#stakeSteps'), buildWaxdaoClaims({ account: me, farms: [row.id] }), 'Claimed.');
+    return;
+  }
+
+  const stakes = await pepperStakes(me).catch(() => []);
+  if (stale()) return;
+  const mine = stakes.find(s => Number(s.poolId) === Number(row.id));
+  const bal = row.kind === 'token' ? await balanceOf(me, p.acceptContract, p.acceptSymbol).catch(() => 0) : 0;
+  if (stale()) return;
+  box.innerHTML = `
+    <dl class="facts">
+      <dt>Staked</dt><dd class="mono">${mine ? (row.kind === 'token' ? `${qty(mine.stakedTokens)} ${esc(p.acceptSymbol)}` : `${mine.stakedAssets.toLocaleString()} power`) : 'nothing'}</dd>
+      <dt>Uncollected</dt><dd class="mono">${mine && mine.behindTotal > 0 ? `${mine.behindTotal} period${mine.behindTotal === 1 ? '' : 's'}` : 'none'}</dd>
+      ${row.kind === 'token' ? `<dt>In your wallet</dt><dd class="mono">${qty(bal)} ${esc(p.acceptSymbol)}</dd>` : ''}
+    </dl>
+    ${row.kind === 'token' && row.live ? `<div class="toolbar" style="margin:10px 0 0">
+      <span class="sizesel"><span class="amt"><input id="stakeAmt" type="number" step="any" min="0" placeholder="0.0000" inputmode="decimal"><span class="cur">${esc(p.acceptSymbol)}</span></span></span>
+      <button class="chip" id="stakeMax">Max</button>
+      <button class="btn" id="stakeGo">Stake</button>
+    </div>` : ''}
+    <div class="toolbar" style="margin:10px 0 0">
+      ${mine && (mine.behind > 0 || mine.collected > 0) ? '<button class="btn" id="stakeClaim">Collect and withdraw</button>' : ''}
+      ${mine && (mine.stakedTokens > 0 || mine.stakedAssets > 0) ? '<button class="btn ghost" id="stakeOut">Unstake</button>' : ''}
+    </div>
+    <div id="stakeSteps"></div>`;
+
+  const amt = $('#stakeAmt');
+  $('#stakeMax') && ($('#stakeMax').onclick = () => { if (amt) amt.value = String(bal); });
+  const go = $('#stakeGo');
+  if (go) go.onclick = () => {
+    const v = Number(amt?.value || 0);
+    const steps = $('#stakeSteps');
+    if (!(v > 0)) { steps.innerHTML = '<div class="err" style="margin-top:10px">Enter an amount first.</div>'; return; }
+    if (v > bal) { steps.innerHTML = `<div class="err" style="margin-top:10px">You hold ${qty(bal)} ${esc(p.acceptSymbol)}.</div>`; return; }
+    runStakeTx(steps, buildPepperStakeTokens({ account: me, pool: p, amount: v }), `Staked ${qty(v)} ${p.acceptSymbol}.`);
+  };
+  const cb = $('#stakeClaim');
+  if (cb) cb.onclick = () => {
+    const b = buildPepperClaim({ account: me, stake: mine });
+    runStakeTx($('#stakeSteps'), b.actions, `Collected ${b.collected} period${b.collected === 1 ? '' : 's'} and withdrew.${b.remaining ? ` ${b.remaining} still to go — run it again.` : ''}`);
+  };
+  const ob = $('#stakeOut');
+  if (ob) ob.onclick = () => runStakeTx($('#stakeSteps'),
+    buildPepperUnstake({ account: me, pool: p, amount: mine.stakedTokens }),
+    'Unstaked. The contract holds it for the unstake wait before it lands.');
+}
+
+async function runStakeTx(box, actions, okMsg) {
+  if (!box) return;
+  if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+  box.innerHTML = '<div class="loading" style="margin-top:10px"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+  try {
+    const tx = await wallet.transact(actions);
+    box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft);margin-top:10px"><b>${esc(okMsg)}</b>
+      <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+    stakeRows = null;
+  } catch (e) { box.innerHTML = `<div style="margin-top:10px">${txError(e)}</div>`; }
+}
+
+const forPeriod = sec => {
+  if (!(sec > 0)) return '—';
+  if (sec < 3600) return `${Math.round(sec / 60)} min`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)} day${Math.round(sec / 86400) === 1 ? '' : 's'}`;
+};
+
+// ------------------------------------------------------------- FILTERING ----
+// A wallet with forty positions and a farm list to match is a scrolling
+// exercise: "ik moet soms minuten scrollen om een specifieke farm te vinden."
+// Everything on screen already carries its own names, so a filter over the
+// rendered rows needs no second copy of the data and no re-render — it hides
+// what does not match, counts what is left, and clears in one click.
+function attachFilter(host, { target, placeholder = 'Filter…', noun = 'rows', value = '' } = {}) {
+  if (!host) return null;
+  const bar = document.createElement('div');
+  bar.className = 'toolbar filterbar';
+  bar.innerHTML = `<input class="search" type="search" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false">
+    <span class="dim" style="font-size:12px"></span>`;
+  const input = bar.querySelector('input');
+  const count = bar.querySelector('span');
+  const apply = () => {
+    const q = input.value.trim().toLowerCase();
+    const els = [...host.querySelectorAll(target)];
+    let shown = 0;
+    for (const el of els) {
+      const hit = !q || (el.dataset.find || el.textContent || '').toLowerCase().includes(q);
+      el.hidden = !hit;
+      if (hit) shown++;
+    }
+    count.textContent = q ? `${shown} of ${els.length} ${noun}` : `${els.length} ${noun}`;
+    // A table whose rows are all hidden should say so rather than look broken.
+    const none = host.querySelector('.filternone');
+    if (none) none.hidden = shown > 0 || !q;
+  };
+  input.addEventListener('input', debounce(apply, 80));
+  host.prepend(bar);
+  if (value) input.value = value;
+  apply();
+  return { apply, input, set: v => { input.value = v; apply(); } };
+}
+
 // --------------------------------------------------------------- WALLET -----
 function wireWallet() {
   // Connected already means the question has an answer, so asking it again is
@@ -2717,34 +3174,65 @@ async function renderEarned(account) {
 async function renderPepperClaims(account) {
   const out = $('#walletClaims');
   if (!out) return;
-  let stakes = [];
-  try { stakes = await pepperStakes(account); } catch { out.innerHTML = ''; return; }
-  const live = stakes.filter(s => s.collected > 0 || s.behind > 0);
-  if (!live.length) { out.innerHTML = ''; return; }
+  let stakes = [], pending = [];
+  try { [stakes, pending] = await Promise.all([pepperStakes(account), pepperUnstakes(account)]); }
+  catch { out.innerHTML = ''; return; }
+  if (!stakes.length && !pending.length) { out.innerHTML = ''; return; }
 
-  out.innerHTML = `<div class="section"><h3>PepperStake <span class="dim">&mdash; rewards that accrue period by period and wait to be collected</span></h3>
+  const rewardUsd = s => {
+    const r = s.pool?.reward;
+    const px = r ? state.prices.get(`${r.symbol}@${r.contract}`)?.usd : null;
+    return px != null ? s.waiting * px : null;
+  };
+  const owed = stakes.reduce((a, s) => a + (rewardUsd(s) ?? 0), 0);
+  const ended = stakes.filter(s => s.ended).length;
+
+  out.innerHTML = `<div class="section"><h3>PepperStake
+      <span class="dim">&mdash; period by period, and their own site is down</span></h3>
     <div class="card">
       <div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-        <thead><tr><th></th><th>Pool</th><th>Pays</th><th class="r">Uncollected</th><th class="r">Staked</th></tr></thead>
-        <tbody>${live.map(s => `<tr>
-          <td><input type="checkbox" class="peppick" data-pool="${s.poolId}" checked></td>
-          <td class="mono">#${s.poolId}</td>
-          <td>${s.pool?.reward ? `${qty(s.pool.reward.amount)} ${esc(s.pool.reward.symbol)} <span class="sub">per period</span>` : '<span class="dim">unknown</span>'}</td>
-          <td class="r num ${s.behindTotal > 0 ? '' : 'dim'}">${s.behindTotal > 0 ? `${s.behindTotal} period${s.behindTotal === 1 ? '' : 's'}` : '—'}${s.behindTotal > s.behind ? ` <span class="sub">${s.behind} this go</span>` : ''}</td>
-          <td class="r num dim">${s.stakedAssets ? `${s.stakedAssets} NFTs` : s.stakedTokens ? qty(s.stakedTokens) : '—'}</td>
-        </tr>`).join('')}</tbody></table></div>
+        <thead><tr><th></th><th>Pool</th><th>Staked</th><th class="r">Uncollected</th><th class="r">Waiting</th><th>State</th><th></th></tr></thead>
+        <tbody>${stakes.map(s => {
+          const usdv = rewardUsd(s);
+          const sym = s.pool?.reward?.symbol || '';
+          return `<tr data-find="${esc(`#${s.poolId} ${sym} ${s.pool?.name || ''} ${s.ended ? 'ended' : 'live'}`)}">
+          <td><input type="checkbox" class="peppick" data-pool="${s.poolId}" ${s.behindTotal > 0 || s.collected > 0 ? 'checked' : ''}></td>
+          <td><span class="xlink" data-stake="pepper:${s.poolId}">${esc(s.pool?.name || `Pool #${s.poolId}`)}</span>
+            <span class="sub">#${s.poolId}</span></td>
+          <td class="dim">${s.stakedAssets > 0 ? `${s.nfts.length || ''} NFT${s.nfts.length === 1 ? '' : 's'} <span class="sub">${s.stakedAssets.toLocaleString()} power</span>`
+            : s.stakedTokens > 0 ? `${qty(s.stakedTokens)} ${esc(s.pool?.acceptSymbol || '')}` : '—'}</td>
+          <td class="r num ${s.behindTotal > 0 ? '' : 'dim'}">${s.behindTotal > 0 ? `${s.behindTotal} period${s.behindTotal === 1 ? '' : 's'}` : '—'}${s.behindTotal > s.behind ? `<span class="sub">${s.behind} this go</span>` : ''}</td>
+          <td class="r num ${s.waiting > 0 ? '' : 'dim'}">${s.waiting > 0 ? `${qtyFine(s.waiting)} ${esc(sym)}` : '—'}${usdv > 0 ? `<span class="sub">${usd(usdv)}</span>` : ''}</td>
+          <td>${s.ended ? '<span class="pill">ended</span>' : '<span class="pill good">running</span>'}</td>
+          <td class="r">${(s.stakedTokens > 0 || s.nfts.length) ? `<button class="chip" data-pepout="${s.poolId}">Unstake</button>` : ''}</td>
+        </tr>`; }).join('')}</tbody></table></div>
       <div id="pepSteps"></div>
-      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pepGo">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">Up to 40 periods per pool per go.</p>
+      <div class="toolbar" style="margin:10px 0 0">
+        <button class="btn" id="pepGo">Collect and withdraw selected</button>
+        <span class="dim" style="font-size:12px">${owed > 0 ? `${usd(owed)} waiting` : ''}${ended ? ` &middot; ${ended} ended pool${ended === 1 ? '' : 's'} still owe or still hold` : ''}</span>
+      </div>
+      <p class="sub" style="margin:10px 0 0">Up to 40 periods per pool per transaction. Unstaking starts the pool's cooldown; the tokens or NFTs come back with a refund once it is over.</p>
+      ${pending.length ? `<div class="tablewrap" style="margin-top:12px;border:0"><table style="font-size:12.5px">
+        <thead><tr><th>Unstaking</th><th>Pool</th><th class="r">Ready</th><th></th></tr></thead>
+        <tbody>${pending.map(u => {
+          const left = u.readyAt - Date.now();
+          return `<tr><td>${u.assets.length ? `${u.assets.length} NFT${u.assets.length === 1 ? '' : 's'}` : esc(u.quantity)}</td>
+            <td class="dim">#${u.poolId}</td>
+            <td class="r num ${left <= 0 ? 'pos' : 'dim'}">${left <= 0 ? 'now' : forDays(left / 86400000)}</td>
+            <td class="r">${left <= 0 ? `<button class="chip" data-pepref="${u.id}">Take it back</button>` : ''}</td></tr>`;
+        }).join('')}</tbody></table></div>` : ''}
     </div></div>`;
 
-  $('#pepGo').onclick = async () => {
-    const picked = new Set([...document.querySelectorAll('.peppick:checked')].map(c => Number(c.dataset.pool)));
-    const box = $('#pepSteps');
-    const chosen = live.filter(s => picked.has(s.poolId));
-    if (!chosen.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected.</div>'; return; }
-    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+  if (stakes.length > 6) attachFilter(out.querySelector('.card'), { target: 'tbody tr', placeholder: 'Filter pools by name, reward token or id…', noun: 'pools' });
+  out.querySelectorAll('[data-stake]').forEach(el => el.onclick = () => openStake(el.dataset.stake));
 
+  $('#pepGo').onclick = async () => {
+    const picked = new Set([...document.querySelectorAll('.peppick:checked')]
+      .filter(c => !c.closest('tr')?.hidden).map(c => Number(c.dataset.pool)));
+    const box = $('#pepSteps');
+    const chosen = stakes.filter(s => picked.has(s.poolId) && (s.behind > 0 || s.collected > 0));
+    if (!chosen.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected has anything to collect.</div>'; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     const built = chosen.map(s => ({ s, b: buildPepperClaim({ account, stake: s }) }));
     const actions = built.flatMap(x => x.b.actions);
     const left = built.reduce((n, x) => n + x.b.remaining, 0);
@@ -2756,6 +3244,20 @@ async function renderPepperClaims(account) {
         <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
     } catch (e) { box.innerHTML = `<div style="margin-top:10px">${txError(e)}</div>`; }
   };
+
+  out.querySelectorAll('button[data-pepout]').forEach(b => b.onclick = async () => {
+    const s = stakes.find(x => String(x.poolId) === b.dataset.pepout);
+    if (!s) return;
+    const box = $('#pepSteps');
+    // Everything of yours in that pool, in one action: the contract takes an
+    // amount and a list of asset ids and this position has one or the other.
+    await runStakeTx(box, buildPepperUnstake({
+      account, pool: s.pool || { id: s.poolId, acceptPrecision: 0, acceptSymbol: 'POW' },
+      amount: s.stakedTokens, assetIds: s.nfts.map(n => n.id),
+    }), 'Unstaking started. It lands in your wallet after the pool’s cooldown — come back and take it back.');
+  });
+  out.querySelectorAll('button[data-pepref]').forEach(b => b.onclick = () =>
+    runStakeTx($('#pepSteps'), buildPepperRefund({ account, id: b.dataset.pepref }), 'Refunded.'));
   lockForeign(account);
 }
 
@@ -2765,34 +3267,41 @@ async function renderWalletFarms(account) {
   if (!out) return;
   let stakes = [];
   try { stakes = await waxdaoStakes(account); } catch { out.innerHTML = ''; return; }
-  const live = stakes.map(s => ({ s, now: claimableNow(s) })).filter(x => x.now.length);
-  if (!live.length) { out.innerHTML = ''; return; }
+  if (!stakes.length) { out.innerHTML = ''; return; }
+  const rows = stakes.map(s => ({ s, now: claimableNow(s) }));
 
   const valueOf = t => {
     const px = state.prices.get(`${t.symbol}@${t.contract}`)?.usd;
     return px != null ? t.amount * px : null;
   };
-  const total = live.reduce((s, x) => s + x.now.reduce((a, t) => a + (valueOf(t) ?? 0), 0), 0);
+  const total = rows.reduce((a, x) => a + x.now.reduce((b, t) => b + (valueOf(t) ?? 0), 0), 0);
+  const idle = rows.filter(x => !x.now.length).length;
 
-  out.innerHTML = `<div class="section"><h3>WaxDAO farms <span class="dim">&mdash; rewards on staked NFTs, which most people forget they are owed</span></h3>
+  out.innerHTML = `<div class="section"><h3>WaxDAO farms <span class="dim">&mdash; rewards on staked NFTs, and the NFTs themselves</span></h3>
     <div class="card">
       <div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-        <thead><tr><th></th><th>Farm</th><th class="r">Staked</th><th>Waiting for you</th><th class="r">Worth</th></tr></thead>
-        <tbody>${live.map(({ s, now }, i) => `<tr>
-          <td><input type="checkbox" class="wdpick" data-farm="${esc(s.farm)}" checked></td>
-          <td class="mono">${esc(s.farm)}</td>
+        <thead><tr><th></th><th>Farm</th><th class="r">Staked</th><th>Waiting for you</th><th class="r">Worth</th><th></th></tr></thead>
+        <tbody>${rows.map(({ s, now }) => `<tr data-find="${esc(s.farm + ' ' + now.map(t => t.symbol).join(' ') + (now.length ? ' paying' : ' idle'))}">
+          <td><input type="checkbox" class="wdpick" data-farm="${esc(s.farm)}" ${now.length ? 'checked' : ''}></td>
+          <td><span class="xlink" data-stake="waxdao:${esc(s.farm)}">${esc(s.farm)}</span></td>
           <td class="r num dim">${s.assets} NFT${s.assets === 1 ? '' : 's'}</td>
-          <td>${now.map(t => `<span class="badge">${qty(t.amount)} ${esc(t.symbol)}</span>`).join(' ')}</td>
-          <td class="r num">${(() => { const v = now.reduce((a, t) => a + (valueOf(t) ?? 0), 0); return v > 0 ? usd(v) : '<span class="dim">unpriced</span>'; })()}</td>
+          <td>${now.length ? now.map(t => `<span class="badge">${qty(t.amount)} ${esc(t.symbol)}</span>`).join(' ') : '<span class="dim">nothing accruing</span>'}</td>
+          <td class="r num">${(() => { const v = now.reduce((a, t) => a + (valueOf(t) ?? 0), 0); return v > 0 ? usd(v) : '<span class="dim">—</span>'; })()}</td>
+          <td class="r">${s.assets ? `<button class="chip" data-wdout="${esc(s.farm)}">Unstake</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>
       <div id="wdSteps"></div>
-      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="wdClaim">Claim selected &mdash; no fee</button></div>
-      <p class="sub" style="margin:10px 0 0">${total > 0 ? `${usd(total)} waiting. ` : ''}Estimated. <a href="https://cheesehubwax.github.io/cheesehub/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> to stake or create a farm.</p>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="wdClaim">Claim selected</button>
+        <span class="dim" style="font-size:12px">${total > 0 ? `${usd(total)} waiting` : ''}${idle ? ` &middot; ${idle} farm${idle === 1 ? '' : 's'} pay nothing now but still hold your NFTs` : ''}</span></div>
+      <p class="sub" style="margin:10px 0 0">Unstaking returns every NFT you have in that farm. <a href="${CHEESEHUB}/farm" target="_blank" rel="noopener">CheeseHub &nearr;</a> to stake or create one &mdash; WaxDAO's own site is gone for good.</p>
     </div>
   </div>`;
 
+  if (rows.length > 6) attachFilter(out.querySelector('.card'), { target: 'tbody tr', placeholder: 'Filter farms by name or reward token…', noun: 'farms' });
+  out.querySelectorAll('[data-stake]').forEach(el => el.onclick = () => openStake(el.dataset.stake));
+
   $('#wdClaim').onclick = async () => {
-    const farms = [...document.querySelectorAll('.wdpick:checked')].map(c => c.dataset.farm);
+    const farms = [...document.querySelectorAll('.wdpick:checked')]
+      .filter(c => !c.closest('tr')?.hidden).map(c => c.dataset.farm);
     const box = $('#wdSteps');
     if (!farms.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Nothing selected.</div>'; return; }
     box.innerHTML = `<div class="loading" style="margin-top:10px"><span class="spinner"></span><span>Waiting for your wallet — claiming ${farms.length} farm${farms.length === 1 ? '' : 's'}…</span></div>`;
@@ -2805,6 +3314,12 @@ async function renderWalletFarms(account) {
       box.innerHTML = `<div class="err" style="margin-top:10px">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
     }
   };
+  out.querySelectorAll('button[data-wdout]').forEach(b => b.onclick = () => {
+    const s = stakes.find(x => x.farm === b.dataset.wdout);
+    if (!s) return;
+    runStakeTx($('#wdSteps'), buildWaxdaoUnstake({ account, farm: s.farm, assetIds: s.assetIds }),
+      `Unstaked ${s.assets} NFT${s.assets === 1 ? '' : 's'} from ${s.farm}.`);
+  });
   lockForeign(account);
 }
 
@@ -3068,7 +3583,8 @@ function positionCard(p, mine = false) {
 
   const fig = (k, v, cls = '', sub = '') => `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${sub ? `<span class="figsub">${sub}</span>` : ''}</div>`;
 
-  return `<article class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(pool.id)}:${p.tickLower}:${p.tickUpper}:${pool.tick}">
+  return `<article class="poscard ${p.inRange ? '' : 'out'}" data-rb="${esc(pool.id)}:${p.tickLower}:${p.tickUpper}:${pool.tick}"
+    data-find="${esc(`${pool.symA}/${pool.symB} ${pool.symA} ${pool.symB} alcor ${pool.id} #${p.posId} ${p.inRange ? 'in range' : 'out of range'}${f && f.missing.length ? ' not staked' : f && f.inFarm.length ? ' farming' : ''}`)}">
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
@@ -3130,7 +3646,7 @@ function tacoCard(p) {
   const tot = vA + vB;
   const wA = tot > 0 ? vA / tot : 0.5;
   const tacoDay = (pool.vol24 > 0 && pool.tvl > 0) ? pool.vol24 * (lpCut(pool) / 10000) * p.share : 0;
-  return `<article class="poscard">
+  return `<article class="poscard" data-find="${esc(`${pool.symA}/${pool.symB} ${pool.symA} ${pool.symB} tacoswap taco ${pool.id}`)}">
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
@@ -3274,12 +3790,15 @@ async function lookupWallet(account) {
     </div>`;
   }
 
-  html += '<div class="grid g2">';
+  html += '<div id="posList"><div class="grid g2">';
   const mine = isMine(account);
   for (const p of res.alcor) html += positionCard(p, mine);
   for (const p of res.taco) html += tacoCard(p);
-  html += '</div>';
+  html += '</div><div class="empty filternone" hidden>No position matches.</div></div>';
   out.innerHTML = html;
+  // Forty positions is a scroll, not a list. The filter matches the pair, the
+  // venue, the pool and the position id, all of which are on the card.
+  if (all.length > 4) attachFilter($('#posList'), { target: '.poscard', placeholder: 'Filter your positions by token or pair…', noun: 'positions' });
   // Every position card carries a data-pm slot for its pair logos and nothing
   // was ever filling them, so the whole list rendered as bare text.
   fillMarks(out);
@@ -4496,7 +5015,7 @@ let tokenGen = 0;
 async function openToken(id) {
   const rows = tokRows || tokenTable();
   const t = rows.find(x => x.id === id);
-  show('token', encodeURIComponent(id));
+  show('token', id);
   // A shared link can name a token this terminal has never seen — one whose
   // pools all emptied, or one that never had any. Landing on a silently blank
   // page is worse than being told which token was asked for and why it is not
@@ -5948,9 +6467,10 @@ async function renderFarmMine(g) {
     </div>
 
     <div class="tablewrap" style="border:0"><table style="font-size:12.5px">
-      <thead><tr><th>Position</th><th class="r">Value</th><th class="r">Share here</th><th class="r">A day</th><th class="r">Waiting</th><th>State</th><th></th></tr></thead>
+      <thead><tr><th>Position</th><th>Range</th><th class="r">Value</th><th class="r">Share here</th><th class="r">A day</th><th class="r">Waiting</th><th>State</th><th></th></tr></thead>
       <tbody>${rows.map(r => `<tr>
         <td class="mono">${poolLink(g.dex, g.poolId, '#' + r.x.posId)}</td>
+        <td class="rangecell" data-rb3="${r.x.tickLower}:${r.x.tickUpper}:${g.pool?.tick ?? 0}:${g.pool ? g.pool.decA - g.pool.decB : 0}"></td>
         <td class="r num">${usd(r.x.valueUsd)}</td>
         <td class="r num ${r.share > 0 ? '' : 'dim'}">${r.share > 0 ? (r.share * 100).toFixed(r.share >= 0.1 ? 1 : 2) + '%' : '—'}</td>
         <td class="r num ${r.perDay > 0 ? '' : 'dim'}">${r.perDay > 0 ? usd(r.perDay) : '—'}</td>
@@ -5960,8 +6480,34 @@ async function renderFarmMine(g) {
             : `<span class="pill good">earning</span>`}${r.ids.length && r.ids.length < liveIds.size ? ` <span class="src farm">${r.ids.length} of ${liveIds.size}</span>` : ''}</td>
         <td class="r">${r.missing.length ? `<button class="btn" data-joinfarm="${r.x.posId}" data-inc="${r.missing.map(esc).join(',')}">Join</button>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>`;
+  // A position is a band, not a dollar figure: where its edges sit against the
+  // price now is the whole difference between earning and sitting idle.
+  fillRanges(box);
   wireJoinFarm(box, me);
   return totalIn;
+}
+
+// Every `.rangecell` on screen gets its band drawn and its edges spelled out.
+// Prices, not ticks — a tick number is a fact about the AMM's arithmetic.
+function fillRanges(root) {
+  root.querySelectorAll('.rangecell[data-rb3]').forEach(td => {
+    if (td.dataset.done) return;
+    const [tl, tu, tk, dd] = td.dataset.rb3.split(':').map(Number);
+    const priceAt = t => Math.pow(1.0001, t) * 10 ** dd;
+    const bar = rangeBar(tl, tu, tk);
+    bar.classList.add('mini');
+    const wrap = document.createElement('div');
+    wrap.className = 'rangewrap';
+    wrap.appendChild(bar);
+    const txt = document.createElement('span');
+    txt.className = 'rangetxt';
+    const inRange = tk > tl && tk < tu;
+    txt.innerHTML = `${sigfig(priceAt(tl))} – ${sigfig(priceAt(tu))}`;
+    txt.title = `${inRange ? 'Price is inside the band' : 'Price has left the band'} — now ${sigfig(priceAt(tk))}`;
+    wrap.appendChild(txt);
+    td.appendChild(wrap);
+    td.dataset.done = '1';
+  });
 }
 
 // A TacoSwap position is a share of the pair, held as a token. There is no

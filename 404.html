@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>WAX Terminal</title>
+<script>
+// GitHub Pages has no server-side routing, so a deep link like
+// /waxterminal/market/alcor:314 arrives here. Park it and hand control to
+// index.html, which is what makes real paths work at all.
+(function () {
+  var views = ['', 'overview', 'markets', 'pools', 'farms', 'tokens', 'staking',
+    'wallet', 'activity', 'leaders', 'market', 'token', 'farm', 'account'];
+  var parts = location.pathname.split('/');
+  // Served from a subdirectory (a project page) unless the first segment is
+  // already one of the app's own routes.
+  var base = views.indexOf(parts[1] || '') >= 0 ? '/' : '/' + parts[1] + '/';
+  try { sessionStorage.setItem('wt:redirect', location.href); } catch (e) {}
+  location.replace(base);
+})();
+</script></head><body></body></html>
