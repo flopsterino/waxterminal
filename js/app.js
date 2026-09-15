@@ -14,7 +14,7 @@ import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
 import { debounce } from './router.js';
 import { STABLES } from './price.js';
-import { watchPoolTrades, tradeSide, tradePrice } from './live.js';
+import { watchPoolTrades, tradeSide, tradePrice, poolSwapHistory } from './live.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
@@ -6894,6 +6894,151 @@ async function renderTacoFarmMine(g, me, box) {
 }
 
 
+// ------------------------------------------------------------------ PULSE ---
+// What has actually been happening in this market, over four windows: how many
+// trades, how much money, how many people, and how each of those splits
+// between buying and selling. The split is the point — 1,215 trades tells you
+// the pool is busy, 429 buys against 786 sells tells you what the busyness
+// was.
+//
+// It is built from the same Alcor swap feed the tape polls, read once when the
+// page opens and topped up by the tape after that, so watching a market cost
+// one request rather than a stream of them.
+const PULSE_WINDOWS = [
+  { key: '5m', label: '5M', ms: 5 * 60e3 },
+  { key: '1h', label: '1H', ms: 3600e3 },
+  { key: '6h', label: '6H', ms: 6 * 3600e3 },
+  { key: '24h', label: '24H', ms: 24 * 3600e3 },
+];
+let pulseState = null;
+
+// One swap, reduced to the four things every window needs. Orientation is the
+// traded token's, like everything else on this page: a "buy" is a buy of the
+// token the market is named for, not of whichever side the pool stores first.
+function pulseRow(x, p, o) {
+  const aSide = tradeSide(x);
+  const side = o.baseIsA ? aSide : (aSide === 'buy' ? 'sell' : 'buy');
+  const at = Date.parse(x.time);
+  const bPerA = tradePrice(x, p.decA, p.decB);
+  const inQuote = bPerA > 0 ? (o.baseIsA ? bPerA : 1 / bPerA) : null;
+  let usdv = Number(x.totalUSDVolume);
+  if (!(usdv > 0)) {
+    // Not every row carries a dollar figure. Value it on whichever side this
+    // terminal can price, which is the same rule the activity feed uses.
+    const amtA = Math.abs(Number(x.tokenA)), amtB = Math.abs(Number(x.tokenB));
+    usdv = p.priceUsdA != null ? amtA * p.priceUsdA : p.priceUsdB != null ? amtB * p.priceUsdB : 0;
+  }
+  return { at, side, usd: usdv || 0, who: x.sender, price: inQuote, id: x.trx_id || x._id };
+}
+
+function pulseTally(rows, ms, now) {
+  const cut = now - ms;
+  const inWin = rows.filter(r => r.at >= cut);
+  const buyers = new Set(), sellers = new Set(), traders = new Set();
+  let buys = 0, sells = 0, buyUsd = 0, sellUsd = 0;
+  for (const r of inWin) {
+    traders.add(r.who);
+    if (r.side === 'buy') { buys++; buyUsd += r.usd; buyers.add(r.who); }
+    else { sells++; sellUsd += r.usd; sellers.add(r.who); }
+  }
+  // The move over the window: the price the pool recorded on its oldest trade
+  // inside it against the newest. With no trade there is no move to report.
+  const priced = inWin.filter(r => r.price > 0);
+  const first = priced[priced.length - 1], last = priced[0];
+  const change = first && last && first.price > 0 ? (last.price / first.price - 1) * 100 : null;
+  return {
+    txns: inWin.length, buys, sells, usd: buyUsd + sellUsd, buyUsd, sellUsd,
+    traders: traders.size, buyers: buyers.size, sellers: sellers.size, change,
+  };
+}
+
+function pulseSplit(label, total, aLabel, bLabel, aVal, bVal, fmt) {
+  const sum = (aVal || 0) + (bVal || 0);
+  const aPct = sum > 0 ? (aVal / sum) * 100 : 50;
+  return `<div class="pulserow">
+    <div class="pleft"><span class="k">${label}</span><span class="v">${fmt(total)}</span></div>
+    <div class="psplit">
+      <div class="phead"><span>${aLabel}</span><span>${bLabel}</span></div>
+      <div class="pnums"><b>${fmt(aVal)}</b><b>${fmt(bVal)}</b></div>
+      <div class="pbar"><i class="buy" style="width:${sum > 0 ? aPct.toFixed(1) : 50}%"></i><i class="sell" style="width:${sum > 0 ? (100 - aPct).toFixed(1) : 50}%"></i></div>
+    </div>
+  </div>`;
+}
+
+function paintPulse() {
+  const st = pulseState;
+  const box = $('#poolPulse');
+  if (!st || !box) return;
+  const now = Date.now();
+  const tallies = Object.fromEntries(PULSE_WINDOWS.map(w => [w.key, pulseTally(st.rows, w.ms, now)]));
+  const t = tallies[st.win] || tallies['24h'];
+  const count = v => (v == null ? '—' : Math.round(v).toLocaleString('en-US'));
+  const money = v => (v > 0 ? usd(v) : '$0');
+
+  box.innerHTML = `<div class="pulsetabs">${PULSE_WINDOWS.map(w => {
+      const c = tallies[w.key].change;
+      return `<button class="pulsetab${w.key === st.win ? ' on' : ''}" data-pwin="${w.key}">
+        <span class="k">${w.label}</span>
+        <span class="v ${chgCls(c)}">${c == null ? '—' : chgTxt(c)}</span>
+      </button>`;
+    }).join('')}</div>
+    <div class="pulsebody">
+      ${pulseSplit('Trades', t.txns, 'Buys', 'Sells', t.buys, t.sells, count)}
+      ${pulseSplit('Volume', t.usd, 'Buy vol', 'Sell vol', t.buyUsd, t.sellUsd, money)}
+      ${pulseSplit('Traders', t.traders, 'Buyers', 'Sellers', t.buyers, t.sellers, count)}
+    </div>
+    <p class="sub pulsenote">${st.complete
+      ? `Every trade in the window, read from Alcor.`
+      : `From the last ${st.rows.length.toLocaleString()} trades &mdash; ${ago(new Date(st.oldest).toISOString())} at the earliest, so longer windows are partial.`}
+      ${t.buyers + t.sellers > t.traders ? `<span class="dim"> &middot; ${t.buyers + t.sellers - t.traders} wallet${t.buyers + t.sellers - t.traders === 1 ? '' : 's'} did both.</span>` : ''}</p>`;
+
+  box.querySelectorAll('[data-pwin]').forEach(b => b.onclick = () => { pulseState.win = b.dataset.pwin; paintPulse(); });
+}
+
+// New trades arrive from the tape, so the panel keeps counting without asking
+// Alcor for anything of its own.
+function pulseAdd(fresh, p, o) {
+  if (!pulseState || pulseState.poolId !== String(p.id)) return;
+  let added = false;
+  for (const x of fresh) {
+    const r = pulseRow(x, p, o);
+    if (!r.id || pulseState.seen.has(r.id)) continue;
+    pulseState.seen.add(r.id);
+    pulseState.rows.unshift(r);
+    added = true;
+  }
+  if (added) paintPulse();
+}
+
+async function startPulse(p, stale) {
+  const box = $('#poolPulse');
+  if (!box) return;
+  const o = pairOrient(p);
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Counting today’s trades…</span></div>';
+  let got;
+  try { got = await poolSwapHistory(p.id); } catch { got = null; }
+  if (stale()) return;
+  if (!got || !got.swaps.length) {
+    box.innerHTML = '<div class="chart-empty">No trades in this pool yet.</div>';
+    return;
+  }
+  const rows = got.swaps.map(x => pulseRow(x, p, o)).filter(r => isFinite(r.at));
+  rows.sort((a, b) => b.at - a.at);
+  pulseState = {
+    poolId: String(p.id), win: '24h', rows, complete: got.complete,
+    oldest: rows.length ? rows[rows.length - 1].at : Date.now(),
+    seen: new Set(rows.map(r => r.id).filter(Boolean)),
+  };
+  paintPulse();
+  // The windows move even when nothing trades, so the panel re-counts on a
+  // slow timer as well as on new trades.
+  clearInterval(startPulse.timer);
+  startPulse.timer = setInterval(() => {
+    if (stale() || !pulseState || pulseState.poolId !== String(p.id)) { clearInterval(startPulse.timer); return; }
+    paintPulse();
+  }, 30000);
+}
+
 // ------------------------------------------------------------- LIVE TAPE ----
 // The market's trades as they happen, the way a DexScreener pair page shows
 // them: newest on top, buys green and sells red, price, both amounts, the
@@ -6932,6 +7077,9 @@ function startLiveTape(p, stale) {
   let drawn = false;
   const paint = (fresh, all) => {
     if (stale()) { stopLive?.(); return; }
+    // The counters upstairs run off the same rows, so they keep counting
+    // without a second request.
+    pulseAdd(fresh, p, o);
     if (!all.length) { box.innerHTML = '<div class="empty">No trades on this pool yet.</div>'; return; }
     const freshIds = new Set(drawn ? fresh.map(x => x.trx_id || x._id) : []);
     box.innerHTML = `<div class="tablewrap livetape" style="max-height:360px;border:0"><table>${head}
@@ -7014,6 +7162,7 @@ async function openPool(key) {
       <div class="stat"><span class="v">${qty(resBase)}</span><span class="k">${esc(o.baseSym)} pooled</span><span class="sub">${qty(resQuote)} ${esc(o.quoteSym)}</span></div>
       ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
+    ${p.dex === 'alcor' ? '<div class="card pulsecard" id="poolPulse"></div>' : ''}
     <div class="grid g2">
       <div class="card"><h3><span id="poolPair">Price</span>
         <span style="margin-left:auto;display:flex;gap:4px">
@@ -7273,7 +7422,7 @@ async function openPool(key) {
     if (flip) flip.onclick = () => { flipped = !flipped; flip.setAttribute('aria-pressed', String(flipped)); draw(); };
 
     const deltasP = p.dex === 'alcor' ? null : chartDeltas(p, 3600);
-    if (p.dex === 'alcor') startLiveTape(p, stale);
+    if (p.dex === 'alcor') { startLiveTape(p, stale); startPulse(p, stale).catch(() => {}); }
 
     // The tape comes from the same rows, not from the swap feed. Filtering the
     // chain-wide logswap firehose down to one pool finds almost nothing for a

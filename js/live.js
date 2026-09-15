@@ -81,6 +81,48 @@ export function watchPoolTrades(poolId, onRows, { keep = 80, onState = () => {} 
   };
 }
 
+// Enough history to answer "what happened in this pool today" in one go.
+//
+// The tape polls forty trades every seven seconds; this is the other shape of
+// the same feed — one read, as far back as it takes to cover the window, and
+// then nothing. A thousand trades is about seven hours on the busiest pool on
+// WAX and days on everything else, so three pages is the cap: past that the
+// panel says it is reading from the last N trades rather than quietly
+// reporting a partial day as a whole one.
+//
+// Cached per pool, because switching tabs on a market page is not a reason to
+// ask Alcor for a megabyte again.
+const historyCache = new Map();
+export async function poolSwapHistory(poolId, { sinceMs = 24 * 3600e3, maxPages = 3, pageSize = 1000, maxAgeMs = 120000 } = {}) {
+  const key = `${poolId}:${sinceMs}`;
+  const hit = historyCache.get(key);
+  if (hit && Date.now() - hit.at < maxAgeMs) return hit.data;
+
+  const cutoff = Date.now() - sinceMs;
+  const out = [];
+  let reached = false;
+  for (let page = 0; page < maxPages; page++) {
+    let rows = [];
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 15000);
+      const r = await fetch(`${API}/${encodeURIComponent(poolId)}/swaps?limit=${pageSize}&skip=${page * pageSize}`,
+        { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!r.ok) break;
+      const d = await r.json();
+      rows = Array.isArray(d) ? d : (d?.swaps || []);
+    } catch { break; }
+    out.push(...rows);
+    if (rows.length < pageSize) { reached = true; break; }          // that is all there is
+    const oldest = Date.parse(rows[rows.length - 1]?.time || '');
+    if (isFinite(oldest) && oldest <= cutoff) { reached = true; break; }
+  }
+  const data = { swaps: out, complete: reached };
+  historyCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
 // Which way a trade went, from the pool's point of view. A negative token A
 // amount means A LEFT the pool, which is somebody buying A.
 export const tradeSide = x => (Number(x.tokenA) < 0 ? 'buy' : 'sell');

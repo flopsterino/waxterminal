@@ -1395,3 +1395,36 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
   .top .btn { padding: 6px 10px; font-size: 12px; }
   .gsearch { flex: 1 1 90px; }
 }
+
+/* --- the pool's pulse: four windows, and how each one splits ------------- */
+.pulsecard { padding: 0; overflow: hidden; margin-bottom: 12px; }
+.pulsetabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); }
+.pulsetab { background: none; border: 0; border-right: 1px solid var(--line); cursor: pointer;
+  padding: 9px 6px; display: flex; flex-direction: column; align-items: center; gap: 2px; font: inherit; }
+.pulsetab:last-child { border-right: 0; }
+.pulsetab .k { font-size: 10.5px; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.pulsetab .v { font-size: 14px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.pulsetab:hover { background: var(--surface-2); }
+.pulsetab.on { background: var(--surface-2); }
+.pulsetab.on .k { color: var(--ink-2); }
+.pulsebody { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+.pulserow { display: flex; gap: 14px; padding: 12px 14px; border-right: 1px solid var(--line); min-width: 0; }
+.pulserow:last-child { border-right: 0; }
+.pulserow .pleft { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; min-width: 74px; }
+.pulserow .pleft .k { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.pulserow .pleft .v { font-size: 17px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.psplit { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+.phead { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); }
+.pnums { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+.pbar { display: flex; height: 5px; gap: 3px; border-radius: 99px; overflow: hidden; margin-top: 1px; }
+.pbar i { display: block; height: 100%; border-radius: 99px; }
+.pbar i.buy { background: var(--good); }
+.pbar i.sell { background: var(--bad); }
+.pulsenote { margin: 0; padding: 0 14px 11px; font-size: 11px; }
+@media (max-width: 860px) {
+  .pulsebody { grid-template-columns: 1fr; }
+  .pulserow { border-right: 0; border-bottom: 1px solid var(--line); }
+  .pulserow:last-child { border-bottom: 0; }
+}
