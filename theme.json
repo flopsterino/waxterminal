@@ -34,7 +34,18 @@
       "memoPrefix": "promote"
     },
     "stakeProxy": "waxcommunity",
-    "zapFeeBps": 20
+    "zapFeeBps": 20,
+    "rating": {
+      "enabled": true,
+      "account": "hole.cheese",
+      "token": {
+        "symbol": "HOLE",
+        "contract": "hole.cheese",
+        "decimals": 4
+      },
+      "price": 1,
+      "memoPrefix": "rate"
+    }
   },
   "features": {
     "pools": true,

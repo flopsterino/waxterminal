@@ -27,6 +27,8 @@ import { balanceOf, getAllRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
+import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, VOTES } from './ratings.js';
+import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT } from './cheese.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -475,6 +477,7 @@ async function boot() {
   try {
     CFG = await (await fetch('theme.json')).json();
     configurePromotion(CFG.commercial);
+    configureRatings(CFG.commercial);
     $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
     if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
     document.title = CFG.identity?.name ?? 'WAX Terminal';
@@ -632,6 +635,7 @@ async function boot() {
     };
     // Money left mid-flight outranks anything else on the page.
     resumeBanner().catch(() => {});
+    renderBanner().catch(() => {});
   } else {
     banner(`<div class="err"><b>Could not load any data.</b> ${esc(loadError?.message || 'unknown')}<br>
       The public WAX nodes may be rate-limiting. Reloading usually fixes it.</div>`);
@@ -951,6 +955,7 @@ function renderOverview() {
   for (const g of groups) {
     const tvl = g.pool?.tvlReal;
     g.share = tvl > 0 ? SIZE / (tvl + SIZE) : 1;
+    g.stakers = Math.max(0, ...g.farms.map(f => f.numStakes || 0)) || null;
     // With no deposit there is nothing to dilute and no pool too small to take
     // it, so the constraint only applies once an amount is entered.
     g.tooSmall = g.share > 0.33;      // at the overview's own reference size
@@ -978,12 +983,16 @@ function renderOverview() {
       <div class="card"><div id="ovWatch"></div></div>
     </div>
     <div class="ovgrid">
-      <div class="card"><h3>Top farms <span class="dim">&mdash; farm APR</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
+      <div class="card wide"><h3>Biggest daily payouts <span class="dim">&mdash; what farms actually hand out, per day</span>
+          <span style="margin-left:auto" class="switchwrap">
+            <span class="switchlabel">risky</span>
+            <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
+          </span></h3><div id="ovPay"></div></div>
+      <div class="card"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
       <div class="card"><h3>Gainers <span class="dim">&mdash; 24h</span></h3><div id="ovUp"></div></div>
       <div class="card"><h3>Losers <span class="dim">&mdash; 24h</span></h3><div id="ovDown"></div></div>
-      <div class="card"><h3>Ending soon <span class="dim">&mdash; farms with a date</span></h3><div id="ovEnding"></div></div>
     </div>
     <div class="grid g2" style="margin-top:10px">
       <div class="card"><h3>WAX <span class="dim" id="ovWaxPx"></span>
@@ -994,11 +1003,7 @@ function renderOverview() {
     </div>
     <div class="grid g2" style="margin-top:10px">
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
-      <div class="card"><h3>Biggest daily payouts
-          <span style="margin-left:auto" class="switchwrap">
-            <span class="switchlabel">risky</span>
-            <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
-          </span></h3><div id="ovPay"></div></div>
+      <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovEnding2"></div></div>
     </div>`;
 
   // The front page is a set of ranked lists, and a ranked list of numbers is a
@@ -1072,7 +1077,7 @@ function renderOverview() {
     .filter(g => g.endsAt && g.endsAt > now2 && g.endsAt < now2 + 45 * 86400e3 && g.rewardRealDay > 0)
     .sort((a, b) => a.endsAt - b.endsAt)
     .slice(0, 6);
-  mini('#ovEnding', ending.map(g => ({ pool: gKey(g), x: g })), [
+  mini('#ovEnding2', ending.map(g => ({ pool: gKey(g), x: g })), [
     { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
     { h: 'Ends', r: true, v: g => { const d = (g.endsAt - now2) / 86400e3; return d < 1 ? Math.round(d * 24) + 'h' : Math.round(d) + 'd'; }, cls: g => (g.endsAt - now2) < 7 * 86400e3 ? 'neg' : '' },
     { h: 'Pays', r: true, v: g => usd(g.rewardRealDay) + '<span class="dim">/d</span>' },
@@ -1094,12 +1099,27 @@ function renderOverview() {
   // the reader.
   const sane = g => g.pool?.tvlReal > 0 && g.rewardRealDay < g.pool.tvlReal * 0.5;
   const payers = groups.filter(g => g.rewardRealDay > 0 && (showRisky || sane(g)))
-    .sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 8);
+    .sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 14);
   mini('#ovPay', payers.map(g => ({ pool: gKey(g), x: g })), [
-    { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
-    { h: 'Pays / day', r: true, v: g => usd(g.rewardRealDay) },
-    { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
+    { h: 'Pool', v: g => (g.pool ? pairCell(g.pool) + tierTag(g.pool) : esc(g.poolId)) },
+    { h: 'Pays / day', r: true, v: g => usd(g.rewardRealDay), cls: () => 'strong' },
+    { h: 'In', v: g => {
+      const byTok = new Map();
+      for (const r of g.rewards) {
+        const cur = byTok.get(r.token) || { symbol: r.symbol, perDay: 0 };
+        cur.perDay += r.perDay || 0; byTok.set(r.token, cur);
+      }
+      const list = [...byTok].sort((a, b) => b[1].perDay - a[1].perDay);
+      return list.slice(0, 2).map(([tok, r]) => `<span class="rew"><span data-pm="${esc(tok)}|${esc(r.symbol)}"></span><b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
+        + (list.length > 2 ? `<span class="rew more">+${list.length - 2}</span>` : '');
+    } },
+    { h: 'Face value', r: true, v: g => g.rewardUsdDay > g.rewardRealDay * 1.05 ? usd(g.rewardUsdDay) : '<span class="dim">same</span>',
+      cls: g => g.rewardUsdDay > g.rewardRealDay * 1.05 ? 'dim' : 'dim' },
+    { h: 'Stakers', r: true, v: g => (g.stakers ? g.stakers.toLocaleString() : '—'), cls: g => g.stakers ? '' : 'dim' },
+    { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr${g.aprThin ? ' thin' : ''}">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
     { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
+    { h: 'Ends', r: true, v: g => { if (!g.endsAt) return '<span class="dim">—</span>'; const d = (g.endsAt - Date.now()) / 86400e3; return d < 0 ? 'ended' : d < 1 ? Math.round(d * 24) + 'h' : Math.round(d) + 'd'; },
+      cls: g => g.endsAt && (g.endsAt - Date.now()) < 7 * 86400e3 ? 'neg' : 'dim' },
   ], 'No farm pays a reward with real liquidity behind it.');
   const rt = $('#riskyToggle');
   if (rt) rt.onclick = () => { showRisky = !showRisky; rt.setAttribute('aria-checked', String(showRisky)); renderOverview(); };
@@ -2182,7 +2202,7 @@ async function renderTradeFlow(account) {
           // the net stops being a by-product of the turnover.
           const churn = (r.bought + r.sold) > 0 ? Math.abs(r.net) / (r.bought + r.sold) : 0;
           const label = churn < 0.15 ? 'round-tripping' : dir;
-          return `<tr>
+          return `<tr class="clickable" data-tokfilter="${esc(r.symbol)}" title="Show only this wallet's trades in ${esc(r.symbol)}">
             <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span>${tokLink(r.id, r.symbol)}</td>
             <td class="r num ${r.bought > 0 ? 'pos' : 'dim'}">${r.bought > 0 ? qty(r.bought) : '—'}</td>
             <td class="r num ${r.sold > 0 ? 'neg' : 'dim'}">${r.sold > 0 ? qty(r.sold) : '—'}</td>
@@ -2196,7 +2216,7 @@ async function renderTradeFlow(account) {
     </div></div>
 
     <div class="section"><h3>Recent trades <span class="dim">&mdash; newest first</span></h3>
-    <div class="card"><div class="tablewrap" style="border:0"><table style="font-size:12.5px">
+    <div class="card" id="tradeListCard"><div class="tablewrap" style="border:0"><table style="font-size:12.5px">
       <thead><tr><th>When</th><th>Sold</th><th>Got</th><th class="r">Worth</th><th>Route</th></tr></thead>
       <tbody>${trades.map(t => {
         // The biggest leg is the trade; the rest are the change. Listing every
@@ -2214,7 +2234,7 @@ async function renderTradeFlow(account) {
         const val = [...t.sold, ...t.bought]
           .map(x => { const px = state.prices.get(`${x.symbol}@${x.contract}`)?.usd; return px != null ? x.amount * px : null; })
           .find(v => v != null) ?? null;
-        return `<tr>
+        return `<tr data-find="${esc([...t.sold, ...t.bought].map(x => x.symbol).join(' ') + ' ' + (t.route ? t.route.map(poolPairName).join(' ') : t.venue))}">
           <td class="num dim"><a href="${trxUrl(t.trx)}" target="_blank" rel="noopener" title="${new Date(t.ts).toISOString()}">${ago(new Date(t.ts).toISOString())} &nearr;</a></td>
           <td class="neg" title="${esc(all(t.sold))}">${sold}</td>
           <td class="pos" title="${esc(all(t.bought))}">${got}</td>
@@ -2225,8 +2245,20 @@ async function renderTradeFlow(account) {
       }).join('')}</tbody></table></div>
       <p class="sub" style="margin:9px 0 0">${trades.length} of ${swaps.length.toLocaleString()} legs, paired by transaction.
         A leg with no counterpart is a deposit or a payout, not a trade.</p>
+      <div class="empty filternone" hidden>No trade in that token.</div>
     </div></div>`;
   fillMarks(box);
+
+  // "Welke swaps heeft deze wallet in dít token gedaan": the table above is
+  // already a list of the tokens this wallet touched, so it doubles as the
+  // control — clicking a row filters the trades beneath it to that token, and
+  // clicking the token's name still opens the token.
+  const filt = attachFilter($('#tradeListCard'), { target: 'tbody tr', placeholder: 'Filter these trades by token…', noun: 'trades' });
+  box.querySelectorAll('tr[data-tokfilter]').forEach(tr => tr.onclick = rowClick(() => {
+    const sym = tr.dataset.tokfilter;
+    filt?.set(filt.input.value.trim().toLowerCase() === sym.toLowerCase() ? '' : sym);
+    $('#tradeListCard')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }));
 }
 
 // ---------------------------------------------------------------- STAKING ---
@@ -2258,14 +2290,26 @@ async function loadMyStakes() {
 // already knows what they are worth wherever it has a price.
 const priceOf = (symbol, contract) => state.prices.get(`${symbol}@${contract}`)?.usd ?? null;
 
-const ipfs = h => (h && /^Qm|^bafy/.test(h) ? `https://atomichub-ipfs.com/ipfs/${encodeURIComponent(h)}` : '');
+// IPFS has no single host that always answers. atomichub's gateway serves the
+// NFT images it has pinned and returns an HTML error page for anything else —
+// including every banner and farm logo here — so images walk a list of
+// gateways and only give up when all of them have failed.
+const IPFS_GATEWAYS = ['https://gateway.pinata.cloud/ipfs/', 'https://ipfs.io/ipfs/', 'https://atomichub-ipfs.com/ipfs/'];
+const isIpfs = h => !!h && /^(Qm|baf)[A-Za-z0-9]+$/.test(String(h).trim());
+const ipfs = (h, n = 0) => (isIpfs(h) ? IPFS_GATEWAYS[n] + encodeURIComponent(String(h).trim()) : '');
+// Inline, because these images are written into HTML strings: on error the
+// element moves to the next gateway, and after the last one it gives up in
+// whatever way the caller asked for.
+const ipfsFallback = (h, onFail = "this.style.display='none'") => IPFS_GATEWAYS.slice(1)
+  .map((g, i) => `this.onerror=null;this.dataset.g='${i + 1}';this.src='${g}${encodeURIComponent(String(h).trim())}';`)
+  .reduceRight((acc, step) => `this.onerror=function(){${acc}};${step}`, onFail);
 
 function stakeImg(row) {
   const src = ipfs(row.img);
   const initials = (row.name || row.title || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '#';
-  return src
-    ? `<img class="stakeimg" src="${esc(src)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'stakeimg gen',textContent:'${esc(initials)}'}))">`
-    : `<span class="stakeimg gen">${esc(initials)}</span>`;
+  if (!src) return `<span class="stakeimg gen">${esc(initials)}</span>`;
+  const giveUp = `this.replaceWith(Object.assign(document.createElement('span'),{className:'stakeimg gen',textContent:'${esc(initials)}'}))`;
+  return `<img class="stakeimg" src="${esc(src)}" alt="" loading="lazy" onerror="${esc(ipfsFallback(row.img, giveUp))}">`;
 }
 
 // One shape for both venues, so one table can rank them against each other.
@@ -2591,6 +2635,96 @@ const forPeriod = sec => {
   return `${Math.round(sec / 86400)} day${Math.round(sec / 86400) === 1 ? '' : 's'}`;
 };
 
+// ----------------------------------------------------------------- BANNER ---
+// CheeseHub sells a daily banner slot on chain, and the two sites share an
+// audience. Carrying the same slot here means a buyer reaches both for one
+// payment, and the terminal does not have to invent its own ad system —
+// which is the whole point of one cheese umbrella.
+//
+// It is labelled as paid placement, sits below the content, and touches
+// nothing that is ranked. An unsold slot advertises the slot itself.
+async function renderBanner() {
+  const box = $('#cheeseBanner');
+  if (!box) return;
+  let got;
+  try { got = await currentBanners(); } catch { return; }
+  const b = got.banners[0];
+  if (!b && !got.free) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = b
+    ? `<a class="bannerad" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow">
+         <img src="${esc(ipfs(b.img))}" alt="" loading="lazy"
+           onerror="${esc(ipfsFallback(b.img, "this.closest('.bannerwrap').hidden = true"))}">
+         <span class="bannertag">Paid slot &middot; bought from CheeseHub by ${esc(b.user)}</span>
+       </a>`
+    : `<a class="bannerad empty" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">
+         <span>This banner slot is unsold today &mdash; it runs on CheeseHub and here.</span>
+         <span class="bannertag">Buy the slot &nearr;</span>
+       </a>`;
+}
+
+// ---------------------------------------------------------------- RATINGS ---
+// Four verdicts, each one a small payment. The counts come off the chain, so
+// they are as honest as what people were willing to pay for them — and a bot
+// that wants to fake a hundred of them pays a hundred fees to do it.
+function ratingBar(subject, { compact = false } = {}) {
+  if (!ratingsConfigured()) return '';
+  const t = ratingsFor(subject);
+  const terms = ratingTerms();
+  const total = t ? t.voters : 0;
+  const allTotal = t?.all?.voters || 0;
+  const mine = t?.mine?.get(wallet.account() || '') || null;
+  return `<div class="ratebar${compact ? ' compact' : ''}" data-rate="${esc(subject)}">
+    ${VOTES.map(v => {
+      const n = t ? t[v.key] : 0;
+      const ever = t?.all?.[v.key] || 0;
+      const share = total > 0 ? n / total : 0;
+      return `<button class="ratebtn${mine === v.key ? ' mine' : ''}" data-vote="${v.key}"
+        title="${esc(v.label)} — ${n} vote${n === 1 ? '' : 's'} in the last 24 hours${ever > n ? `, ${ever} in 90 days` : ''}${mine === v.key ? ', including yours' : ''}. Costs ${terms.price} ${esc(terms.symbol)}, paid on chain."
+        style="--share:${(share * 100).toFixed(0)}%"><span class="em">${v.emoji}</span><span class="n">${n}</span></button>`;
+    }).join('')}
+    <span class="ratenote dim" title="Only the last 24 hours count, so nobody buys a reputation once and keeps it.">${
+      total ? `${total} vote${total === 1 ? '' : 's'} today` : 'no votes today'}${allTotal > total ? ` &middot; ${allTotal} in 90 days` : ''}${
+      compact ? '' : ` &middot; ${terms.price} ${esc(terms.symbol)} each, on chain`}</span>
+  </div>`;
+}
+
+// Drawn once the tallies are in, wherever a bar is on screen.
+async function paintRatings(root = document) {
+  if (!ratingsConfigured()) return;
+  try { await loadRatings(); } catch { return; }
+  root.querySelectorAll('.ratebar[data-rate]').forEach(el => {
+    const holder = el.parentElement;
+    if (!holder) return;
+    el.outerHTML = ratingBar(el.dataset.rate, { compact: el.classList.contains('compact') });
+  });
+  wireRatings(root);
+}
+
+function wireRatings(root = document) {
+  root.querySelectorAll('.ratebar[data-rate]').forEach(bar => {
+    if (bar.dataset.wired) return;
+    bar.dataset.wired = '1';
+    bar.querySelectorAll('.ratebtn').forEach(b => b.onclick = async () => {
+      const subject = bar.dataset.rate, vote = b.dataset.vote;
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      const account = wallet.account();
+      const note = bar.querySelector('.ratenote');
+      const before = note ? note.innerHTML : '';
+      if (note) note.textContent = 'waiting for your wallet…';
+      try {
+        await wallet.transact(buildRatingVote({ account, subject, vote }));
+        applyLocalVote(subject, vote, account);
+        const next = ratingBar(subject, { compact: bar.classList.contains('compact') });
+        bar.outerHTML = next;
+        wireRatings(root);
+      } catch (e) {
+        if (note) note.innerHTML = /cancel|reject|declin/i.test(String(e.message || e)) ? before : `<span class="neg">${esc(String(e.message || e)).slice(0, 80)}</span>`;
+      }
+    });
+  });
+}
+
 // ------------------------------------------------------------- FILTERING ----
 // A wallet with forty positions and a farm list to match is a scrolling
 // exercise: "ik moet soms minuten scrollen om een specifieke farm te vinden."
@@ -2723,13 +2857,30 @@ async function renderWalletResources(account) {
           ${[0.5, 2, 5, 20].map((a, i) => `<button class="chip" data-pw="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a}</button>`).join('')}
           <span class="dim" id="pwUnit" style="font-size:12px">CHEESE</span>
         </div>
+        <div class="toolbar" style="margin:8px 0 0">
+          <span class="sub">Into</span>
+          ${[['100', 'CPU only'], ['70', '70 / 30'], ['50', 'half and half'], ['0', 'NET only']]
+            .map(([v, label], i) => `<button class="chip" data-pwsplit="${v}"${i === 0 ? ' aria-pressed="true"' : ''}>${label}</button>`).join('')}
+        </div>
         <p class="sub" style="margin:9px 0 0" id="pwNote"></p>
         <div id="pwOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwGo">Power up</button></div>
       </div>
     </div>
 
+
     <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h3>Buy RAM with CHEESE <span class="dim">&mdash; through ram.chz</span></h3>
+        <div class="toolbar" style="margin:0">
+          ${[1, 5, 25, 100].map((a, i) => `<button class="chip" data-ram="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a}</button>`).join('')}
+          <span class="dim" style="font-size:12px">CHEESE</span>
+        </div>
+        <p class="sub" style="margin:9px 0 0">RAM is bought, not rented: it stays yours until you sell it back.
+          The bytes land on ${esc(account)}. <span class="dim">0.5% spread each way, the same contract CheeseHub uses.</span></p>
+        <div id="ramOut" style="margin-top:10px"></div>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramGo">Buy RAM</button>
+          <a class="plink" href="${CHEESEHUB}/ram" target="_blank" rel="noopener">CheeseHub RAM desk &nearr;</a></div>
+      </div>
       <div class="card"><h3>Unstake <span class="dim">&mdash; three days in a queue before it lands</span></h3>
         <div class="filters" style="display:grid;gap:8px;margin:0">
           <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
@@ -2767,7 +2918,7 @@ async function renderWalletResources(account) {
   </div>`;
 
   // ---- power up ------------------------------------------------------------
-  let pw = 2;
+  let pw = 2, pwCpu = 100;
   const pwNote = $('#pwNote');
   let pwTok = 'cheese';
   let pwGen = 0;
@@ -2790,7 +2941,8 @@ async function renderWalletResources(account) {
     // Priced from what the service has actually done: 2,636 CHEESE bought 4,778
     // WAX of powerup over its life. An observed rate, not a promised one.
     const waxish = pw * 1.81;
-    pwNote.innerHTML = `${pw} CHEESE buys roughly ${qty(waxish)} WAX of CPU and NET for a day, going by what this service has historically delivered.
+    const into = pwCpu >= 100 ? 'CPU' : pwCpu <= 0 ? 'NET' : `${pwCpu}% CPU and ${100 - pwCpu}% NET`;
+    pwNote.innerHTML = `${pw} CHEESE buys roughly ${qty(waxish)} WAX of ${into} for a day, going by what this service has historically delivered.
       The CHEESE is burned to <span class="mono">eosio.null</span> &mdash; it pays nobody, it leaves circulation.`;
   };
   paintPw();
@@ -2802,6 +2954,13 @@ async function renderWalletResources(account) {
     out.querySelectorAll('[data-pw]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     pw = Number(b.dataset.pw); paintPw();
   });
+  // How the powerup is split. CPU is what runs out first for most people, but
+  // an account that mints or transfers a lot burns NET instead, and paying for
+  // the wrong one is money spent on a resource that was never short.
+  out.querySelectorAll('[data-pwsplit]').forEach(b => b.onclick = () => {
+    out.querySelectorAll('[data-pwsplit]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    pwCpu = Number(b.dataset.pwsplit); paintPw();
+  });
   $('#pwGo').onclick = async () => {
     const box = $('#pwOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
@@ -2809,10 +2968,11 @@ async function renderWalletResources(account) {
     try {
       built = pwTok === 'wax'
         ? await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
-        : buildPowerup({ amount: pw, target: account, token: cheese, me: wallet.account() });
+        : { actions: buildCheesePowerup({ account: wallet.account(), amount: pw, receiver: account, cpuPct: pwCpu }) };
     } catch (e) { box.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; return; }
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">cheesepowerz</span>`} to power up <span class="mono">${esc(account)}</span>.
+      ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">${POWERUP_ACCOUNT}</span>`} to power up
+      <span class="mono">${esc(account)}</span>${pwCpu >= 100 ? '' : pwCpu <= 0 ? ' with NET' : ` with ${pwCpu}/${100 - pwCpu} CPU and NET`}.
       <br><span class="dim">One transfer. The service burns the CHEESE.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
     $('#pwSign').onclick = async () => {
@@ -2820,6 +2980,31 @@ async function renderWalletResources(account) {
       try {
         const tx = await wallet.transact(built.actions, { verify: true });
         box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Powered up.</b> CPU and NET should be available within a block.
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+      } catch (e) { box.innerHTML = txError(e); }
+    };
+  };
+
+  // ---- RAM, bought with CHEESE through ram.chz -----------------------------
+  let ramAmt = 5;
+  out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => {
+    out.querySelectorAll('[data-ram]').forEach(x => x.setAttribute('aria-pressed', String(x === b2)));
+    ramAmt = Number(b2.dataset.ram);
+  });
+  const ramBtn = $('#ramGo');
+  if (ramBtn) ramBtn.onclick = async () => {
+    const box = $('#ramOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const actions = buildCheeseRam({ account: wallet.account(), amount: ramAmt, receiver: account });
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Send <b>${ramAmt} CHEESE</b> to <span class="mono">${RAM_ACCOUNT}</span> and receive RAM on <span class="mono">${esc(account)}</span>.
+      <br><span class="dim">The contract buys at the system price and keeps a 0.5% spread. RAM stays yours.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramSign">Sign and buy</button></div></div>`;
+    $('#ramSign').onclick = async () => {
+      box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      try {
+        const tx = await wallet.transact(actions, { verify: true });
+        box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Bought.</b> The RAM lands within a block.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { box.innerHTML = txError(e); }
     };
@@ -5066,6 +5251,7 @@ async function openToken(id) {
         <h2 class="vt" style="margin:0">${esc(t.symbol)} ${trustChip(id)}</h2>
         <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
       </div>
+      ${ratingBar(`t:${id}`)}
       <span style="flex:1"></span>
       <span id="tokStar"></span>
       <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
@@ -5187,6 +5373,7 @@ async function openToken(id) {
   wirePromote($('#tokenDetail'));
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
+  paintRatings($('#tokenDetail')).catch(() => {});
 
   // ---- where it trades -----------------------------------------------------
   // A table rather than bars: two pools on the same pair are common on Alcor and
@@ -6642,6 +6829,7 @@ async function openPool(key) {
       ${tierTag(p)}<span class="badge ${p.dex}">${esc(venueName[p.dex] || p.dex)}</span>
       <span class="dim ph-meta">#${esc(p.id)}${p.bornAt ? ` &middot; ${age(p.bornAt)} old` : ''}</span>
       <span id="poolStar"></span>
+      ${ratingBar(`p:${p.dex}:${p.id}`, { compact: true })}
       <div class="ph-act">
         <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade &nearr;</a>
         <button class="btn" id="poolAddLiq">Add liquidity</button>
@@ -6783,6 +6971,7 @@ async function openPool(key) {
   }
 
   wirePromote($('#poolDetail'));
+  paintRatings($('#poolDetail')).catch(() => {});
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
 
