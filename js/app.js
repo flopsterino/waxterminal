@@ -2881,7 +2881,7 @@ async function renderWalletResources(account) {
           <span class="dim" style="font-size:12px">CHEESE</span>
         </div>
         <p class="sub" style="margin:9px 0 0">RAM is bought, not rented: it stays yours until you sell it back.
-          The bytes land on ${esc(account)}. <span class="dim">0.5% spread each way, the same contract CheeseHub uses.</span></p>
+          The bytes land on ${esc(account)}. <span class="dim">0.5% standard spread each way.</span></p>
         <div id="ramOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramGo">Buy RAM</button>
           <a class="plink" href="${CHEESEHUB}/ram" target="_blank" rel="noopener">CheeseHub RAM desk &nearr;</a></div>
