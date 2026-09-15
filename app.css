@@ -1470,3 +1470,7 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
 @media (min-width: 1200px) {
   .tablewrap table th:nth-child(2), .tablewrap table td:nth-child(2) { width: 246px; min-width: 246px; max-width: 246px; }
 }
+/* A tape with eight columns wants the width; in a half-width card the maker
+   falls off the end, which is the column that makes it a tape. */
+#tokTape .tablewrap { max-height: 420px; }
+.card h3 .more[data-poolkey] { cursor: pointer; }

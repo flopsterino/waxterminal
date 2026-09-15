@@ -287,8 +287,13 @@ const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)
 // Stablecoins quote everything, WAX quotes everything else, a staked-WAX token
 // quotes what is left; two tokens of equal rank keep the pool's order.
 const quoteRank = id => STABLES.has(id) ? 3 : id === 'WAX@eosio.token' ? 2 : /^(LSWAX|SWAX|WAXUSDT|PARAUSD)@/.test(id) ? 1 : 0;
-function pairOrient(p) {
-  const baseIsA = quoteRank(p.tokenA) <= quoteRank(p.tokenB);
+// `prefer` forces a side: on a token's own page the token being read is the
+// thing being bought and sold, whatever the ranking would otherwise say. On a
+// WAXUSDC page, WAX/WAXUSDC is a WAXUSDC market.
+function pairOrient(p, prefer = null) {
+  const baseIsA = prefer && (p.tokenA === prefer || p.tokenB === prefer)
+    ? p.tokenA === prefer
+    : quoteRank(p.tokenA) <= quoteRank(p.tokenB);
   return baseIsA
     ? { baseIsA, baseId: p.tokenA, baseSym: p.symA, quoteId: p.tokenB, quoteSym: p.symB, baseUsd: p.priceUsdA, quoteUsd: p.priceUsdB }
     : { baseIsA, baseId: p.tokenB, baseSym: p.symB, quoteId: p.tokenA, quoteSym: p.symA, baseUsd: p.priceUsdB, quoteUsd: p.priceUsdA };
@@ -5410,6 +5415,9 @@ async function openToken(id) {
   const farms = seedApr(farmGroups()).filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
 
+  // Alcor is the only venue that serves a per-pool swap feed, so the live tape
+  // and the counters exist exactly where its deepest market is one.
+  const liveTapeHere = deepest?.dex === 'alcor';
   const priceStr = t.price == null ? '—'
     : px(t.price);
   // Everyone here holds WAX and prices things against it, so the dollar alone
@@ -5455,6 +5463,37 @@ async function openToken(id) {
         <span class="sub">${farms.slice(0, 4).map(g => `<span class="xlink" data-farmkey="${esc(g.key)}">${g.pool ? esc(g.pool.symA) + '/' + esc(g.pool.symB) : esc(g.poolId)}</span>${g.aprReal != null || g.apr != null ? ` <b>${pct(g.aprReal ?? g.apr)}</b>` : ''}`).join(' &middot; ')}${farms.length > 4 ? ` &middot; and ${farms.length - 4} more` : ''} &mdash; ${usd(farms.reduce((a, g) => a + (g.rewardUsdDay || 0), 0))} a day between them</span></div>
     </div>` : ''}
 
+    ${deepest ? `<div class="section"><h3>Price</h3>
+      <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button class="chip" id="tokFlip" title="Show the price the other way round">&#8646;</button>
+          ${intervalChips('tokPrice')}
+        </span></h3>
+        <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Replaying the pool…</span></div></div></div>
+    </div>` : ''}
+
+    ${tradePools.length ? `<div class="section"><h3>Trading</h3>
+      ${deepest?.dex === 'alcor' ? '<div class="card pulsecard" id="tokPulse"></div>' : ''}
+      ${deepest?.dex === 'alcor'
+        ? `<div class="card"><h3><span class="livedot" id="tokLiveDot"></span>Live trades
+            <span class="dim">&mdash; ${esc(deepest.symA)}/${esc(deepest.symB)}, its deepest market</span>
+            <a class="more" data-poolkey="${esc(deepest.dex)}:${esc(String(deepest.id))}">Open the market &rarr;</a>
+            <span class="dim" id="tokLiveState" style="margin-left:10px;font-weight:400;font-size:11px"></span></h3>
+            <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div></div>`
+        : `<div class="card"><h3>Trades <span class="dim">&mdash; newest first, read out of the pool rows</span></h3>
+            <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>`}
+      <div class="grid g2" style="margin-top:10px">
+        <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; each trade sized from the pool it moved</span>
+          <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('tokVol', 3600, { skip: [300] })}</span></h3>
+          <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
+          <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
+        <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
+          <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
+      </div>
+    </div>` : `<div class="section"><h3>Trading</h3>
+      <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state — no chart, no history.</p></div>
+    </div>`}
+
     <div class="section"><h3>The token itself</h3>
       <div class="card"><dl class="facts cols" id="tokFacts">
           <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
@@ -5474,30 +5513,6 @@ async function openToken(id) {
         </dl>
         <div id="tokTax" hidden></div></div>
     </div>
-
-    ${deepest ? `<div class="section"><h3>Price</h3>
-      <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
-        <span style="margin-left:auto;display:flex;gap:4px">
-          <button class="chip" id="tokFlip" title="Show the price the other way round">&#8646;</button>
-          ${intervalChips('tokPrice')}
-        </span></h3>
-        <div id="tokChart"><div class="loading"><span class="spinner"></span><span>Replaying the pool…</span></div></div></div>
-    </div>` : ''}
-
-    ${tradePools.length ? `<div class="section"><h3>Trading</h3>
-      <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; each trade sized from the pool it moved</span>
-        <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('tokVol', 3600, { skip: [300] })}</span></h3>
-        <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
-        <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
-      <div class="grid g2">
-        <div class="card"><h3>Trades <span class="dim">&mdash; newest first, read out of the pool rows</span></h3>
-          <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>
-        <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
-          <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
-      </div>
-    </div>` : `<div class="section"><h3>Trading</h3>
-      <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state — no chart, no history.</p></div>
-    </div>`}
 
     <div class="section"><h3>Order book <span class="dim">&mdash; resting orders the pools do not show</span></h3>
       <div class="card"><div id="tokBook"><div class="loading"><span class="spinner"></span><span>Reading the book…</span></div></div></div>
@@ -5540,6 +5555,12 @@ async function openToken(id) {
     ${promoteBox('t', id, t.symbol)}`;
 
   $('#tokMark')?.appendChild(tokenMark(id, t.symbol, { size: 34 }));
+  // The tape and the counters a market page has, on the token's deepest Alcor
+  // market — read from this token's side, so a buy is a buy of it.
+  if (liveTapeHere) {
+    startLiveTape(deepest, stale, { into: '#tokTape', dot: '#tokLiveDot', state: '#tokLiveState', base: id });
+    startPulse(deepest, stale, { into: '#tokPulse', base: id }).catch(() => {});
+  }
   wirePromote($('#tokenDetail'));
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
@@ -5861,7 +5882,25 @@ async function openToken(id) {
           : 'no trades found in the last 24 hours';
       }
 
-      const tape = $('#tokTape');
+      const tape = liveTapeHere ? null : $('#tokTape');
+      // Where the token has an Alcor market, the tape is the live one: same
+      // feed, same columns and same orientation as a market page. The replay
+      // still runs — it is what the volume chart is built from — and its full
+      // export moves under that chart.
+      if (liveTapeHere) {
+        const note = $('#tokVolNote');
+        if (note && all.length) {
+          note.appendChild(csvButton(`Export ${all.length.toLocaleString()} replayed trades`, `${t.symbol.toLowerCase()}-trades`, () => all, [
+            { h: 'time', v: x => new Date(x.ts).toISOString() },
+            { h: 'block', v: x => x.block },
+            { h: 'pools', v: x => x.pools.join(' + ') },
+            { h: 'direction', v: x => x.side },
+            { h: `amount_${t.symbol.toLowerCase()}`, v: x => x.amount },
+            { h: 'value_usd', v: x => x.usd },
+            { h: 'legs', v: x => x.legs.length },
+          ]));
+        }
+      }
       if (tape) {
         if (!all.length) { tape.innerHTML = '<div class="chart-empty">The history node returned no state changes for these pools.</div>'; return; }
         tape.innerHTML = `<div class="tablewrap" style="max-height:360px;border:0"><table style="font-size:12px">
@@ -5889,7 +5928,7 @@ async function openToken(id) {
       }
     }).catch(() => {
       const b = $('#tokVolChart'); if (b) b.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
-      const c = $('#tokTape'); if (c) c.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
+      const c = liveTapeHere ? null : $('#tokTape'); if (c) c.innerHTML = '<div class="chart-empty">Trade history unavailable.</div>';
     });
   }
 
@@ -7006,6 +7045,7 @@ const PULSE_WINDOWS = [
   { key: '24h', label: '24H', ms: 24 * 3600e3 },
 ];
 let pulseState = null;
+let pulseInto = '#poolPulse';
 
 // One swap, reduced to the four things every window needs. Orientation is the
 // traded token's, like everything else on this page: a "buy" is a buy of the
@@ -7062,7 +7102,7 @@ function pulseSplit(label, total, aLabel, bLabel, aVal, bVal, fmt) {
 
 function paintPulse() {
   const st = pulseState;
-  const box = $('#poolPulse');
+  const box = $(pulseInto);
   if (!st || !box) return;
   const now = Date.now();
   const tallies = Object.fromEntries(PULSE_WINDOWS.map(w => [w.key, pulseTally(st.rows, w.ms, now)]));
@@ -7105,10 +7145,11 @@ function pulseAdd(fresh, p, o) {
   if (added) paintPulse();
 }
 
-async function startPulse(p, stale) {
-  const box = $('#poolPulse');
+async function startPulse(p, stale, { into = '#poolPulse', base = null } = {}) {
+  const box = $(into);
   if (!box) return;
-  const o = pairOrient(p);
+  const o = pairOrient(p, base);
+  pulseInto = into;
   box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Counting today’s trades…</span></div>';
   let got;
   try { got = await poolSwapHistory(p.id); } catch { got = null; }
@@ -7140,13 +7181,13 @@ async function startPulse(p, stale) {
 // dollar value, who did it and a link to the transaction. See live.js for why
 // it polls one pool, gently, and only while you can see it.
 let stopLive = null;
-function startLiveTape(p, stale) {
+function startLiveTape(p, stale, { into = '#poolSwaps', dot: dotSel = '#liveDot', state: stateSel = '#liveState', base = null } = {}) {
   if (stopLive) { stopLive(); stopLive = null; }
-  const box = $('#poolSwaps');
+  const box = $(into);
   if (!box) return;
   // Everything on the tape is read from the traded token's side: whether it
   // was bought or sold, what it cost, how much of it moved.
-  const o = pairOrient(p);
+  const o = pairOrient(p, base);
   const row = (x, fresh) => {
     const aSide = tradeSide(x);
     const side = o.baseIsA ? aSide : (aSide === 'buy' ? 'sell' : 'buy');
@@ -7181,7 +7222,7 @@ function startLiveTape(p, stale) {
       <tbody>${all.map(x => row(x, freshIds.has(x.trx_id || x._id))).join('')}</tbody></table></div>`;
     drawn = true;
   };
-  const dot = $('#liveDot'), st = $('#liveState');
+  const dot = $(dotSel), st = $(stateSel);
   stopLive = watchPoolTrades(p.id, paint, {
     onState: s => {
       if (stale()) return;
