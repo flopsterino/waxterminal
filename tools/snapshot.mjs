@@ -356,7 +356,7 @@ console.log(`wrote pools.json — ${pools.length} pools, ${farmRows.length} live
 // can honestly price. Anything bigger turns the repo into a data warehouse.
 const topPools = [...state.pools].filter(p => p.tvl > 0)
   .sort((x, y) => (y.tvlReal || 0) - (x.tvlReal || 0)).slice(0, TOP_POOLS_IN_HISTORY)
-  .map(p => [`${p.dex}:${p.id}`, round(p.tvl, 0), round(p.priceAB, 8), round(p.tvlReal, 0)]);
+  .map(p => [`${p.dex}:${p.id}`, round(p.tvl, 0), round(p.priceAB, 8), round(p.tvlReal, 0), round(p.vol24 || 0, 0)]);
 
 // Only farms paying something a person would notice. Recording 900 farms that
 // pay a fraction of a cent a day turns the history file into 300 MB a year for

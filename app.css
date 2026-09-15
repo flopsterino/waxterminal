@@ -1370,3 +1370,17 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
   border-radius: var(--r); padding: 7px 9px; color: var(--ink); font-family: var(--font-data); font-size: 13px; }
 #npFigs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 700px) { .npband, .npamts { grid-template-columns: 1fr; } #npFigs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.subtabs.inline { display: inline-flex; border: 0; margin: 0; gap: 2px; vertical-align: middle; }
+.subtabs.inline .chip { font-size: 11.5px; padding: 3px 9px; }
+
+/* The bubble map's selection readout — the only way to inspect on a phone. */
+.bubblepick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-size: 12.5px; }
+.bubblepick b { font-family: var(--font-data); }
+.bubblepick .dim { flex: 1 1 200px; font-size: 11.5px; }
+.bubblepick .btn { padding: 4px 10px; font-size: 12px; }
+.bubblemap svg text { user-select: none; }
+@media (max-width: 700px) {
+  /* A 9.5px label inside a 430-wide box is 8px on a phone. */
+  .bubblemap svg text { font-size: 12px; }
+}

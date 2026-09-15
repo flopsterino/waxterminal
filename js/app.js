@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
@@ -7004,6 +7004,8 @@ async function openPool(key) {
       <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">liquidity</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span><span class="sub">${p.vol7d > 0 ? usd(p.vol7d) + ' in 7 days' : ''}</span></div>
       <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">depth &plusmn;1%</span><span class="sub">trade size that moves it 1%</span></div>
+      <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24 * (lpCut(p) / 10000)) : '—'}</span><span class="k">fees to providers, 24h</span><span class="sub">${p.vol7d > 0 ? `${usd(p.vol7d * (lpCut(p) / 10000))} over 7 days` : 'at this pool\u2019s own volume'}</span></div>
+      <div class="stat"><span class="v" id="poolHiLo">—</span><span class="k">24h range</span><span class="sub" id="poolHiLoSub">high and low, from the candles</span></div>
       <div class="stat"><span class="v ${fee > 0 ? '' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
       <div class="stat"><span class="v ${farmRate != null ? 'pos' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${usd(grp0.rewardRealDay)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
       <div class="stat"><span class="v">${qty(resBase)}</span><span class="k">${esc(o.baseSym)} pooled</span><span class="sub">${qty(resQuote)} ${esc(o.quoteSym)}</span></div>
@@ -7016,13 +7018,20 @@ async function openPool(key) {
           ${intervalChips('poolPrice')}
         </span></h3><div id="poolChart"><div class="loading"><span class="spinner"></span><span>Reading state changes…</span></div></div></div>
       <div class="card"><h3>${p.dex === 'alcor' ? '<span class="livedot" id="liveDot"></span>Live trades' : 'Recent swaps here'}
+        ${p.dex === 'alcor' ? `<span class="subtabs inline" style="margin:0 0 0 10px">
+          <button class="chip" data-feed="swaps" aria-pressed="true">Trades</button>
+          <button class="chip" data-feed="liq" aria-pressed="false">Adds &amp; removes</button>
+        </span>` : ''}
         <span class="dim" id="liveState" style="margin-left:auto;font-weight:400;font-size:11px"></span></h3>
-        <div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div></div>
+        <div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div>
+        <div id="poolLiq" hidden></div></div>
     </div>
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Where the liquidity sits
       <span class="dim">&mdash; ${esc(p.symB)} per ${esc(p.symA)}</span></h3>
       <div id="poolDepth"><div class="loading"><span class="spinner"></span><span>Reading ticks…</span></div></div>
       <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
+    <div class="card" style="margin-top:12px"><h3>This pool over time <span class="dim">&mdash; one point per daily snapshot</span></h3>
+      <div id="poolHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     <div id="newFarmBox" style="margin-top:12px"></div>
@@ -7134,6 +7143,75 @@ async function openPool(key) {
 
   wirePromote($('#poolDetail'));
   paintRatings($('#poolDetail')).catch(() => {});
+
+  // Adds and removes: the other half of what happens in a pool, and the half
+  // no venue API publishes. Read on demand, because it means paging the
+  // chain-wide stream and filtering — not something to do on every page open.
+  let liqLoaded = false;
+  $('#poolDetail').querySelectorAll('[data-feed]').forEach(b2 => b2.onclick = async () => {
+    $('#poolDetail').querySelectorAll('[data-feed]').forEach(x => x.setAttribute('aria-pressed', String(x === b2)));
+    const wantLiq = b2.dataset.feed === 'liq';
+    $('#poolSwaps').hidden = wantLiq;
+    $('#poolLiq').hidden = !wantLiq;
+    if (!wantLiq || liqLoaded) return;
+    liqLoaded = true;
+    const box = $('#poolLiq');
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading mints and burns…</span></div>';
+    let rows = [];
+    try { rows = await poolLiquidityEvents(p.id); } catch { rows = []; }
+    if (stale()) return;
+    if (!rows.length) {
+      box.innerHTML = `<div class="empty">No add or remove in the window the history node keeps.<br>
+        <span class="dim">This reads the chain-wide stream and keeps what belongs to this pool, so a quiet pool shows nothing rather than searching forever.</span></div>`;
+      return;
+    }
+    const priceAtT = t => Math.pow(1.0001, t) * 10 ** (p.decA - p.decB);
+    box.innerHTML = `<div class="tablewrap livetape" style="max-height:360px;border:0"><table>
+      <thead><tr><th>Age</th><th>What</th><th class="r">${esc(p.symA)}</th><th class="r">${esc(p.symB)}</th><th class="r">Value</th><th>Band</th><th>Who</th><th></th></tr></thead>
+      <tbody>${rows.slice(0, 60).map(r => {
+        const v = (r.amountA * (p.priceUsdA || 0)) + (r.amountB * (p.priceUsdB || 0));
+        const full = r.tickLower <= -443000 && r.tickUpper >= 443000;
+        return `<tr>
+          <td class="num dim">${ago(new Date(r.at).toISOString())}</td>
+          <td><span class="side ${r.kind === 'add' ? 'buy' : 'sell'}">${r.kind === 'add' ? 'Add' : 'Remove'}</span></td>
+          <td class="r num">${qty(r.amountA)}</td>
+          <td class="r num">${qty(r.amountB)}</td>
+          <td class="r num ${v > 0 ? '' : 'dim'}">${v > 0 ? usd(v) : '—'}</td>
+          <td class="dim">${full ? 'full range' : `${sigfig(priceAtT(r.tickLower))} – ${sigfig(priceAtT(r.tickUpper))}`}</td>
+          <td class="acct-cell">${acctLink(r.owner)}</td>
+          <td class="r"><a class="dim" href="${trxUrl(r.trx)}" target="_blank" rel="noopener" title="Open the transaction">&nearr;</a></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="sub" style="margin:9px 0 0">${rows.filter(r => r.kind === 'add').length} adds and ${rows.filter(r => r.kind === 'remove').length} removes in the window read.</p>`;
+  });
+
+  // What the daily job has recorded about this pool. Alcor charts this from
+  // their own database; ours comes out of the same file the token pages use.
+  loadHistory().then(hist => {
+    if (stale()) return;
+    const el = $('#poolHist');
+    if (!el) return;
+    const series = perDay(poolSeries(hist, `${p.dex}:${p.id}`));
+    if (series.length < 3) {
+      el.innerHTML = `<div class="chart-empty">${series.length} day${series.length === 1 ? '' : 's'} recorded for this pool.
+        <br><span class="dim">The daily job keeps the deepest pools; this one needs three points before a line means anything.</span></div>`;
+      return;
+    }
+    el.innerHTML = '<div id="poolHistTvl"></div><div id="poolHistVol" style="margin-top:6px"></div>';
+    lineSeriesChart($('#poolHistTvl'), series.map(r => ({ time: Math.floor(r.at / 1000), value: r.tvlReal ?? r.tvl })),
+      { height: 170, color: 'var(--c1)', fmt: usd })
+      .catch(() => {
+        $('#poolHistTvl').appendChild(areaChart(series.map(r => ({ x: r.at, y: r.tvlReal ?? r.tvl })),
+          { fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'Pooled value over time' }));
+      });
+    const withVol = series.filter(r => r.vol != null);
+    if (withVol.length >= 3) {
+      histogramChart($('#poolHistVol'), withVol.map(r => ({ time: Math.floor(r.at / 1000), value: r.vol })),
+        { height: 90, color: 'var(--c2)', fmt: usd }).catch(() => {});
+    } else {
+      $('#poolHistVol').innerHTML = '<p class="sub" style="margin:6px 0 0">Daily volume is recorded from today onwards.</p>';
+    }
+  }).catch(() => {});
   $('#poolStar')?.appendChild(watchStar('p', key, `${p.symA}/${p.symB}`));
   if (farms.length) $('#poolStar')?.appendChild(watchStar('f', key, `${p.symA}/${p.symB}` + ' farm'));
 
@@ -7164,6 +7242,16 @@ async function openPool(key) {
         const [num, den] = flipped ? [p.symA, p.symB] : [p.symB, p.symA];
         const pair = $('#poolPair');
         if (pair) pair.textContent = `${den}/${num}`;
+        // The day's range, off the same candles rather than a second read.
+        const dayAgo = Date.now() / 1000 - 86400;
+        const day = shown.filter(c => c.time >= dayAgo);
+        const hi = day.length ? Math.max(...day.map(c => c.high)) : null;
+        const lo = day.length ? Math.min(...day.map(c => c.low)) : null;
+        const hl = $('#poolHiLo'), hls = $('#poolHiLoSub');
+        if (hl && hi != null) {
+          hl.textContent = `${pxNum(lo)} – ${pxNum(hi)}`;
+          if (hls) hls.textContent = `${num} per ${den}${lo > 0 ? ` · ${((hi / lo - 1) * 100).toFixed(1)}% between them` : ''}`;
+        } else if (hl) { hl.textContent = '—'; if (hls) hls.textContent = 'no trade in the last day'; }
         note.textContent = `${den} priced in ${num} · ${shown.length.toLocaleString()} candles back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
           + (got.source === 'alcor' ? '' : ' · rebuilt from pool state changes');
         // The last few days in view, not the pool's whole life: one launch-day

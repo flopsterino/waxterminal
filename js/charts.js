@@ -463,6 +463,71 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   const H = size + 22;
   const svg = el('svg', { viewBox: `0 0 ${size} ${H}`, role: 'img', 'aria-label': 'Holder map' });
   svg.style.cssText = `width:100%;max-width:${size}px;height:auto;display:block;margin:0 auto;overflow:visible;touch-action:none`;
+  // The map is pannable and zoomable, because on a 390px screen sixteen
+  // bubbles with names under them is a picture of a knot. Drag the background
+  // to move, pinch or wheel to zoom, and there is a control to put it back.
+  const view = { x: 0, y: 0, w: size, h: H };
+  const applyView = () => svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+  const zoomAt = (factor, px, py) => {
+    const nw = Math.max(size * 0.25, Math.min(size * 1.6, view.w * factor));
+    const k = nw / view.w;
+    view.x = px - (px - view.x) * k;
+    view.y = py - (py - view.y) * k;
+    view.w = nw; view.h = H * (nw / size);
+    applyView();
+  };
+  const svgPoint = ev => {
+    const box = svg.getBoundingClientRect();
+    return { x: view.x + (ev.clientX - box.left) * (view.w / box.width), y: view.y + (ev.clientY - box.top) * (view.h / box.height) };
+  };
+  svg.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const p2 = svgPoint(ev);
+    zoomAt(ev.deltaY > 0 ? 1.12 : 0.89, p2.x, p2.y);
+  }, { passive: false });
+  // Two fingers pinch; one finger on the background pans.
+  const touches = new Map();
+  let pinchFrom = null;
+  svg.addEventListener('pointerdown', ev => {
+    touches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touches.size === 2) {
+      const [a2, b2] = [...touches.values()];
+      pinchFrom = { d: Math.hypot(a2.x - b2.x, a2.y - b2.y), w: view.w };
+      return;
+    }
+    if (ev.target !== svg && ev.target.tagName !== 'rect') return;   // a bubble handles itself
+    const box = svg.getBoundingClientRect();
+    const scale = view.w / box.width;
+    const from = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y };
+    const move = m => {
+      if (touches.size > 1) return;
+      view.x = from.vx - (m.clientX - from.x) * scale;
+      view.y = from.vy - (m.clientY - from.y) * scale;
+      applyView();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (!touches.has(ev.pointerId)) return;
+    touches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touches.size !== 2 || !pinchFrom) return;
+    const [a2, b2] = [...touches.values()];
+    const d = Math.hypot(a2.x - b2.x, a2.y - b2.y);
+    if (!(d > 0) || !(pinchFrom.d > 0)) return;
+    const mid = svgPoint({ clientX: (a2.x + b2.x) / 2, clientY: (a2.y + b2.y) / 2 });
+    const want = pinchFrom.w * (pinchFrom.d / d);
+    zoomAt(want / view.w, mid.x, mid.y);
+  });
+  const endTouch = ev => { touches.delete(ev.pointerId); if (touches.size < 2) pinchFrom = null; };
+  svg.addEventListener('pointerup', endTouch);
+  svg.addEventListener('pointercancel', endTouch);
+  // A background to catch drags that start on empty space.
+  svg.appendChild(el('rect', { x: -size, y: -size, width: size * 3, height: H * 3, fill: 'transparent' }));
 
   const maxLink = Math.max(...edges.map(l => l.value), 1);
   const lineFor = new Map();
@@ -557,24 +622,54 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
     }
   };
 
+  // On a phone there is no hover, and a tap that immediately navigates means
+  // the map can be looked at exactly once. So a tap SELECTS: it isolates the
+  // wallet's connections and writes what it is into a line under the map, with
+  // the button that opens it. Tapping it again, or the button, goes there.
+  let picked = null;
+  const readout = document.createElement('div');
+  readout.className = 'bubblepick';
+  readout.hidden = true;
+  const select = nid => {
+    picked = nid;
+    focus(nid);
+    if (!nid) { readout.hidden = true; return; }
+    const n = live.find(x => x.id === nid);
+    const mates = linked.get(nid)?.size || 0;
+    readout.hidden = false;
+    readout.innerHTML = `<b>${nid}</b><span class="dim">${fmt(n.value)}${n.share != null ? ` · ${(n.share * 100).toFixed(2)}% of supply` : ''}${
+      n.contract ? ' · a contract, holding for others' : ''}${mates ? ` · moves this token with ${mates} other${mates === 1 ? '' : 's'} here` : ''}</span>`;
+    const go = document.createElement('button');
+    go.className = 'btn ghost';
+    go.textContent = 'Open wallet';
+    go.onclick = ev => { ev.stopPropagation(); if (onPick) onPick(nid); };
+    readout.appendChild(go);
+  };
+
   for (const [nid, e] of nodeEls) {
-    e.g.addEventListener('pointerenter', () => {
+    e.g.addEventListener('pointerenter', ev => {
+      if (ev.pointerType === 'touch') return;          // touch selects, it does not hover
       focus(nid);
       // Lift the hovered bubble above its neighbours so a small one inside a
       // cluster can actually be read and clicked.
       e.g.parentNode.appendChild(e.g);
       e.c.setAttribute('stroke-width', 3);
     });
-    e.g.addEventListener('pointerleave', () => { focus(null); e.c.setAttribute('stroke-width', 2); });
+    e.g.addEventListener('pointerleave', ev => {
+      if (ev.pointerType === 'touch') return;
+      focus(picked); e.c.setAttribute('stroke-width', 2);
+    });
     // Drag to pull a bubble out of a knot and see what it is attached to.
     e.g.addEventListener('pointerdown', ev => {
+      if (ev.isPrimary === false) return;               // second finger is a pinch
       ev.preventDefault();
+      ev.stopPropagation();
       const box = svg.getBoundingClientRect();
-      const scale = size / box.width;
+      const scale = view.w / box.width;
       e.p.fixed = true;
       let moved = 0;
       const move = m => {
-        const nx = (m.clientX - box.left) * scale, ny = (m.clientY - box.top) * scale;
+        const nx = view.x + (m.clientX - box.left) * scale, ny = view.y + (m.clientY - box.top) * scale;
         moved += Math.abs(nx - e.p.x) + Math.abs(ny - e.p.y);
         e.p.x = nx; e.p.y = ny;
         settle(4); place();
@@ -583,9 +678,11 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
         e.p.fixed = false;
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
-        // A press that never moved is a click, and a click opens the wallet.
-        if (moved < 4 && onPick) onPick(nid);
-        else animate(50);
+        if (moved >= 4) { animate(50); return; }
+        // A press that never moved is a tap. On a mouse that opens the wallet;
+        // on a finger the first tap inspects and the second one opens.
+        if (ev.pointerType !== 'touch') { if (onPick) onPick(nid); return; }
+        if (picked === nid) { if (onPick) onPick(nid); } else select(nid);
       };
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
@@ -594,22 +691,42 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
 
   // Re-throw the layout. A force graph can settle into a knot, and the fix is
   // the same as with any physical tangle: shake it and let it fall again.
-  const shake = el('text', { x: size - 8, y: 14, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 10 });
+  const shake = el('text', { x: size - 8, y: 14, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 11 });
   shake.textContent = 'shuffle';
   shake.style.cursor = 'pointer';
-  shake.addEventListener('click', () => {
+  shake.addEventListener('click', ev => {
+    ev.stopPropagation();
     for (const p of P) { p.x = cx + (Math.random() - 0.5) * size * 0.7; p.y = cy + (Math.random() - 0.5) * size * 0.7; p.vx = p.vy = 0; }
     animate(90);
   });
   svg.appendChild(shake);
 
+  // Zoom controls, because pinching is not discoverable and a mouse has no
+  // second finger.
+  const ctrl = (label, x, fn) => {
+    const t = el('text', { x, y: 14, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 13 });
+    t.textContent = label;
+    t.style.cursor = 'pointer';
+    t.addEventListener('click', ev => { ev.stopPropagation(); fn(); });
+    svg.appendChild(t);
+  };
+  ctrl('\u2212', 14, () => zoomAt(1.25, view.x + view.w / 2, view.y + view.h / 2));
+  ctrl('+', 34, () => zoomAt(0.8, view.x + view.w / 2, view.y + view.h / 2));
+  ctrl('\u21ba', 56, () => { view.x = 0; view.y = 0; view.w = size; view.h = H; applyView(); select(null); });
+
   const caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+  // The caption says how to work it, and that differs by what you are holding.
+  const touch = typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
   caption.textContent = ci > 0
-    ? 'One colour = wallets that have sent this token to each other · hover to isolate, drag to pull apart, click to open a wallet'
-    : 'No transfers between these wallets · click one to see what it holds';
+    ? (touch
+      ? 'One colour = wallets that send this token to each other · tap to inspect, pinch to zoom, drag to move'
+      : 'One colour = wallets that send this token to each other · hover to isolate, drag to pull apart, click to open a wallet')
+    : (touch ? 'No transfers between these wallets · tap one to see what it holds' : 'No transfers between these wallets · click one to see what it holds');
   svg.appendChild(caption);
 
   wrap.appendChild(svg);
+  wrap.appendChild(readout);
+  svg.addEventListener('click', ev => { if (ev.target === svg || ev.target.tagName === 'rect') select(null); });
   return wrap;
 }
 

@@ -6,7 +6,7 @@
 // the user. Nothing here is stored anywhere the user cannot clear.
 // =============================================================================
 
-import { getRows, getAllRows, getAllRowsSharded, hyperion, warmHosts } from './chain.js';
+import { getRows, getAllRows, getAllRowsSharded, hyperion, warmHosts, dropEchoes } from './chain.js';
 import { priceFromX64, parseAsset, tokenId, amountsForLiquidity, sqrtPriceFromX64, depositRatio, feesOwed } from './math.js';
 import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
 import { computeDepth, poolRealisable, counterparties } from './depth.js';
@@ -1367,6 +1367,63 @@ export function tokenSeries(rows, id) {
     out.push({ at: r.at, tvl: hit[1] ?? 0, vol: hit[2] ?? 0, price: hit[3] ?? null, pools: hit[4] ?? 0 });
   }
   return out;
+}
+
+// One pool's line out of the daily history. The job records the deepest pools
+// each day, so a pool that has never been in that band has no history — an
+// absence to say out loud rather than a flat line at zero.
+export function poolSeries(rows, key) {
+  const out = [];
+  for (const r of rows) {
+    const hit = (r.pools || []).find(p => p[0] === key);
+    if (!hit) continue;
+    out.push({ at: r.at, tvl: hit[1] ?? 0, price: hit[2] ?? null, tvlReal: hit[3] ?? hit[1] ?? 0, vol: hit[4] ?? null });
+  }
+  return out;
+}
+
+// Adds and removes, which are the other half of what happens in a pool and the
+// half no venue API on WAX publishes. logmint and logburn carry the owner, the
+// band and both amounts, so a feed of them says who put money in, at what
+// prices, and who took it out.
+//
+// Hyperion has no data filter for these actions, so this reads the chain-wide
+// stream and keeps what belongs to this pool. Two pages is about twenty minutes
+// of WAX at a busy hour; a quiet pool honestly reports nothing recent rather
+// than pretending to search further.
+export async function poolLiquidityEvents(poolId, { pages = 2, limit = 1000 } = {}) {
+  const grab = async name => {
+    const out = [];
+    for (let page = 0; page < pages; page++) {
+      let d;
+      try {
+        d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
+          'act.account': ALCOR, 'act.name': name, limit: String(limit), skip: String(page * limit), sort: 'desc',
+        })}`);
+      } catch { break; }
+      const got = d.actions || [];
+      out.push(...got);
+      if (got.length < limit) break;
+    }
+    return out;
+  };
+  const [mints, burns] = await Promise.all([grab('logmint'), grab('logburn')]);
+  const rows = [];
+  for (const [kind, list] of [['add', mints], ['remove', burns]]) {
+    for (const a of dropEchoes(list)) {
+      const x = a.act?.data;
+      if (!x || String(x.poolId) !== String(poolId)) continue;
+      const ta = parseAsset(x.tokenA), tb = parseAsset(x.tokenB);
+      rows.push({
+        kind, at: new Date(a.timestamp + (a.timestamp.endsWith('Z') ? '' : 'Z')).getTime(),
+        trx: a.trx_id, owner: x.owner, posId: String(x.posId),
+        tickLower: Number(x.tickLower), tickUpper: Number(x.tickUpper),
+        amountA: ta.amount, amountB: tb.amount, symA: ta.symbol, symB: tb.symbol,
+        liquidity: Number(x.liquidity) || 0,
+      });
+    }
+  }
+  return rows.sort((a, b) => b.at - a.at);
 }
 
 // Several runs a day collapse to that day's last reading, so a day the job ran
