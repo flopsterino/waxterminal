@@ -1127,12 +1127,15 @@ function renderOverview() {
   // A farm emitting more in a day than its pool is worth is a token being
   // printed into the ground, not a payout — a toggle, not a decision made for
   // the reader.
-  const sane = g => g.pool?.tvlReal > 0 && g.rewardRealDay < g.pool.tvlReal * 0.5;
-  const payers = groups.filter(g => g.rewardRealDay > 0 && (showRisky || sane(g)))
-    .sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 14);
+  const sane = g => g.pool?.tvlReal > 0 && (g.rewardUsdDay || 0) < g.pool.tvlReal * 0.5;
+  const payers = groups.filter(g => g.rewardUsdDay > 0 && (showRisky || sane(g)))
+    .sort((a, b) => b.rewardUsdDay - a.rewardUsdDay).slice(0, 14);
   mini('#ovPay', payers.map(g => ({ pool: gKey(g), x: g })), [
     { h: 'Pool', v: g => (g.pool ? pairCell(g.pool) + tierTag(g.pool) : esc(g.poolId)) },
-    { h: 'Pays / day', r: true, v: g => usd(g.rewardRealDay), cls: () => 'strong' },
+    // Where the quoted value of the rewards runs well ahead of what they could
+    // be sold for, the figure is marked rather than printed twice in a column
+    // of its own that mostly repeated it.
+    { h: 'Pays / day', r: true, cls: () => 'strong', v: payDay },
     { h: 'In', v: g => {
       const byTok = new Map();
       for (const r of g.rewards) {
@@ -1143,12 +1146,6 @@ function renderOverview() {
       return list.slice(0, 2).map(([tok, r]) => `<span class="rew"><span data-pm="${esc(tok)}|${esc(r.symbol)}"></span><b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
         + (list.length > 2 ? `<span class="rew more">+${list.length - 2}</span>` : '');
     } },
-    // What the same rewards are worth at the quoted price, against what they
-    // could be sold for in the column beside it. A word where a number belongs
-    // ("same") reads as a missing value; the figure is always printed, and the
-    // gap between the two columns is the point.
-    { h: 'Face value', r: true, v: g => g.rewardUsdDay > 0 ? usd(g.rewardUsdDay) : '—',
-      cls: g => (g.rewardUsdDay > g.rewardRealDay * 1.05 ? 'warnish' : 'dim') },
     { h: 'Stakers', r: true, v: g => (g.stakers ? g.stakers.toLocaleString() : '—'), cls: g => g.stakers ? '' : 'dim' },
     { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr${g.aprThin ? ' thin' : ''}">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
     { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
@@ -1750,6 +1747,21 @@ function renderTokens() {
   $('#tokTable tbody').querySelectorAll('tr[data-tok]').forEach(tr => tr.onclick = rowClick(() => openToken(tr.dataset.tokid)));
 }
 
+// What a farm pays in a day. Two figures exist: what the rewards are quoted at
+// (what the venue, the farm's own page and everyone else says) and what they
+// could be sold for once the exit is priced in. The quoted figure is the one
+// people mean by "pays per day", so it is the one printed — and where the
+// sellable value falls well short of it, the figure is marked and the tooltip
+// says both. Hiding the quoted number behind a discount nobody else applies
+// made this terminal disagree with every other screen on WAX.
+const payDay = g => {
+  const face = g.rewardUsdDay || 0, real = g.rewardRealDay || 0;
+  if (!(face > 0)) return '—';
+  return real > 0 && real < face * 0.8
+    ? `<span class="warnish" title="Quoted at ${usd(face)} a day. Priced against what could actually be sold, it is ${usd(real)}.">${usd(face)}*</span>`
+    : usd(face);
+};
+
 // ---------------------------------------------------------------- FARMS -----
 // Rows are POOLS, not incentives: 633 of 1,883 farmed pools run several
 // incentives at once and a user experiences that as one farm paying several
@@ -2146,7 +2158,7 @@ function renderFarms() {
       <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
         g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
-      <td class="paycell">${g.rewardRealDay > 0 ? `<b class="payday">${usd(g.rewardRealDay)}</b>` : ''}${chips}</td>
+      <td class="paycell">${g.rewardUsdDay > 0 ? `<b class="payday">${payDay(g)}</b>` : ''}${chips}</td>
       <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
         g.expired ? '<span class="badge bad">expired</span>'
@@ -5462,7 +5474,19 @@ async function openToken(id) {
   // the token.
   const tradePools = pools.filter(p => TRADE_VENUES.has(p.dex) && (p.dex !== 'alcor' || p.sqrtX64))
     .sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0) || (b.tvl || 0) - (a.tvl || 0));
-  const deepest = tradePools[0] || null;
+  // What a token is read in: the best quote asset it has a real market
+  // against — a stablecoin first, then WAX — not merely whichever pool traded
+  // most today. WAX itself belongs in WAX/WAXUSDC, not in WAX/LEEF because a
+  // memecoin had a busy afternoon. A pool holding a tenth of the token's
+  // deepest market cannot claim the anchor, so a dust stable pair does not
+  // take it either.
+  const otherSide = p2 => (p2.tokenA === id ? p2.tokenB : p2.tokenA);
+  const bestTvl = Math.max(0, ...tradePools.map(p2 => p2.tvlReal || 0));
+  const deepest = [...tradePools]
+    .filter(p2 => (p2.tvlReal || 0) >= bestTvl * 0.1)
+    .sort((x, y) => quoteRank(otherSide(y)) - quoteRank(otherSide(x))
+      || (y.vol24 || 0) - (x.vol24 || 0) || (y.tvlReal || 0) - (x.tvlReal || 0))[0]
+    || tradePools[0] || null;
   const farms = seedApr(farmGroups()).filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
 
@@ -5470,9 +5494,18 @@ async function openToken(id) {
   // every pool it is in, so the tape watches the busiest few rather than only
   // the deepest one — six is where the request budget lands for a token like
   // WAX, which is in 275 pools.
-  const tapePools = tradePools.filter(p => p.dex === 'alcor' && p.sqrtX64)
-    .sort((a2, b2) => (b2.vol24 || 0) - (a2.vol24 || 0) || (b2.tvlReal || 0) - (a2.tvlReal || 0))
-    .slice(0, 6);
+  const tapePools = (() => {
+    const list = tradePools.filter(p2 => p2.dex === 'alcor' && p2.sqrtX64)
+      .sort((a2, b2) => (b2.vol24 || 0) - (a2.vol24 || 0) || (b2.tvlReal || 0) - (a2.tvlReal || 0))
+      .slice(0, 6);
+    // The anchor leads: the counters measure the move in the first market.
+    if (deepest?.dex === 'alcor') {
+      const i = list.findIndex(p2 => String(p2.id) === String(deepest.id));
+      if (i > 0) list.unshift(...list.splice(i, 1));
+      else if (i < 0) list.unshift(deepest);
+    }
+    return list.slice(0, 6);
+  })();
   const liveTapeHere = tapePools.length > 0;
   const priceStr = t.price == null ? '—'
     : px(t.price);
@@ -7506,7 +7539,7 @@ async function openPool(key) {
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24 * (lpCut(p) / 10000)) : '—'}</span><span class="k">fees to providers, 24h</span><span class="sub">${p.vol7d > 0 ? `${usd(p.vol7d * (lpCut(p) / 10000))} over 7 days` : 'at this pool\u2019s own volume'}</span></div>
       <div class="stat"><span class="v" id="poolHiLo">—</span><span class="k">24h range</span><span class="sub" id="poolHiLoSub">high and low, from the candles</span></div>
       <div class="stat"><span class="v ${fee > 0 ? '' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
-      <div class="stat"><span class="v ${farmRate != null ? 'pos' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${usd(grp0.rewardRealDay)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
+      <div class="stat"><span class="v ${farmRate != null ? 'pos' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${payDay(grp0)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
       <div class="stat"><span class="v">${qty(resBase)}</span><span class="k">${esc(o.baseSym)} pooled</span><span class="sub">${qty(resQuote)} ${esc(o.quoteSym)}</span></div>
       ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
