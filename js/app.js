@@ -5463,6 +5463,7 @@ async function openToken(id) {
         <span class="sub">${farms.slice(0, 4).map(g => `<span class="xlink" data-farmkey="${esc(g.key)}">${g.pool ? esc(g.pool.symA) + '/' + esc(g.pool.symB) : esc(g.poolId)}</span>${g.aprReal != null || g.apr != null ? ` <b>${pct(g.aprReal ?? g.apr)}</b>` : ''}`).join(' &middot; ')}${farms.length > 4 ? ` &middot; and ${farms.length - 4} more` : ''} &mdash; ${usd(farms.reduce((a, g) => a + (g.rewardUsdDay || 0), 0))} a day between them</span></div>
     </div>` : ''}
 
+    ${deepest?.dex === 'alcor' ? '<div class="card pulsecard" id="tokPulse" style="margin-bottom:12px"></div>' : ''}
     ${deepest ? `<div class="section"><h3>Price</h3>
       <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
@@ -5473,7 +5474,6 @@ async function openToken(id) {
     </div>` : ''}
 
     ${tradePools.length ? `<div class="section"><h3>Trading</h3>
-      ${deepest?.dex === 'alcor' ? '<div class="card pulsecard" id="tokPulse"></div>' : ''}
       ${deepest?.dex === 'alcor'
         ? `<div class="card"><h3><span class="livedot" id="tokLiveDot"></span>Live trades
             <span class="dim">&mdash; ${esc(deepest.symA)}/${esc(deepest.symB)}, its deepest market</span>
