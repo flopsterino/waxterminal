@@ -286,7 +286,8 @@ const pairLinks = p => `${tokLink(p.tokenA, p.symA)}/${tokLink(p.tokenB, p.symB)
 // price, on a LEEF page, was reading the pool's storage order back at you.
 // Stablecoins quote everything, WAX quotes everything else, a staked-WAX token
 // quotes what is left; two tokens of equal rank keep the pool's order.
-const quoteRank = id => STABLES.has(id) ? 3 : id === 'WAX@eosio.token' ? 2 : /^(LSWAX|SWAX|WAXUSDT|PARAUSD)@/.test(id) ? 1 : 0;
+const WAX_ID = 'WAX@eosio.token';
+const quoteRank = id => STABLES.has(id) ? 3 : id === WAX_ID ? 2 : /^(LSWAX|SWAX|WAXUSDT|PARAUSD)@/.test(id) ? 1 : 0;
 // `prefer` forces a side: on a token's own page the token being read is the
 // thing being bought and sold, whatever the ranking would otherwise say. On a
 // WAXUSDC page, WAX/WAXUSDC is a WAXUSDC market.
@@ -5481,10 +5482,15 @@ async function openToken(id) {
   // deepest market cannot claim the anchor, so a dust stable pair does not
   // take it either.
   const otherSide = p2 => (p2.tokenA === id ? p2.tokenB : p2.tokenA);
+  // WAX is the chain's own money: everything on it is bought and sold in WAX,
+  // and that is the pair people carry in their heads. So a token is read in
+  // its WAX market — CHEESE/WAX, TLM/WAX, LEEF/WAX — and only WAX itself needs
+  // something else to be read against, which is the bridged dollar.
+  const anchorRank = other => (id === WAX_ID ? quoteRank(other) : other === WAX_ID ? 5 : quoteRank(other));
   const bestTvl = Math.max(0, ...tradePools.map(p2 => p2.tvlReal || 0));
   const deepest = [...tradePools]
     .filter(p2 => (p2.tvlReal || 0) >= bestTvl * 0.1)
-    .sort((x, y) => quoteRank(otherSide(y)) - quoteRank(otherSide(x))
+    .sort((x, y) => anchorRank(otherSide(y)) - anchorRank(otherSide(x))
       || (y.vol24 || 0) - (x.vol24 || 0) || (y.tvlReal || 0) - (x.tvlReal || 0))[0]
     || tradePools[0] || null;
   const farms = seedApr(farmGroups()).filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
@@ -5795,7 +5801,10 @@ async function openToken(id) {
 
   // ---- price chart ---------------------------------------------------------
   if (deepest) {
-    let iv = 3600, flipped = false, busy = false;
+    // The token you opened is the thing being priced, so a WAX/LEEF pool is
+    // drawn as LEEF per WAX on a LEEF page. Unflipped it drew the price of WAX
+    // in LEEF, which is the same market read from the wrong end.
+    let iv = 3600, flipped = deepest.tokenB === id, busy = false;
     const draw = async () => {
       const box = $('#tokChart');
       if (!box || busy) return;
@@ -5813,7 +5822,8 @@ async function openToken(id) {
         const note = box.nextElementSibling?.classList?.contains('chartspan') ? box.nextElementSibling : (() => {
           const n = document.createElement('p'); n.className = 'sub chartspan'; n.style.marginTop = '8px'; box.after(n); return n;
         })();
-        note.textContent = `${shown.length.toLocaleString()} candles, back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
+        const [num2, den2] = flipped ? [deepest.symA, deepest.symB] : [deepest.symB, deepest.symA];
+        note.textContent = `${den2} priced in ${num2} · ${shown.length.toLocaleString()} candles, back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
           + (got.source === 'alcor' ? ' — the whole life of the pool, from Alcor.' : ' — rebuilt from pool state changes, which the history node only keeps so far back.');
       } finally { busy = false; }
     };
