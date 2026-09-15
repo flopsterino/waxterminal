@@ -2793,7 +2793,11 @@ function wireRatings(root = document) {
       const before = note ? note.innerHTML : '';
       if (note) note.textContent = 'waiting for your wallet…';
       try {
-        await wallet.transact(buildRatingVote({ account, subject, vote }));
+        // The precision the chain actually uses for this token, where the
+        // terminal has read it.
+        const t = ratingTerms();
+        const known = state.tokens.get(`${t.symbol}@${t.contract}`)?.decimals;
+        await wallet.transact(buildRatingVote({ account, subject, vote, decimals: known }));
         applyLocalVote(subject, vote, account);
         const next = ratingBar(subject, { compact: bar.classList.contains('compact') });
         bar.outerHTML = next;

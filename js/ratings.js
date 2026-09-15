@@ -42,11 +42,15 @@ export const ratingTerms = () => cfg
 export const ratingSubject = (kind, id) => `${kind}:${id}`;
 export const ratingMemo = (subject, vote) => (cfg ? `${cfg.memoPrefix || 'rate'}:${subject}:${vote}` : null);
 
-export function buildRatingVote({ account, subject, vote, auth = null }) {
+// `decimals` is passed in by the caller wherever the chain's own answer is at
+// hand, because a token's precision is a fact about the token and not a
+// setting: HOLE is 8, the config said 4, and the contract rejected every vote
+// with "symbol precision mismatch".
+export function buildRatingVote({ account, subject, vote, decimals = null, auth = null }) {
   if (!cfg) throw new Error('Ratings are not configured');
   if (!KEYS.has(vote)) throw new Error('Unknown vote');
   auth = auth || [{ actor: account, permission: 'active' }];
-  const dec = cfg.token.decimals ?? 4;
+  const dec = Number.isInteger(decimals) ? decimals : (cfg.token.decimals ?? 4);
   return [{
     account: cfg.token.contract, name: 'transfer', authorization: auth,
     data: {

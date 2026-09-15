@@ -41,7 +41,7 @@
       "token": {
         "symbol": "HOLE",
         "contract": "hole.cheese",
-        "decimals": 4
+        "decimals": 8
       },
       "price": 0.01,
       "memoPrefix": "rate"
