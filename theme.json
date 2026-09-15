@@ -43,7 +43,7 @@
         "contract": "hole.cheese",
         "decimals": 4
       },
-      "price": 0.1,
+      "price": 0.01,
       "memoPrefix": "rate"
     }
   },
