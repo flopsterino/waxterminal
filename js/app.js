@@ -851,12 +851,19 @@ function redrawCurrent() {
       // header said WAX while every balance below it stayed in dollars. It
       // rebuilds from the account already on screen.
       const a = ($('#walletInput')?.value || '').trim();
-      if (a) { walletShown = null; lookupWallet(a); }
+      if (a) keepScroll(() => { walletShown = null; return lookupWallet(a); });
     }
   } catch {}
 }
 
 function show(v, arg = null) {
+  // Where we are before anything moves: a re-render of the page you are
+  // already on is not navigation, and must not throw you back to the top.
+  // On a phone, signing a transaction re-renders the wallet behind the
+  // wallet's own popup — and losing your place mid-compound is how you lose
+  // track of which position you were finishing.
+  const wasView = document.querySelector('.view.active')?.id || '';
+  const wasUrl = location.pathname + location.search;
   // A live tape polls Alcor for the pool on screen. Leaving that pool must stop
   // it, or every market ever opened keeps a request going every seven seconds.
   if (stopLive && !(v === 'pool' && arg)) { stopLive(); stopLive = null; }
@@ -883,8 +890,21 @@ function show(v, arg = null) {
     try { history.pushState({ v, arg }, '', url); }
     catch { try { history.replaceState(null, '', url); } catch { /* nothing to do */ } }
   }
-  window.scrollTo(0, 0);
+  if (wasView !== 'view-' + v || wasUrl !== url) window.scrollTo(0, 0);
   stickySoon();
+}
+
+// Re-render without moving the page under the reader. The wallet view rebuilds
+// itself from scratch after a refresh or a unit switch, and the scroll position
+// is the one piece of state nobody thinks to preserve.
+function keepScroll(fn) {
+  const y = window.scrollY;
+  const restore = () => { if (Math.abs(window.scrollY - y) > 2) window.scrollTo(0, y); };
+  const out = fn();
+  requestAnimationFrame(restore);
+  setTimeout(restore, 120);
+  if (out && typeof out.then === 'function') out.then(() => setTimeout(restore, 30)).catch(() => {});
+  return out;
 }
 
 // GitHub Pages serves this app from a subdirectory, so every path is relative
@@ -5442,9 +5462,14 @@ async function openToken(id) {
   const farms = seedApr(farmGroups()).filter(g => g.pool && (g.pool.tokenA === id || g.pool.tokenB === id));
   const venues = [...t.venues];
 
-  // Alcor is the only venue that serves a per-pool swap feed, so the live tape
-  // and the counters exist exactly where its deepest market is one.
-  const liveTapeHere = deepest?.dex === 'alcor';
+  // Alcor is the only venue that serves a per-pool swap feed. A token trades in
+  // every pool it is in, so the tape watches the busiest few rather than only
+  // the deepest one — six is where the request budget lands for a token like
+  // WAX, which is in 275 pools.
+  const tapePools = tradePools.filter(p => p.dex === 'alcor' && p.sqrtX64)
+    .sort((a2, b2) => (b2.vol24 || 0) - (a2.vol24 || 0) || (b2.tvlReal || 0) - (a2.tvlReal || 0))
+    .slice(0, 6);
+  const liveTapeHere = tapePools.length > 0;
   const priceStr = t.price == null ? '—'
     : px(t.price);
   // Everyone here holds WAX and prices things against it, so the dollar alone
@@ -5490,7 +5515,7 @@ async function openToken(id) {
         <span class="sub">${farms.slice(0, 4).map(g => `<span class="xlink" data-farmkey="${esc(g.key)}">${g.pool ? esc(g.pool.symA) + '/' + esc(g.pool.symB) : esc(g.poolId)}</span>${g.aprReal != null || g.apr != null ? ` <b>${pct(g.aprReal ?? g.apr)}</b>` : ''}`).join(' &middot; ')}${farms.length > 4 ? ` &middot; and ${farms.length - 4} more` : ''} &mdash; ${usd(farms.reduce((a, g) => a + (g.rewardUsdDay || 0), 0))} a day between them</span></div>
     </div>` : ''}
 
-    ${deepest?.dex === 'alcor' ? '<div class="card pulsecard" id="tokPulse" style="margin-bottom:12px"></div>' : ''}
+    ${liveTapeHere ? '<div class="card pulsecard" id="tokPulse" style="margin-bottom:12px"></div>' : ''}
     ${deepest ? `<div class="section"><h3>Price</h3>
       <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
         <span style="margin-left:auto;display:flex;gap:4px">
@@ -5501,11 +5526,10 @@ async function openToken(id) {
     </div>` : ''}
 
     ${tradePools.length ? `<div class="section"><h3>Trading</h3>
-      ${deepest?.dex === 'alcor'
+      ${liveTapeHere
         ? `<div class="card"><h3><span class="livedot" id="tokLiveDot"></span>Live trades
-            <span class="dim">&mdash; ${esc(deepest.symA)}/${esc(deepest.symB)}, its deepest market</span>
-            <a class="more" data-poolkey="${esc(deepest.dex)}:${esc(String(deepest.id))}">Open the market &rarr;</a>
-            <span class="dim" id="tokLiveState" style="margin-left:10px;font-weight:400;font-size:11px"></span></h3>
+            <span class="dim">&mdash; ${tapePools.length > 1 ? `across its ${tapePools.length} busiest markets` : `${esc(tapePools[0].symA)}/${esc(tapePools[0].symB)}`}</span>
+            <span class="dim" id="tokLiveState" style="margin-left:auto;font-weight:400;font-size:11px"></span></h3>
             <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div></div>`
         : `<div class="card"><h3>Trades <span class="dim">&mdash; newest first, read out of the pool rows</span></h3>
             <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>`}
@@ -5585,8 +5609,8 @@ async function openToken(id) {
   // The tape and the counters a market page has, on the token's deepest Alcor
   // market — read from this token's side, so a buy is a buy of it.
   if (liveTapeHere) {
-    startLiveTape(deepest, stale, { into: '#tokTape', dot: '#tokLiveDot', state: '#tokLiveState', base: id });
-    startPulse(deepest, stale, { into: '#tokPulse', base: id }).catch(() => {});
+    startTokenTape(id, tapePools, stale);
+    startPulse(tapePools, stale, { into: '#tokPulse', base: id }).catch(() => {});
   }
   wirePromote($('#tokenDetail'));
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
@@ -7090,10 +7114,13 @@ function pulseRow(x, p, o) {
     const amtA = Math.abs(Number(x.tokenA)), amtB = Math.abs(Number(x.tokenB));
     usdv = p.priceUsdA != null ? amtA * p.priceUsdA : p.priceUsdB != null ? amtB * p.priceUsdB : 0;
   }
-  return { at, side, usd: usdv || 0, who: x.sender, price: inQuote, id: x.trx_id || x._id };
+  // Also in dollars, because a panel covering several markets cannot compare a
+  // price in TLM with a price in LEEF: the move has to be measured in one unit.
+  const inUsd = inQuote != null && o.quoteUsd != null ? inQuote * o.quoteUsd : null;
+  return { at, side, usd: usdv || 0, who: x.sender, price: inQuote, usdPx: inUsd, pid: String(p.id), id: x.trx_id || x._id };
 }
 
-function pulseTally(rows, ms, now) {
+function pulseTally(rows, ms, now, { inUsd = false, primary = null } = {}) {
   const cut = now - ms;
   const inWin = rows.filter(r => r.at >= cut);
   const buyers = new Set(), sellers = new Set(), traders = new Set();
@@ -7105,9 +7132,16 @@ function pulseTally(rows, ms, now) {
   }
   // The move over the window: the price the pool recorded on its oldest trade
   // inside it against the newest. With no trade there is no move to report.
-  const priced = inWin.filter(r => r.price > 0);
+  // The move belongs to one market — the deepest — because a trade in a thin
+  // pool prints an off price and would otherwise become "the move". Only when
+  // that market did not trade in the window does this fall back to the dollar
+  // price implied across all of them.
+  const field = inUsd ? 'usdPx' : 'price';
+  let priced = primary ? inWin.filter(r => r.pid === primary && r.price > 0) : [];
+  let use = 'price';
+  if (priced.length < 2) { priced = inWin.filter(r => r[field] > 0); use = field; }
   const first = priced[priced.length - 1], last = priced[0];
-  const change = first && last && first.price > 0 ? (last.price / first.price - 1) * 100 : null;
+  const change = first && last && first[use] > 0 ? (last[use] / first[use] - 1) * 100 : null;
   return {
     txns: inWin.length, buys, sells, usd: buyUsd + sellUsd, buyUsd, sellUsd,
     traders: traders.size, buyers: buyers.size, sellers: sellers.size, change,
@@ -7132,7 +7166,9 @@ function paintPulse() {
   const box = $(pulseInto);
   if (!st || !box) return;
   const now = Date.now();
-  const tallies = Object.fromEntries(PULSE_WINDOWS.map(w => [w.key, pulseTally(st.rows, w.ms, now)]));
+  const many = (st.markets || 1) > 1;
+  const tallies = Object.fromEntries(PULSE_WINDOWS.map(w =>
+    [w.key, pulseTally(st.rows, w.ms, now, { inUsd: many, primary: many ? st.poolId : null })]));
   const t = tallies[st.win] || tallies['24h'];
   const count = v => (v == null ? '—' : Math.round(v).toLocaleString('en-US'));
   const money = v => (v > 0 ? usd(v) : '$0');
@@ -7149,7 +7185,7 @@ function paintPulse() {
       ${pulseSplit('Volume', t.usd, 'Buy vol', 'Sell vol', t.buyUsd, t.sellUsd, money)}
       ${pulseSplit('Traders', t.traders, 'Buyers', 'Sellers', t.buyers, t.sellers, count)}
     </div>
-    <p class="sub pulsenote">${st.complete
+    <p class="sub pulsenote">${st.markets > 1 ? `Across its ${st.markets} busiest markets. ` : ''}${st.complete
       ? `Every trade in the window, read from Alcor.`
       : `From the last ${st.rows.length.toLocaleString()} trades &mdash; ${ago(new Date(st.oldest).toISOString())} at the earliest, so longer windows are partial.`}
       ${t.buyers + t.sellers > t.traders ? `<span class="dim"> &middot; ${t.buyers + t.sellers - t.traders} wallet${t.buyers + t.sellers - t.traders === 1 ? '' : 's'} did both.</span>` : ''}</p>`;
@@ -7160,7 +7196,9 @@ function paintPulse() {
 // New trades arrive from the tape, so the panel keeps counting without asking
 // Alcor for anything of its own.
 function pulseAdd(fresh, p, o) {
-  if (!pulseState || pulseState.poolId !== String(p.id)) return;
+  if (!pulseState) return;
+  const mine = pulseState.pools ? pulseState.pools.includes(String(p.id)) : pulseState.poolId === String(p.id);
+  if (!mine) return;
   let added = false;
   for (const x of fresh) {
     const r = pulseRow(x, p, o);
@@ -7172,23 +7210,38 @@ function pulseAdd(fresh, p, o) {
   if (added) paintPulse();
 }
 
-async function startPulse(p, stale, { into = '#poolPulse', base = null } = {}) {
+async function startPulse(pools, stale, { into = '#poolPulse', base = null } = {}) {
   const box = $(into);
   if (!box) return;
-  const o = pairOrient(p, base);
+  const list = Array.isArray(pools) ? pools : [pools];
+  if (!list.length) return;
   pulseInto = into;
-  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Counting today’s trades…</span></div>';
-  let got;
-  try { got = await poolSwapHistory(p.id); } catch { got = null; }
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Counting today\u2019s trades…</span></div>';
+  // One read per market, and the tape shares the same cache — so a token page
+  // watching six markets costs six requests, not twelve.
+  const pages = list.length > 1 ? 1 : 3;
+  const got = await Promise.all(list.map(p2 =>
+    poolSwapHistory(p2.id, { maxPages: pages }).then(d => ({ p: p2, d })).catch(() => ({ p: p2, d: null }))));
   if (stale()) return;
-  if (!got || !got.swaps.length) {
-    box.innerHTML = '<div class="chart-empty">No trades in this pool yet.</div>';
+  const rows = [];
+  let complete = true;
+  for (const { p: p2, d } of got) {
+    if (!d) { complete = false; continue; }
+    const o2 = pairOrient(p2, base);
+    for (const x of d.swaps) {
+      const r = pulseRow(x, p2, o2);
+      if (isFinite(r.at)) rows.push(r);
+    }
+    if (!d.complete) complete = false;
+  }
+  if (!rows.length) {
+    box.innerHTML = '<div class="chart-empty">No trades in the last day.</div>';
     return;
   }
-  const rows = got.swaps.map(x => pulseRow(x, p, o)).filter(r => isFinite(r.at));
   rows.sort((a, b) => b.at - a.at);
   pulseState = {
-    poolId: String(p.id), win: '24h', rows, complete: got.complete,
+    poolId: String(list[0].id), pools: list.map(x => String(x.id)), win: '24h', rows, complete,
+    markets: list.length,
     oldest: rows.length ? rows[rows.length - 1].at : Date.now(),
     seen: new Set(rows.map(r => r.id).filter(Boolean)),
   };
@@ -7197,7 +7250,7 @@ async function startPulse(p, stale, { into = '#poolPulse', base = null } = {}) {
   // slow timer as well as on new trades.
   clearInterval(startPulse.timer);
   startPulse.timer = setInterval(() => {
-    if (stale() || !pulseState || pulseState.poolId !== String(p.id)) { clearInterval(startPulse.timer); return; }
+    if (stale() || !pulseState || pulseState.poolId !== String(list[0].id)) { clearInterval(startPulse.timer); return; }
     paintPulse();
   }, 30000);
 }
@@ -7269,6 +7322,134 @@ function startLiveTape(p, stale, { into = '#poolSwaps', dot: dotSel = '#liveDot'
 // A token worth a fraction of a cent needs its significant figures, not two
 // decimals: "$0.00" is what a price looks like when it has not been read.
 const usdPrice = v => px(v);
+
+// A token trades in more than one market, and a tape of only the deepest one
+// misses the rest of it — WAX alone sits in 275 pools. Polling all of them is
+// a request budget nobody has, so this watches the busiest few and takes them
+// in turn: one request per tick, the same rate as a single-market tape, with
+// every market refreshed in rotation. Each row says which market it happened
+// in, because a price only means something next to the pair it was paid in.
+function startTokenTape(tokenId, pools, stale, { into = '#tokTape', dot = '#tokLiveDot', state = '#tokLiveState' } = {}) {
+  const sym = String(tokenId).split('@')[0];
+  if (stopLive) { stopLive(); stopLive = null; }
+  const box = $(into);
+  if (!box || !pools.length) return;
+  // Two orientations, deliberately. The numbers read from the token you are
+  // looking at — on a WAX page a "buy" is a buy of WAX, priced in WAX. The
+  // market's NAME stays the name everyone uses: TLM/WAX is TLM/WAX, and
+  // WAX/WAXUSDC is WAX/WAXUSDC, whichever page you came from.
+  const orient = new Map(pools.map(p => [String(p.id), pairOrient(p, tokenId)]));
+  const named = new Map(pools.map(p => [String(p.id), pairOrient(p)]));
+  const byId = new Map(pools.map(p => [String(p.id), p]));
+  const seen = new Set();
+  let rows = [];
+  const KEEP = 120;
+
+  const add = (p, swaps) => {
+    const o = orient.get(String(p.id));
+    let fresh = [];
+    for (const x of swaps) {
+      const id = `${p.id}:${x.trx_id || x._id}`;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const r = pulseRow(x, p, o);
+      if (!isFinite(r.at)) continue;
+      fresh.push({ ...r, key: id, pool: p, quote: o.quoteSym, base: o.baseSym, raw: x });
+    }
+    if (!fresh.length) return [];
+    rows = [...fresh, ...rows].sort((a, b) => b.at - a.at).slice(0, KEEP);
+    if (seen.size > KEEP * 6) { seen.clear(); for (const r of rows) seen.add(r.key); }
+    // The counters upstairs read the same trades.
+    pulseAdd(fresh.map(r => r.raw), p, orient.get(String(p.id)));
+    return fresh;
+  };
+
+  const paint = freshKeys => {
+    if (stale()) return;
+    if (!rows.length) { box.innerHTML = '<div class="empty">No trades in these markets yet.</div>'; return; }
+    box.innerHTML = `<div class="tablewrap livetape" style="max-height:420px;border:0"><table>
+      <thead><tr><th>Age</th><th>Type</th><th class="r">Price</th><th class="r">${esc(sym)}</th><th class="r">For</th><th class="r">USD</th><th>Market</th><th>Maker</th><th></th></tr></thead>
+      <tbody>${rows.map(r => {
+        const usdPx = r.price != null && r.pool ? null : null;
+        void usdPx;
+        const quoteUsd = orient.get(String(r.pool.id)).quoteUsd;
+        const inUsd = r.price != null && quoteUsd != null ? r.price * quoteUsd : null;
+        const amtA = Math.abs(Number(r.raw.tokenA)), amtB = Math.abs(Number(r.raw.tokenB));
+        const baseIsA = orient.get(String(r.pool.id)).baseIsA;
+        const [baseAmt, quoteAmt] = baseIsA ? [amtA, amtB] : [amtB, amtA];
+        return `<tr class="${freshKeys?.has(r.key) ? 'flash' : ''}">
+          <td class="num dim" data-ts="${r.at}">${ago(new Date(r.at).toISOString())}</td>
+          <td><span class="side ${r.side}">${r.side === 'buy' ? 'Buy' : 'Sell'}</span></td>
+          <td class="r num" title="${r.price != null ? esc(pxNum(r.price) + ' ' + r.quote) : ''}">${
+            inUsd != null ? px(inUsd) : r.price != null ? pxNum(r.price) + ' <span class="dim">' + esc(r.quote) + '</span>' : '—'}</td>
+          <td class="r num ${r.side === 'buy' ? 'pos' : 'neg'}">${qty(baseAmt)}</td>
+          <td class="r num">${qty(quoteAmt)} <span class="dim">${esc(r.quote)}</span></td>
+          <td class="r num">${r.usd > 0 ? usd(r.usd) : '—'}</td>
+          <td><span class="xlink" data-poolkey="${esc(r.pool.dex)}:${esc(String(r.pool.id))}">${
+            esc(named.get(String(r.pool.id)).baseSym)}/${esc(named.get(String(r.pool.id)).quoteSym)}</span>
+            <span class="tier">${+(r.pool.feeBps / 100).toFixed(2)}%</span></td>
+          <td class="acct-cell">${acctLink(r.raw.sender)}</td>
+          <td class="r"><a class="dim" href="${trxUrl(r.raw.trx_id)}" target="_blank" rel="noopener" title="Open the transaction">&nearr;</a></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`;
+  };
+
+  // The first paint comes from the same history the counters read, so opening
+  // the page is one request per market and no more.
+  (async () => {
+    const got = await Promise.all(pools.map(p => poolSwapHistory(p.id, { maxPages: 1 })
+      .then(d => ({ p, swaps: d.swaps.slice(0, 40) })).catch(() => ({ p, swaps: [] }))));
+    if (stale()) return;
+    for (const { p, swaps } of got) add(p, swaps);
+    paint(null);
+  })();
+
+  // Then one market per tick, in turn: the same request rate as watching one.
+  let i = 0, wait = 7000, fails = 0, timer = null, stopped = false;
+  const tick = async () => {
+    if (stopped || stale()) return;
+    if (typeof document !== 'undefined' && document.hidden) { schedule(); return; }
+    const p = pools[i++ % pools.length];
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 9000);
+      const r = await fetch(`https://wax.alcor.exchange/api/v2/swap/pools/${encodeURIComponent(p.id)}/swaps?limit=40`,
+        { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const fresh = add(p, Array.isArray(d) ? d : (d?.swaps || []));
+      if (fresh.length) paint(new Set(fresh.map(x => x.key)));
+      fails = 0; wait = 7000;
+      const dotEl = $(dot), st = $(state);
+      if (dotEl) dotEl.classList.remove('down');
+      if (st) st.textContent = '';
+    } catch (e) {
+      fails++;
+      wait = Math.min(60000, 7000 * 2 ** fails);
+      const dotEl = $(dot), st = $(state);
+      if (dotEl) dotEl.classList.add('down');
+      if (st) st.textContent = `paused, retrying in ${Math.round(wait / 1000)}s`;
+    }
+    schedule();
+  };
+  const schedule = () => { if (!stopped) timer = setTimeout(tick, wait); };
+  const onVis = () => { if (!document.hidden && !stopped) { clearTimeout(timer); tick(); } };
+  document.addEventListener('visibilitychange', onVis);
+  timer = setTimeout(tick, wait);
+
+  // Ages tick without refetching anything.
+  const ages = setInterval(() => {
+    if (stale()) { clearInterval(ages); return; }
+    box.querySelectorAll('td[data-ts]').forEach(td => { td.textContent = ago(new Date(Number(td.dataset.ts)).toISOString()); });
+  }, 5000);
+
+  stopLive = () => {
+    stopped = true;
+    clearTimeout(timer); clearInterval(ages);
+    document.removeEventListener('visibilitychange', onVis);
+  };
+}
 
 // ---------------------------------------------------------- POOL DETAIL -----
 let poolGen = 0;
