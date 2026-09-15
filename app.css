@@ -1384,3 +1384,14 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
   /* A 9.5px label inside a 430-wide box is 8px on a phone. */
   .bubblemap svg text { font-size: 12px; }
 }
+/* A ranked table with eight columns does not fit a phone, and truncating the
+   name is the worst of the options: it scrolls sideways inside its card. */
+.minitabwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -2px; }
+.minitabwrap .minitab { min-width: max-content; }
+@media (max-width: 700px) {
+  .minitab td:first-child { max-width: none; }
+  .ovgrid > .card.wide .minitab td:first-child { max-width: none; }
+  /* Connect belongs on the same row as the search box, not below it. */
+  .top .btn { padding: 6px 10px; font-size: 12px; }
+  .gsearch { flex: 1 1 90px; }
+}

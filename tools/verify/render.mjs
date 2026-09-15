@@ -24,7 +24,21 @@ const store = new Map();
 globalThis.window = window;
 globalThis.document = document;
 globalThis.location = Object.assign(new URL('http://127.0.0.1:8110/'), { hash: process.argv[3] || '' });
-globalThis.history = { replaceState(_a, _b, url) { globalThis.location.hash = String(url).replace(/^[^#]*/, ''); } };
+globalThis.history = {
+  length: 1,
+  state: null,
+  replaceState(_a, _b, url) { globalThis.location.hash = String(url).replace(/^[^#]*/, ''); },
+  // The app pushes real paths now, and a stub without this throws inside the
+  // router rather than in anything a reader would notice.
+  pushState(state, _b, url) {
+    this.state = state;
+    this.length++;
+    const u = new URL(String(url), globalThis.location.href);
+    globalThis.location.pathname = u.pathname;
+    globalThis.location.hash = u.hash || '';
+  },
+  back() {},
+};
 globalThis.localStorage = {
   getItem: k => (store.has(k) ? store.get(k) : null),
   setItem: (k, v) => store.set(k, String(v)),

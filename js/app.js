@@ -872,7 +872,12 @@ function show(v, arg = null) {
   // history entry. /markets, /token/CHEESE@cheeseburger, /wallet/name — each
   // one is a URL you can send someone, and each one is a step you can undo.
   const url = routePath(v, arg);
-  if (location.pathname + location.search !== url) history.pushState({ v, arg }, '', url);
+  // pushState where there is one. A non-browser host (the render harness, a
+  // webview without history) should route, not throw.
+  if (location.pathname + location.search !== url) {
+    try { history.pushState({ v, arg }, '', url); }
+    catch { try { history.replaceState(null, '', url); } catch { /* nothing to do */ } }
+  }
   window.scrollTo(0, 0);
   stickySoon();
 }
@@ -1016,9 +1021,9 @@ function renderOverview() {
     const el = $(id);
     if (!el) return;
     el.innerHTML = !rows.length ? `<div class="chart-empty">${esc(empty)}</div>`
-      : `<table class="minitab"><thead><tr>${cols.map(c => `<th class="${c.r ? 'r' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${
+      : `<div class="minitabwrap"><table class="minitab"><thead><tr>${cols.map(c => `<th class="${c.r ? 'r' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${
         rows.map(r => `<tr class="clickable" ${r.pool ? `data-poolkey="${esc(r.pool)}"` : `data-tokid="${esc(r.tok)}"`}>${
-          cols.map(c => `<td class="${c.r ? 'r num' : ''} ${c.cls ? c.cls(r.x) : ''}">${c.v(r.x)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+          cols.map(c => `<td class="${c.r ? 'r num' : ''} ${c.cls ? c.cls(r.x) : ''}">${c.v(r.x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     fillMarks(el);
   };
   const gKey = g => g.key;
