@@ -2381,9 +2381,9 @@ async function loadStakeRows() {
 }
 
 async function renderStaking() {
-  const tb = $('#stakeTable tbody');
+  const grid0 = $('#stakeGrid');
   if (!stakeRows) {
-    tb.innerHTML = '<tr><td colspan="9"><div class="loading"><span class="spinner"></span><span>Reading both staking contracts…</span></div></td></tr>';
+    if (grid0) grid0.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading both staking contracts…</span></div>';
     stakeRows = await loadStakeRows();
   }
   const f = stakeFilters;
@@ -2417,44 +2417,71 @@ async function renderStaking() {
     <div class="stat"><span class="v">${live.filter(r => r.kind === 'nft').length}</span><span class="k">take NFTs</span><span class="sub">${live.filter(r => r.kind === 'token').length} take a token</span></div>
     <div class="stat"><span class="v">${live.filter(r => r.endsAt < Date.now() + 30 * 86400e3).length}</span><span class="k">end within a month</span><span class="sub">at today's schedule</span></div>`;
 
-  const cols = [
-    { k: 'name', label: 'Farm', s: false },
-    { k: 'kind', label: 'Takes', s: false },
-    { k: 'rewards', label: 'Pays per day', s: false },
-    { k: 'usdDay', label: 'Value / day', r: true, s: true },
-    { k: 'staked', label: 'Staked', r: true, s: true },
-    { k: 'apr', label: 'APR', r: true, s: true, title: 'Token farms only: what the rewards are worth against the value staked' },
-    { k: 'users', label: 'Stakers', r: true, s: true },
-    { k: 'endsAt', label: 'Ends', r: true, s: true },
+  // Fifty farms in a table of eight columns was a wall: the same "NFT" badge on
+  // forty-two rows, the venue repeated on every one, and the thing that
+  // actually distinguishes them — a name, a picture and what they pay — spread
+  // thin across it. A farm is an object, not a row of measurements, so it gets
+  // a card: the image, what it pays a day, and the three numbers you would
+  // compare before clicking.
+  const SORTS = [
+    { k: 'usdDay', label: 'Pays most' },
+    { k: 'staked', label: 'Most staked' },
+    { k: 'apr', label: 'Best APR' },
+    { k: 'users', label: 'Most stakers' },
+    { k: 'endsAt', label: 'Ending soonest', dir: 1 },
   ];
-  const thead = $('#stakeTable thead');
-  thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable ' : ''}" data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ''}>${c.label}${f.sort === c.k ? ` <span class="dir">${f.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
-  thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
-    const k = th.dataset.k;
-    if (f.sort === k) f.dir *= -1; else { f.sort = k; f.dir = -1; }
-    renderStaking();
-  });
+  const sortBar = $('#stakeSort');
+  if (sortBar) {
+    sortBar.innerHTML = '<span class="sub">Sort</span>' + SORTS.map(o =>
+      `<button class="chip" data-sort="${o.k}" aria-pressed="${String(f.sort === o.k)}">${o.label}</button>`).join('');
+    sortBar.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => {
+      const o = SORTS.find(x => x.k === b.dataset.sort);
+      if (f.sort === o.k) f.dir *= -1; else { f.sort = o.k; f.dir = o.dir ?? -1; }
+      renderStaking();
+    });
+  }
 
   $('#stakeCount').textContent = `${rows.length} farm${rows.length === 1 ? '' : 's'}`;
-  tb.innerHTML = rows.map(r => {
+  const grid = $('#stakeGrid');
+  grid.innerHTML = rows.map(r => {
     const ends = r.endsAt ? (r.endsAt - Date.now()) / 86400e3 : null;
-    return `<tr class="clickable" data-stake="${esc(r.key)}">
-      <td>${stakeImg(r)}<span class="pairbig">${esc(r.name)}</span><span class="tier">${esc(r.venueName)}</span></td>
-      <td class="dim">${r.kind === 'nft'
-        ? `<span class="badge">NFT</span>${r.accepts && r.accepts !== 'NFTs' ? ` <span class="sub">${esc(String(r.accepts).slice(0, 26))}</span>` : ''}`
-        : `<span class="badge alcor">token</span> ${esc(r.accepts)}`}</td>
-      <td>${r.rewards.slice(0, 3).map(x => `<span class="rew"><span data-pm="${esc(x.symbol)}@${esc(x.contract)}|${esc(x.symbol)}"></span><b>${qty(x.perDay)}</b>&nbsp;${esc(x.symbol)}</span>`).join('')}${r.rewards.length > 3 ? `<span class="rew more">+${r.rewards.length - 3}</span>` : ''}</td>
-      <td class="r num ${r.usdDay > 0 ? '' : 'dim'}">${r.usdDay > 0 ? usd(r.usdDay) : '—'}</td>
-      <td class="r num ${r.staked > 0 ? '' : 'dim'}">${r.stakedUsd > 0 ? usd(r.stakedUsd) : esc(r.stakedLabel)}</td>
-      <td class="r num ${r.apr != null ? '' : 'dim'}">${r.apr != null ? `<span class="apr">${pct(r.apr)}</span>` : '—'}</td>
-      <td class="r num dim">${r.users != null ? r.users.toLocaleString() : '—'}</td>
-      <td class="r num ${ends != null && ends < 7 ? 'neg' : 'dim'}">${ends == null ? '—' : ends < 0 ? 'ended' : ends < 1 ? Math.round(ends * 24) + 'h' : ends < 400 ? Math.round(ends) + 'd' : '400d+'}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">Nothing matches.</td></tr>';
-  fillMarks(tb);
-  tb.querySelectorAll('tr[data-stake]').forEach(tr => tr.onclick = rowClick(() => openStake(tr.dataset.stake)));
+    const endTxt = ends == null ? '—' : ends < 0 ? 'ended' : ends < 1 ? Math.round(ends * 24) + 'h left'
+      : ends > 400 ? 'open-ended' : Math.round(ends) + 'd left';
+    const takes = r.kind === 'token'
+      ? `stake <b>${esc(r.accepts)}</b>`
+      : `stake <b>NFTs</b>${r.accepts && r.accepts !== 'NFTs' ? ` <span class="dim">${esc(String(r.accepts).slice(0, 22))}</span>` : ''}`;
+    const fig = (k, v, cls = '') => `<div class="sfig"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+    return `<article class="stakecard${r.live ? '' : ' over'}" data-stake="${esc(r.key)}" tabindex="0">
+      <header>
+        ${stakeImg(r)}
+        <div class="sname">
+          <b title="${esc(r.name)}">${esc(r.name)}</b>
+          <span class="sub">${esc(r.venueName)} &middot; ${r.kind === 'nft' ? 'NFT farm' : 'token farm'}${r.live ? '' : ' &middot; ended'}</span>
+        </div>
+        ${r.apr != null ? `<span class="saprchip" title="What the rewards are worth against the value staked">${pct(r.apr)}</span>` : ''}
+      </header>
+      <div class="spays">
+        <span class="amount">${r.usdDay > 0 ? usd(r.usdDay) : '—'}<span class="per"> / day</span></span>
+        <span class="rewards">${r.rewards.slice(0, 3).map(x =>
+          `<span class="rew"><span data-pm="${esc(x.symbol)}@${esc(x.contract)}|${esc(x.symbol)}"></span>${esc(x.symbol)}</span>`).join('')}${
+          r.rewards.length > 3 ? `<span class="rew more">+${r.rewards.length - 3}</span>` : ''}</span>
+      </div>
+      <div class="stakes">${takes}</div>
+      <footer>
+        ${fig('Staked', r.stakedUsd > 0 ? usd(r.stakedUsd) : esc(r.stakedLabel))}
+        ${fig('Stakers', r.users != null ? r.users.toLocaleString() : '—', r.users ? '' : 'dim')}
+        ${fig('Runs', endTxt, ends != null && ends >= 0 && ends < 7 ? 'neg' : '')}
+      </footer>
+    </article>`;
+  }).join('') || '<div class="empty">Nothing matches.</div>';
+  fillMarks(grid);
+  const open = el => openStake(el.dataset.stake);
+  grid.querySelectorAll('[data-stake]').forEach(el => {
+    el.onclick = rowClick(() => open(el));
+    el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(el); } };
+  });
   $('#stakeNote').innerHTML = `Read live from <span class="mono">pepperstake</span> and <span class="mono">farms.waxdao</span>.
-    PepperStake's own site is down; its pools are not.`;
+    PepperStake's own site is down; its pools are not, and WaxDAO's front end is gone for good.`;
 }
 
 function wireStaking() {
