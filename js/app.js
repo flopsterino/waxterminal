@@ -1143,8 +1143,12 @@ function renderOverview() {
       return list.slice(0, 2).map(([tok, r]) => `<span class="rew"><span data-pm="${esc(tok)}|${esc(r.symbol)}"></span><b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
         + (list.length > 2 ? `<span class="rew more">+${list.length - 2}</span>` : '');
     } },
-    { h: 'Face value', r: true, v: g => g.rewardUsdDay > g.rewardRealDay * 1.05 ? usd(g.rewardUsdDay) : '<span class="dim">same</span>',
-      cls: g => g.rewardUsdDay > g.rewardRealDay * 1.05 ? 'dim' : 'dim' },
+    // What the same rewards are worth at the quoted price, against what they
+    // could be sold for in the column beside it. A word where a number belongs
+    // ("same") reads as a missing value; the figure is always printed, and the
+    // gap between the two columns is the point.
+    { h: 'Face value', r: true, v: g => g.rewardUsdDay > 0 ? usd(g.rewardUsdDay) : '—',
+      cls: g => (g.rewardUsdDay > g.rewardRealDay * 1.05 ? 'warnish' : 'dim') },
     { h: 'Stakers', r: true, v: g => (g.stakers ? g.stakers.toLocaleString() : '—'), cls: g => g.stakers ? '' : 'dim' },
     { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr${g.aprThin ? ' thin' : ''}">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
     { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
