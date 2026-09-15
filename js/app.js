@@ -5442,7 +5442,6 @@ async function openToken(id) {
       <div class="stat"><span class="v" id="tokHolderN">—</span><span class="k">holders</span><span class="sub" id="tokHolderSub">accounts with a balance</span></div>
       <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pool${t.pools === 1 ? '' : 's'} on ${venues.length} venue${venues.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v" id="tokVol">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">measuring…</span>'}</span><span class="k">traded 24h</span><span class="sub" id="tokVolSub">${t.vol24 > 0 ? 'across every venue' : '&nbsp;'}</span></div>
-      <div class="stat"><span class="v">${t.depth1 > 0 ? usd(t.depth1) : '—'}</span><span class="k">trade depth</span><span class="sub">before moving price 1%</span></div>
     </div>
 
     ${farms.length ? `<div class="cta" style="margin-bottom:14px">
@@ -7008,7 +7007,6 @@ async function openPool(key) {
       <div class="stat"><span class="v">${nowUsd != null ? px(nowUsd) : '—'}${ch24 != null ? ` <span class="chg ${chgCls(ch24)}">${chgTxt(ch24)}</span>` : ''}</span><span class="k">${esc(o.baseSym)} price</span><span class="sub">${inQuote != null ? esc(pxNum(inQuote)) + ' ' + esc(o.quoteSym) : ''}</span></div>
       <div class="stat"><span class="v">${usd(p.tvlReal)}</span><span class="k">liquidity</span><span class="sub">${p.tvl > (p.tvlReal || 0) * 1.05 ? usd(p.tvl) + ' at face value' : 'fully backed'}</span></div>
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span><span class="sub">${p.vol7d > 0 ? usd(p.vol7d) + ' in 7 days' : ''}</span></div>
-      <div class="stat"><span class="v">${p.depth1 > 0 ? usd(p.depth1) : '—'}</span><span class="k">depth &plusmn;1%</span><span class="sub">trade size that moves it 1%</span></div>
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24 * (lpCut(p) / 10000)) : '—'}</span><span class="k">fees to providers, 24h</span><span class="sub">${p.vol7d > 0 ? `${usd(p.vol7d * (lpCut(p) / 10000))} over 7 days` : 'at this pool\u2019s own volume'}</span></div>
       <div class="stat"><span class="v" id="poolHiLo">—</span><span class="k">24h range</span><span class="sub" id="poolHiLoSub">high and low, from the candles</span></div>
       <div class="stat"><span class="v ${fee > 0 ? '' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
