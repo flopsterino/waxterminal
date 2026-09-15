@@ -1464,3 +1464,9 @@ td.paycell { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
 td.paycell .payday { margin-right: 8px; font-variant-numeric: tabular-nums; }
 td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
 @media (max-width: 700px) { td.paycell { max-width: 150px; } }
+/* With the Age column back and the rewards column slimmed, the name column can
+   take the room it needs: WAXUSDC/PARAUSD is a pool, "WAXUSDC/PARAUSD…" is a
+   guess. */
+@media (min-width: 1200px) {
+  .tablewrap table th:nth-child(2), .tablewrap table td:nth-child(2) { width: 246px; min-width: 246px; max-width: 246px; }
+}

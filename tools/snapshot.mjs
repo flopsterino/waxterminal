@@ -144,13 +144,73 @@ const otherVol = { taco: tacoVol, defibox: boxVol, adex: adexVol };
 // Everything downstream in this job — the token table, and so the token history
 // — reads `state`, and a volume that only exists in the output means the
 // history records a column of zeroes that looks exactly like a quiet market.
+// How old a pool is comes free for Alcor — their API publishes it — and from
+// nowhere at all for TacoSwap, whose pair rows carry reserves and nothing
+// else. The chain does record it, indirectly: swap.taco logs every liquidity
+// event and every swap, and the oldest one naming a pair is the earliest that
+// pair provably existed.
+//
+// A birthday never changes, so this is a cache rather than a lookup: dates
+// already known are read from data/born.json and never asked for again. The
+// walk itself is twenty-four requests, so it runs only when there are pairs
+// nobody has dated yet AND the last walk was over a week ago — which on a
+// venue that adds a pair a week means roughly never.
+const BORN_FILE = new URL('born.json', OUT);
+let bornCache = {};
+try { bornCache = JSON.parse(await readFile(BORN_FILE, 'utf8')); } catch { bornCache = {}; }
+const bornMeta = bornCache._meta || {};
+
+async function walkTacoLogs(known) {
+  const found = new Map();
+  const walk = async (name, field) => {
+    for (let page = 0; page < 12; page++) {
+      let d;
+      try {
+        d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
+          'act.account': 'swap.taco', 'act.name': name, limit: '1000', skip: String(page * 1000), sort: 'asc',
+        })}`);
+      } catch (e) { console.error(`taco ${name}:`, e.message); return; }
+      const rows = d.actions || [];
+      for (const a2 of rows) {
+        const raw = a2.act?.data?.[field] || '';
+        // liquiditylog names the pair through its LP token ("275.9330 TACWAX");
+        // exchangelog names it directly.
+        const sym = field === 'lp_token' ? String(raw).split(' ')[1] : String(raw);
+        if (!sym || found.has(sym) || known.has(sym)) continue;
+        found.set(sym, new Date(a2.timestamp + (a2.timestamp.endsWith('Z') ? '' : 'Z')).getTime());
+      }
+      if (rows.length < 1000) break;
+    }
+  };
+  await walk('liquiditylog', 'lp_token');
+  await walk('exchangelog', 'id');
+  return found;
+}
+
+const tacoPools = state.pools.filter(p => p.dex === 'taco');
+const undated = tacoPools.filter(p => bornCache[`taco:${p.id}`] == null);
+const lastWalk = Number(bornMeta.tacoScannedAt) || 0;
+if (undated.length && Date.now() - lastWalk > 7 * 86400e3) {
+  const found = await walkTacoLogs(new Set(Object.keys(bornCache).filter(k => k.startsWith('taco:')).map(k => k.slice(5))));
+  for (const [sym, at] of found) bornCache[`taco:${sym}`] = at;
+  bornCache._meta = { ...bornMeta, tacoScannedAt: Date.now() };
+  console.log(`taco births: walked the logs, ${found.size} new pairs dated (${undated.length} were undated)`);
+} else {
+  console.log(`taco births: ${tacoPools.length - undated.length}/${tacoPools.length} from cache, no walk needed`);
+}
+
 for (const p of state.pools) {
   const v = p.dex === 'alcor' ? volByPool.get(String(p.id)) : null;
   p.vol24 = p.dex === 'alcor' ? (v?.d1 ?? null) : (otherVol[p.dex]?.get(String(p.id)) ?? null);
   p.vol7d = v?.d7 ?? null;
   p.change24 = v?.ch24 ?? null;
-  p.bornAt = v?.born ?? p.bornAt ?? null;
+  p.bornAt = v?.born ?? p.bornAt ?? bornCache[`${p.dex}:${p.id}`] ?? null;
+  // Alcor's dates are worth keeping too: the cache then answers for every
+  // venue even on a run where the volume file is unavailable.
+  if (p.bornAt && bornCache[`${p.dex}:${p.id}`] == null) bornCache[`${p.dex}:${p.id}`] = p.bornAt;
 }
+await writeFile(BORN_FILE, JSON.stringify(bornCache));
+console.log(`born.json: ${Object.keys(bornCache).length - 1} pools dated`);
 
 // Alcor publishes safe_usd_price and zeroes it for tokens it will not stand
 // behind. That judgement is worth deferring to — honouring it brings Alcor TVL

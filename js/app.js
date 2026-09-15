@@ -1729,7 +1729,11 @@ function renderTokens() {
 // the same question — what is this market worth, and what does it pay — and a
 // reader had to hold one in their head while looking at the other.
 const farmFilters = { q: '', dex: 'all', hideDust: true, farmed: 'any', realOnly: false, expired: false,
-  sort: 'aprAt', dir: -1, feeWindow: '7d',
+  // Volume first. A table that opens on the highest APR opens on whichever
+  // farm has the least staked in it, which is the one number here that flatters
+  // itself; what traded is a fact about the market rather than about the
+  // denominator.
+  sort: 'vol24', dir: -1, feeWindow: '7d',
   // A reference deposit, not a control. The rate a farm quotes is the rate its
   // incumbents get, and on a farm holding three dollars that is a number nobody
   // can act on — your own money is what gives it a denominator. $100 is small
@@ -2039,6 +2043,7 @@ function renderFarms() {
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
+    { k: 'bornAt', label: 'Age', r: true, s: true, title: 'How long this pool has existed' },
   ];
   const thead = $('#farmTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable ' : ''}" data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ''}>${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -2122,6 +2127,7 @@ function renderFarms() {
       <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
       <td class="r num ${chgCls(g.pool?.change24)}">${chgTxt(g.pool?.change24)}</td>
+      <td class="r num dim" title="${g.pool?.bornAt ? new Date(g.pool.bornAt).toISOString().slice(0, 10) : 'No creation date on chain for this venue'}">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${cols.length}" class="empty">Nothing matches.</td></tr>`;
   fillMarks($('#farmTable tbody'));
