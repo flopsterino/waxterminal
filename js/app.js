@@ -2039,7 +2039,6 @@ function renderFarms() {
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
-    { k: 'bornAt', label: 'Age', r: true, s: true },
   ];
   const thead = $('#farmTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable ' : ''}" data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ''}>${c.label}${farmFilters.sort === c.k ? ` <span class="dir">${farmFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
@@ -2065,10 +2064,13 @@ function renderFarms() {
       byTok.set(r.token, cur);
     }
     const list = [...byTok].sort((a, b) => b[1].usdDay - a[1].usdDay);
+    // The amounts were what made this column twice as wide as the ones people
+    // came to read: "10.00M LEEF" is precision nobody sorts on, and the money
+    // figure beside it already says how much it is worth. Tokens keep their
+    // mark and their symbol; the exact amount per day is in the tooltip.
     const chips = list.slice(0, 3).map(([tok, r]) =>
         `<span class="rew" title="${qty(r.perDay)} ${esc(r.symbol)} per day${r.usdDay ? ' · ' + usd(r.usdDay) : ''}">
-           <span data-pm="${esc(tok)}|${esc(r.symbol)}"></span>
-           <b>${qty(r.perDay)}</b>&nbsp;${tokLink(tok, r.symbol)}</span>`).join('')
+           <span data-pm="${esc(tok)}|${esc(r.symbol)}"></span>${tokLink(tok, r.symbol)}</span>`).join('')
       + (list.length > 3 ? `<span class="rew more" title="${list.slice(3).map(([, r]) => qty(r.perDay) + ' ' + r.symbol).join(', ')}">+${list.length - 3}</span>` : '');
     // Show what you would get, with the headline underneath only when the two
     // differ enough to matter — that gap IS the size of the farm.
@@ -2110,7 +2112,7 @@ function renderFarms() {
       <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
         g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
-      <td>${chips}${g.rewardRealDay > 0 ? ` <span class="sub">${usd(g.rewardRealDay)}/day</span>` : ''}</td>
+      <td class="paycell">${g.rewardRealDay > 0 ? `<b class="payday">${usd(g.rewardRealDay)}</b>` : ''}${chips}</td>
       <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
         g.expired ? '<span class="badge bad">expired</span>'
@@ -2120,7 +2122,6 @@ function renderFarms() {
       <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
       <td class="r num ${chgCls(g.pool?.change24)}">${chgTxt(g.pool?.change24)}</td>
-      <td class="r num dim">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="${cols.length}" class="empty">Nothing matches.</td></tr>`;
   fillMarks($('#farmTable tbody'));
@@ -2688,9 +2689,8 @@ function ratingBar(subject, { compact = false } = {}) {
         title="${esc(v.label)} — ${n} vote${n === 1 ? '' : 's'} in the last 24 hours${ever > n ? `, ${ever} in 90 days` : ''}${mine === v.key ? ', including yours' : ''}. Costs ${terms.price} ${esc(terms.symbol)}, paid on chain."
         style="--share:${(share * 100).toFixed(0)}%"><span class="em">${v.emoji}</span><span class="n">${n}</span></button>`;
     }).join('')}
-    <span class="ratenote dim" title="Only the last 24 hours count, so nobody buys a reputation once and keeps it.">${
-      total ? `${total} vote${total === 1 ? '' : 's'} today` : 'no votes today'}${allTotal > total ? ` &middot; ${allTotal} in 90 days` : ''}${
-      compact ? '' : ` &middot; ${terms.price} ${esc(terms.symbol)} each, on chain`}</span>
+    <span class="ratenote dim" title="A vote is a ${terms.price} ${esc(terms.symbol)} transfer, and only the last 24 hours count — so nobody buys a reputation once and keeps it.">${
+      total ? `${total} today` : `rate it &middot; ${terms.price} ${esc(terms.symbol)}`}${allTotal > total ? ` &middot; ${allTotal} in 90d` : ''}</span>
   </div>`;
 }
 
@@ -5412,17 +5412,17 @@ async function openToken(id) {
     ? t.price / state.waxUsd : null;
 
   $('#tokenDetail').innerHTML = `
-    <div class="tokhead">
+    <div class="ph tokhead">
       <span id="tokMark"></span>
-      <div>
-        <h2 class="vt" style="margin:0">${esc(t.symbol)} ${trustChip(id)}</h2>
-        <p class="vs" style="margin:2px 0 0">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</p>
-      </div>
-      ${ratingBar(`t:${id}`)}
-      <span style="flex:1"></span>
+      <h2 class="vt">${esc(t.symbol)}</h2>
+      ${trustChip(id)}
       <span id="tokStar"></span>
-      <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
-      ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
+      <span class="dim ph-meta">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</span>
+      <div class="ph-act">
+        ${ratingBar(`t:${id}`)}
+        <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
+        ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
+      </div>
     </div>
 
     <div class="stats">
@@ -5507,11 +5507,9 @@ async function openToken(id) {
     </div>
 
     <div class="section"><h3>Where the supply sits</h3>
-      <div class="grid g2">
-        <div class="card"><h3>Share of supply</h3><div id="tokDist"><div class="loading"><span class="spinner"></span><span>Waiting on holders…</span></div></div></div>
-        <div class="card"><h3>Movement <span class="dim">&mdash; transfers, which is not the same question as trades</span></h3>
-          <div id="tokMoves"><div class="loading"><span class="spinner"></span><span>Reading transfers…</span></div></div></div>
-      </div>
+      <div class="card"><h3>Share of supply</h3><div id="tokDist"><div class="loading"><span class="spinner"></span><span>Waiting on holders…</span></div></div></div>
+      <div class="card" style="margin-top:10px"><h3>Movement <span class="dim">&mdash; transfers, which is not the same question as trades</span></h3>
+        <div id="tokMoves"><div class="loading"><span class="spinner"></span><span>Reading transfers…</span></div></div></div>
     </div>
 
     <div class="section"><h3>Liquidity</h3>
@@ -5898,29 +5896,120 @@ async function openToken(id) {
     if (stale()) return;
     const box = $('#tokMoves'); if (!box) return;
     if (!transfers.length) { box.innerHTML = `<div class="chart-empty">No ${esc(t.symbol)} transfers in the last 24 hours.</div>`; return; }
-    const total = transfers.reduce((a, x) => a + x.amount, 0);
-    // The DEX contracts are one side of most transfers by construction, so
-    // ranking them as "active senders" says nothing except that the token
-    // trades. The accounts behind them are the answer.
+
+    // A transfer is not a trade, but it still has a direction: the interesting
+    // question is which side of the market the token moved to. Anything going
+    // INTO a venue or a farm is supply arriving where it can be sold or locked;
+    // anything coming OUT is supply reaching a wallet. Between two wallets it
+    // changed hands without touching a market, and eosio.null is gone for good.
     const VENUES = new Set(['swap.alcor', 'swap.taco', 'swap.box', 'swap.adex', 'alcordexmain', 'reward.alcor']);
-    const parties = new Map();
+    const SINKS = new Set(['farms.waxdao', 'pepperstake', 'cheesepowerz', 'ram.chz', 'waxdaolocker', 'atomicassets', 'nfthivedrops']);
+    const isMarket = a2 => VENUES.has(a2) || SINKS.has(a2);
+    const BURN = 'eosio.null';
+    const kindOf = x => x.to === BURN ? 'burn'
+      : isMarket(x.to) ? 'in'
+      : isMarket(x.from) ? 'out'
+      : x.from === t.contract ? 'issue'
+      : 'wallet';
+
+    const tally = { in: 0, out: 0, wallet: 0, burn: 0, issue: 0 };
+    const amt = { in: 0, out: 0, wallet: 0, burn: 0, issue: 0 };
+    // What each ordinary account ended the window with: received minus sent.
+    // The venues are excluded — a pool's balance moving is the market working,
+    // not somebody taking a position.
+    const net = new Map();
+    const touch = (acct, delta, sent) => {
+      if (isMarket(acct) || acct === BURN) return;
+      const r = net.get(acct) || { acct, in: 0, out: 0, n: 0 };
+      if (delta > 0) r.in += delta; else r.out += -delta;
+      r.n++;
+      net.set(acct, r);
+      void sent;
+    };
     for (const x of transfers) {
-      if (VENUES.has(x.from)) continue;
-      parties.set(x.from, (parties.get(x.from) || 0) + x.amount);
+      const k = kindOf(x);
+      tally[k]++; amt[k] += x.amount;
+      touch(x.from, -x.amount, true);
+      touch(x.to, x.amount, false);
     }
-    const top = [...parties].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const biggest = [...transfers].sort((a, b) => b.amount - a.amount).slice(0, 6);
-    box.innerHTML = `<div class="stats" style="margin:0 0 12px">
-        <div class="stat"><span class="v">${transfers.length.toLocaleString()}</span><span class="k">transfers</span><span class="sub">${complete ? 'last 24h' : `back to ${ago(new Date(covered).toISOString())}`}</span></div>
-        <div class="stat"><span class="v">${qty(total)}</span><span class="k">${esc(t.symbol)} moved</span><span class="sub">${t.price != null ? usd(total * t.price) : '&nbsp;'}</span></div>
+    const total = transfers.reduce((a2, x) => a2 + x.amount, 0);
+    const movers = [...net.values()].map(r => ({ ...r, net: r.in - r.out }));
+    const accounts = movers.length;
+    const flow = amt.out - amt.in;                       // + left the market, − arrived at it
+    const px = t.price != null ? t.price : null;
+    const money = v => (px != null ? usd(v * px) : null);
+    // The headline is the real total, not the two bars added up: a transfer
+    // between two wallets is neither "in" nor "out", and an account that both
+    // received and sent would otherwise be counted twice.
+    const both = (label, aLab, bLab, aVal, bVal, fmt, headline = null) => {
+      const sum = (aVal || 0) + (bVal || 0);
+      const aPct = sum > 0 ? (aVal / sum) * 100 : 50;
+      return `<div class="pulserow">
+        <div class="pleft"><span class="k">${label}</span><span class="v">${fmt(headline == null ? sum : headline)}</span></div>
+        <div class="psplit">
+          <div class="phead"><span>${aLab}</span><span>${bLab}</span></div>
+          <div class="pnums"><b>${fmt(aVal)}</b><b>${fmt(bVal)}</b></div>
+          <div class="pbar"><i class="buy" style="width:${sum > 0 ? aPct.toFixed(1) : 50}%"></i><i class="sell" style="width:${sum > 0 ? (100 - aPct).toFixed(1) : 50}%"></i></div>
+        </div>
+      </div>`;
+    };
+    const count = v => Math.round(v).toLocaleString('en-US');
+    const tok = v => qty(v);
+
+    const biggest = [...transfers].sort((a2, b2) => b2.amount - a2.amount).slice(0, 10);
+    const kindChip = k => k === 'out' ? '<span class="side buy">Out of market</span>'
+      : k === 'in' ? '<span class="side sell">Into market</span>'
+      : k === 'burn' ? '<span class="side sell">Burned</span>'
+      : k === 'issue' ? '<span class="pill">Issued</span>'
+      : '<span class="pill">Wallet to wallet</span>';
+
+    box.innerHTML = `
+      <div class="pulsebody" style="border-bottom:1px solid var(--line)">
+        ${both('Transfers', 'Out of market', 'Into market', tally.out, tally.in, count, transfers.length)}
+        ${both(`${esc(t.symbol)} moved`, 'Withdrawn', 'Deposited', amt.out, amt.in, tok, total)}
+        ${both('Accounts', 'Received', 'Sent', movers.filter(m => m.in > 0).length, movers.filter(m => m.out > 0).length, count, accounts)}
       </div>
-      <h3 style="font-size:12px;margin:0 0 6px">Largest single moves</h3>
-      <div class="tablewrap" style="max-height:200px;border:0"><table style="font-size:12px"><tbody>${
-        biggest.map(x => `<tr>
-          <td class="num dim"><a href="${trxUrl(x.trx)}" target="_blank" rel="noopener">${ago(new Date(x.ts).toISOString())} &nearr;</a></td>
-          <td class="mono">${acctLink(x.from)} <span class="dim">&rarr;</span> ${acctLink(x.to)}</td>
-          <td class="r num">${qty(x.amount)}</td></tr>`).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${top.length ? `Busiest senders: ${top.map(([a, v]) => `${acctLink(a)} <span class="dim">(${qty(v)})</span>`).join(', ')}` : 'All transfers came from a DEX contract.'}</p>`;
+      <div class="moveflow">
+        <span class="k">Net flow</span>
+        <span class="v ${flow > 0 ? 'pos' : flow < 0 ? 'neg' : 'dim'}">${flow > 0 ? '+' : ''}${qty(flow)} ${esc(t.symbol)}</span>
+        <span class="sub">${money(Math.abs(flow)) ? `${money(Math.abs(flow))} &middot; ` : ''}${
+          flow > 0 ? 'more left the pools and contracts than went in — accumulation'
+          : flow < 0 ? 'more went into the pools and contracts than came out — distribution'
+          : 'in and out balanced'}</span>
+        <span class="sub dim">${count(tally.wallet)} wallet to wallet${tally.burn ? ` &middot; ${tok(amt.burn)} burned` : ''}${tally.issue ? ` &middot; ${tok(amt.issue)} issued` : ''}
+          &middot; ${tok(total)} moved in total${money(total) ? ` (${money(total)})` : ''}</span>
+      </div>
+
+      <div class="grid g2" style="margin-top:12px">
+        <div>
+          <h3 style="font-size:12px;margin:0 0 6px">Who moved the most ${esc(t.symbol)} <span class="dim">&mdash; received against sent</span></h3>
+          <div class="tablewrap" style="max-height:320px;border:0"><table style="font-size:12px">
+            <thead><tr><th>Account</th><th class="r">In</th><th class="r">Out</th><th class="r">Net</th><th class="r">Moves</th></tr></thead>
+            <tbody>${movers.sort((a2, b2) => Math.abs(b2.net) - Math.abs(a2.net)).slice(0, 14).map(m => `<tr>
+              <td class="mono">${acctLink(m.acct)}</td>
+              <td class="r num ${m.in > 0 ? 'pos' : 'dim'}">${m.in > 0 ? tok(m.in) : '—'}</td>
+              <td class="r num ${m.out > 0 ? 'neg' : 'dim'}">${m.out > 0 ? tok(m.out) : '—'}</td>
+              <td class="r num ${m.net > 0 ? 'pos' : m.net < 0 ? 'neg' : 'dim'}">${m.net > 0 ? '+' : ''}${tok(m.net)}</td>
+              <td class="r num dim">${m.n}</td>
+            </tr>`).join('')}</tbody></table></div>
+        </div>
+        <div>
+          <h3 style="font-size:12px;margin:0 0 6px">Largest single moves</h3>
+          <div class="tablewrap" style="max-height:320px;border:0"><table style="font-size:12px">
+            <tbody>${biggest.map(x => {
+              const k = kindOf(x);
+              return `<tr>
+                <td class="num dim"><a href="${trxUrl(x.trx)}" target="_blank" rel="noopener">${ago(new Date(x.ts).toISOString())} &nearr;</a></td>
+                <td>${kindChip(k)}</td>
+                <td class="mono acct-cell">${acctLink(x.from)} <span class="dim">&rarr;</span> ${acctLink(x.to)}</td>
+                <td class="r num">${tok(x.amount)}${money(x.amount) ? `<span class="sub">${money(x.amount)}</span>` : ''}</td>
+              </tr>`;
+            }).join('')}</tbody></table></div>
+        </div>
+      </div>
+      <p class="sub" style="margin:10px 0 0">${complete ? 'The last 24 hours.' : `Back to ${ago(new Date(covered).toISOString())} — the history node would not go further.`}
+        <span class="dim">"Into market" is anything sent to a pool, a farm or a staking contract, "out of market" is anything they paid back out, and the rest moved between wallets.
+        An account that both received and sent shows in both columns.</span></p>`;
   }).catch(() => { const b = $('#tokMoves'); if (b) b.innerHTML = '<div class="chart-empty">Transfer history unavailable.</div>'; });
 
   // ---- who trades it, and through what ------------------------------------

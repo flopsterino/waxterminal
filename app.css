@@ -501,7 +501,6 @@ tbody tr.faded:hover td { opacity: .85; }
 a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 a.btn:hover { text-decoration: none; }
 .warnish { color: var(--accent-ink); }
-.tokhead { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
 .tokhead .tokmark { width: 34px; height: 34px; font-size: 14px; }
 .aprmove { display: inline-flex; align-items: baseline; gap: 5px; justify-content: flex-end; }
 .aprmove .was { color: var(--muted); font-family: var(--font-data); font-size: 12px; text-decoration: line-through; text-decoration-color: var(--line-2); }
@@ -1428,3 +1427,40 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
   .pulserow { border-right: 0; border-bottom: 1px solid var(--line); }
   .pulserow:last-child { border-bottom: 0; }
 }
+
+/* Net flow: the one line the movement panel exists to produce. */
+.moveflow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 11px 0 0; }
+.moveflow .k { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.moveflow .v { font-size: 18px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.moveflow .sub { font-size: 11.5px; }
+.moveflow .sub:last-child { flex: 1 1 100%; }
+#tokMoves .pulsebody { margin: 0 -16px; }
+#tokMoves .pulserow { padding: 12px 16px; }
+#tokMoves .acct-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- token header ------------------------------------------------------- */
+/* Same shape as a market page: mark, name, what it is, then the things you
+   can do with it — rather than a name, a contract, a row of pills and a row
+   of buttons each floating on a line of their own. */
+.tokhead .vt { font-size: 22px; }
+.tokhead .trust { align-self: center; }
+.tokhead #tokStar { display: inline-flex; align-items: center; }
+.ph-act .ratebar { margin-right: 4px; }
+.ratebtn { padding: 4px 10px 4px 7px; gap: 6px; }
+.ratebtn .em { font-size: 14px; }
+.ratebtn .n { font-size: 12px; color: var(--ink-2); }
+.ratebtn.mine .n { color: var(--accent-ink); }
+.ratenote { align-self: center; }
+@media (max-width: 700px) {
+  .tokhead .vt { font-size: 19px; }
+  .tokhead .ph-meta { flex: 1 1 100%; margin-top: -4px; }
+  /* Ratings take their own line, the two buttons share the next one. */
+  .ph-act .ratebar { flex: 1 1 100%; margin: 0 0 2px; }
+  .ph-act .btn { flex: 1 1 0; }
+  .ratebtn { flex: 1 1 auto; justify-content: center; }
+}
+/* What a farm pays: the money first, then which tokens it is paid in. */
+td.paycell { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+td.paycell .payday { margin-right: 8px; font-variant-numeric: tabular-nums; }
+td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
+@media (max-width: 700px) { td.paycell { max-width: 150px; } }
