@@ -28,6 +28,31 @@ export function amountsForLiquidity(liquidity, sqrtP, tickLower, tickUpper) {
   return { amountA: L * (sb - s) / (s * sb), amountB: L * (s - sa) };
 }
 
+// The inverse of amountsForLiquidity: how much liquidity a pair of amounts
+// actually buys in a band. Whichever side runs out first decides it, which is
+// why a deposit in the wrong ratio leaves the remainder doing nothing.
+export function liquidityForAmounts(amountA, amountB, sqrtP, tickLower, tickUpper) {
+  const sa = sqrtRatioAtTick(tickLower), sb = sqrtRatioAtTick(tickUpper), s = sqrtP;
+  if (!(sb > sa)) return 0;
+  if (s <= sa) return amountA > 0 ? (amountA * sa * sb) / (sb - sa) : 0;
+  if (s >= sb) return amountB > 0 ? amountB / (sb - sa) : 0;
+  const la = amountA > 0 ? (amountA * s * sb) / (sb - s) : Infinity;
+  const lb = amountB > 0 ? amountB / (s - sa) : Infinity;
+  const l = Math.min(la, lb);
+  return isFinite(l) ? l : 0;
+}
+
+// How much harder the same money works inside a band than spread over every
+// price. A full-range dollar is liquidity 2·s per unit of value; a band from
+// sa to sb is 1/(1 − sa/2s − s/2sb) times that, which is the number people
+// mean by "capital efficiency".
+export function concentration(sqrtP, tickLower, tickUpper) {
+  const sa = sqrtRatioAtTick(tickLower), sb = sqrtRatioAtTick(tickUpper), s = sqrtP;
+  if (!(sb > sa) || s <= sa || s >= sb) return null;
+  const denom = 2 * s - (s * s) / sb - sa;
+  return denom > 0 ? (2 * s) / denom : null;
+}
+
 // What fraction of a new deposit's value must be token A for THIS range at THIS
 // price. Harvested fees never arrive in this ratio, which is exactly why a
 // compound needs a swap in the middle.

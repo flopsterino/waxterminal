@@ -29,7 +29,7 @@ import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } 
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
 import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, VOTES } from './ratings.js';
 import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT } from './cheese.js';
-import { sqrtPriceFromX64, depositRatio, amountsForLiquidity } from './math.js';
+import { sqrtPriceFromX64, depositRatio, amountsForLiquidity, liquidityForAmounts, concentration } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
 const nf = (v, d = 2) => (v == null || !isFinite(v)) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -4559,12 +4559,17 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
 // nothing, too wide and your capital is spread so thin it barely earns either.
 // So the picker offers bands around the current price rather than raw ticks,
 // and says what each one means.
+// A deposit is the one screen where a terminal has to be as good as the venue
+// it reads from, because getting it wrong costs money rather than a click.
+// Alcor's own panel offers a fee tier, a band you can type prices into, the
+// ratio that band demands, and what your share of the pool would be. So does
+// this one — plus what the position would have earned at the pool's own
+// volume, which is the question the band is actually for.
 function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   if (!box) return;
-  // This panel is rendered into two different containers — the wallet's
-  // "Open a new position" and the farm page's own. Both stay in the document,
-  // so a document-wide $('#npPool') always found whichever came first: the farm
-  // panel drew its range into the wallet panel and its buttons did nothing.
+  // This panel is rendered into several containers — the wallet's "Open a new
+  // position", the market page, the farm page. All stay in the document, so
+  // every lookup is scoped to this box rather than to the document.
   const q = sel => box.querySelector(sel);
   const pools = state.pools
     .filter(p => p.dex === 'alcor' && p.sqrtX64 && p.tvlReal > 0)
@@ -4572,29 +4577,59 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
     .slice(0, 300);
 
   const want = poolId != null ? String(poolId) : null;
-  // On a farm or pool page the pool is not a question, so the picker is hidden
-  // rather than offering three hundred alternatives to the one you came for.
   const fixedPool = !!poolId;
-  box.innerHTML = `<div class="${fixedPool ? 'card' : 'section'}"><h3>Open a position by hand${fixedPool ? ' <span class="dim">— both tokens, your own band</span>' : ''}</h3>
-    <div class="card">
+  const startPool = state.pools.find(p => p.dex === 'alcor' && String(p.id) === String(want))
+    || pools[0];
+  if (!startPool) { box.innerHTML = '<div class="empty">No Alcor pool to open a position in.</div>'; return; }
+
+  // Same pair, different fee: a real choice, and one people get wrong by not
+  // knowing it exists. 0.05% is for stables, 1% for a pair that moves.
+  const tiersFor = p => state.pools
+    .filter(x => x.dex === 'alcor' && x.sqrtX64
+      && ((x.tokenA === p.tokenA && x.tokenB === p.tokenB) || (x.tokenA === p.tokenB && x.tokenB === p.tokenA)))
+    .sort((a, b) => a.feeBps - b.feeBps);
+
+  let pool = startPool;
+  let band = 'full';
+  let custom = { lower: null, upper: null };
+  let balA = null, balB = null;
+
+  box.innerHTML = `<div class="${fixedPool ? 'card' : 'section'}"><h3>Open a position${fixedPool ? ' <span class="dim">— both tokens, your own band</span>' : ''}</h3>
+    <div class="card npcard">
       <div class="filters" style="display:grid;gap:8px;margin:0${fixedPool ? ';display:none' : ''}">
         <label>Pool<select id="npPool">${(poolId && !pools.some(p => String(p.id) === String(poolId))
           ? [...state.pools.filter(p => p.dex === 'alcor' && String(p.id) === String(poolId)), ...pools]
           : pools).map(p =>
           `<option value="${esc(p.id)}"${want === String(p.id) ? ' selected' : ''}>${esc(p.symA)}/${esc(p.symB)} — ${(p.feeBps / 100).toFixed(2)}% — ${usd(p.tvlReal)} pooled${p.vol24 > 0 ? `, ${usd(p.vol24)} traded` : ''}</option>`).join('')}</select></label>
       </div>
-      <div class="toolbar" style="margin:10px 0 0">
+      <div class="toolbar" id="npTiers" style="margin:0 0 10px"></div>
+
+      <div class="toolbar" style="margin:0">
         <span class="sub">Range</span>
-        <button class="chip" data-band="full" aria-pressed="true">Full range</button>
-        <button class="chip" data-band="50">±50%</button>
-        <button class="chip" data-band="20">±20%</button>
-        <button class="chip" data-band="5">±5%</button>
+        <button class="chip" data-band="full" aria-pressed="true">Full</button>
+        <button class="chip" data-band="50">&plusmn;50%</button>
+        <button class="chip" data-band="20">&plusmn;20%</button>
+        <button class="chip" data-band="5">&plusmn;5%</button>
+        <button class="chip" data-band="custom">Custom</button>
       </div>
-      <p class="sub" id="npRange" style="margin:9px 0 0"></p>
-      <div class="filters" style="display:grid;gap:8px;margin:10px 0 0">
-        <label id="npLabA">Amount<input id="npA" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
-        <label id="npLabB">Amount<input id="npB" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
+      <div class="npband">
+        <label class="npprice">Min price<input id="npMin" type="number" step="any" min="0" inputmode="decimal"><span class="unit" id="npUnit1"></span></label>
+        <label class="npprice">Max price<input id="npMax" type="number" step="any" min="0" inputmode="decimal"><span class="unit" id="npUnit2"></span></label>
       </div>
+      <div class="rb-slot" id="npBar"></div>
+      <p class="sub" id="npRange" style="margin:8px 0 0"></p>
+
+      <div class="npamts">
+        <label class="npamt"><span class="k" id="npLabA"></span>
+          <span class="in"><input id="npA" type="number" step="any" min="0" placeholder="0" inputmode="decimal"><button class="chip" id="npMaxA">Max</button></span>
+          <span class="sub" id="npBalA"></span></label>
+        <label class="npamt"><span class="k" id="npLabB"></span>
+          <span class="in"><input id="npB" type="number" step="any" min="0" placeholder="0" inputmode="decimal"><button class="chip" id="npMaxB">Max</button></span>
+          <span class="sub" id="npBalB"></span></label>
+      </div>
+
+      <div class="pc-figs" id="npFigs" style="margin-top:10px"></div>
+      <div id="npWarn"></div>
       <div id="npOut" style="margin-top:10px"></div>
       <div class="toolbar" style="margin:10px 0 0">
         <button class="btn ghost" id="npClose">Cancel</button>
@@ -4602,90 +4637,217 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
       </div>
     ${fixedPool ? '' : '</div>'}</div>`;
 
-  let band = 'full';
-  const poolOf = () => pools.find(p => String(p.id) === q('#npPool').value);
+  const A = q('#npA'), B = q('#npB'), MIN = q('#npMin'), MAX = q('#npMax');
+  const priceAt = (p, t) => Math.pow(1.0001, t) * 10 ** (p.decA - p.decB);
 
   // Ticks must land on the pool's own spacing or the contract rejects them, and
-  // the spacing differs per fee tier — 10 on a stable pair, 60 on a volatile
-  // one. Rounding outward rather than to nearest, so a ±20% band is never
+  // the spacing differs per fee tier. Rounding outward, so a ±20% band is never
   // quietly narrower than it says.
   const ticksFor = p => {
     const spacing = p.tickSpacing || 60;
-    const MAX = Math.floor(443580 / spacing) * spacing;
-    if (band === 'full') return { lower: -MAX, upper: MAX };
+    const MAXT = Math.floor(443580 / spacing) * spacing;
+    if (band === 'full') return { lower: -MAXT, upper: MAXT };
+    if (band === 'custom') {
+      const lo = custom.lower ?? (p.tick - 10 * spacing);
+      const hi = custom.upper ?? (p.tick + 10 * spacing);
+      return {
+        lower: Math.max(-MAXT, Math.min(hi - spacing, Math.floor(lo / spacing) * spacing)),
+        upper: Math.min(MAXT, Math.max(lo + spacing, Math.ceil(hi / spacing) * spacing)),
+      };
+    }
     const pct = Number(band) / 100;
     const cur = p.tick ?? 0;
-    // A tick is a 1.0001 step, so a band is log(ratio)/log(1.0001) ticks wide —
-    // and the two sides are NOT the same width. A symmetric tick span around
-    // the price reads as "+50% / −33%", because halving and doubling are not
-    // mirror images on a log scale. Each side is computed from its own ratio so
-    // "±50%" means the price can actually fall by half.
+    // A tick is a 1.0001 step, so each side is computed from its own ratio:
+    // halving and doubling are not mirror images on a log scale, and a
+    // symmetric tick span would read as "+50% / −33%".
     const T = r => Math.log(r) / Math.log(1.0001);
     return {
-      lower: Math.max(-MAX, Math.floor((cur + T(1 - pct)) / spacing) * spacing),
-      upper: Math.min(MAX, Math.ceil((cur + T(1 + pct)) / spacing) * spacing),
+      lower: Math.max(-MAXT, Math.floor((cur + T(1 - pct)) / spacing) * spacing),
+      upper: Math.min(MAXT, Math.ceil((cur + T(1 + pct)) / spacing) * spacing),
     };
   };
 
+  const fig = (k, v, cls = '', sub = '') =>
+    `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${sub ? `<span class="figsub">${sub}</span>` : ''}</div>`;
+
+  // Everything the panel knows, recomputed on every change: the ratio the band
+  // demands, how hard the money works inside it, what share of the pool that
+  // buys, and what the pool's own last 24 hours would have paid a position
+  // that size.
   const paint = () => {
-    const p = poolOf();
+    const p = pool;
     if (!p) return;
     const { lower, upper } = ticksFor(p);
-    const r = depositRatio(sqrtPriceFromX64(p.sqrtX64), lower, upper);
-    q('#npLabA').firstChild.textContent = `${p.symA} `;
-    q('#npLabB').firstChild.textContent = `${p.symB} `;
-    const priceAt = t => Math.pow(1.0001, t) * 10 ** (p.decA - p.decB);
+    const s = sqrtPriceFromX64(p.sqrtX64);
+    const r = depositRatio(s, lower, upper);
+    const lo = priceAt(p, lower), hi = priceAt(p, upper), now = p.priceAB;
+
+    q('#npLabA').textContent = p.symA;
+    q('#npLabB').textContent = p.symB;
+    q('#npUnit1').textContent = q('#npUnit2').textContent = `${p.symB} per ${p.symA}`;
+    if (document.activeElement !== MIN) MIN.value = band === 'full' ? '' : Number(lo.toPrecision(6));
+    if (document.activeElement !== MAX) MAX.value = band === 'full' ? '' : Number(hi.toPrecision(6));
+    MIN.disabled = MAX.disabled = band === 'full';
+
+    // The band, drawn against the price, rather than described in words.
+    const bar = q('#npBar');
+    bar.innerHTML = '';
+    if (band !== 'full') bar.appendChild(rangeBar(lower, upper, p.tick ?? 0));
+
     q('#npRange').innerHTML = band === 'full'
-      ? `Full range: your liquidity works at every price, the way a normal AMM pool does. It earns least per dollar and can never fall out of range &mdash; the safe default, and what most of these positions are.`
-      : `From ${qty(priceAt(lower))} to ${qty(priceAt(upper))} ${esc(p.symB)} per ${esc(p.symA)}, around ${qty(p.priceAB)} now.
-         Ticks ${lower}…${upper} on a spacing of ${p.tickSpacing || 60}. A narrower band earns more per dollar while the price stays inside it and nothing at all once it leaves.`;
-    q('#npRange').innerHTML += ` <br>At this range the pool wants ${(r.shareA * 100).toFixed(1)}% ${esc(p.symA)} and ${(r.shareB * 100).toFixed(1)}% ${esc(p.symB)} by value.`;
+      ? 'Full range: the liquidity works at every price, the way an ordinary AMM pool does. It earns least per dollar and can never fall out of range.'
+      : `${sigfig(lo)} – ${sigfig(hi)} ${esc(p.symB)} per ${esc(p.symA)}, with the price at <b>${sigfig(now)}</b> now.
+         <span class="dim">Ticks ${lower}…${upper}, spacing ${p.tickSpacing || 60}.</span>`;
+
+    const amountA = Number(A.value) || 0, amountB = Number(B.value) || 0;
+    const valueUsd = amountA * (p.priceUsdA || 0) + amountB * (p.priceUsdB || 0);
+    const L = liquidityForAmounts(amountA * 10 ** p.decA, amountB * 10 ** p.decB, s, lower, upper);
+    const poolL = Number(p.liquidity) || 0;
+    const share = L > 0 ? L / (poolL + L) : 0;
+    const conc = concentration(s, lower, upper);
+    // Fees are shared by liquidity in range, not by capital, which is the whole
+    // point of a band — and the reason a narrow one earns more while it lasts.
+    const feesDay = share > 0 && p.vol24 > 0 ? p.vol24 * (lpCut(p) / 10000) * share : 0;
+    const apr = valueUsd > 0 && feesDay > 0 ? feesDay * 365 / valueUsd * 100 : null;
+
+    q('#npFigs').innerHTML =
+      fig('Wants', `${(r.shareA * 100).toFixed(0)} / ${(r.shareB * 100).toFixed(0)}`, '', `${esc(p.symA)} / ${esc(p.symB)} by value`)
+      + fig('Works like', conc ? `${conc < 10 ? conc.toFixed(1) : Math.round(conc)}×` : '1×', conc && conc > 1 ? 'accent' : 'dim',
+        conc ? 'a full-range position of the same size' : 'outside the band, nothing is working')
+      + fig('Share of the pool', share > 0 ? `${(share * 100).toFixed(share >= 1 ? 1 : 2)}%` : '—', '', share > 0 ? 'of the liquidity at this price' : 'enter an amount')
+      + fig('Fees at today’s volume', feesDay > 0 ? usd(feesDay) : '—', feesDay > 0 ? '' : 'dim',
+        apr != null ? `${pct(apr)} a year while in range` : 'from this pool’s last 24 hours');
+
+    const warn = q('#npWarn');
+    warn.innerHTML = !r.inRange
+      ? `<div class="note warn" style="margin-top:10px"><b>This band does not cover the price.</b>
+          You would deposit ${r.side === 'below' ? esc(p.symA) : esc(p.symB)} only, and it earns nothing until the price reaches
+          ${r.side === 'below' ? sigfig(lo) : sigfig(hi)}. That is a limit order, not a position.</div>`
+      : share > 0.5
+        ? `<div class="note warn" style="margin-top:10px"><b>You would be most of this pool.</b>
+            Every trade would move the price against you, and the fees you collect would largely be your own.</div>`
+        : '';
   };
 
-  q('#npPool').onchange = paint;
-  box.querySelectorAll('[data-band]').forEach(b => b.onclick = () => {
-    box.querySelectorAll('[data-band]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    band = b.dataset.band; paint();
-  });
-  q('#npClose').onclick = () => { box.innerHTML = ''; };
-
-  const A = q('#npA'), B = q('#npB');
+  // Typing one side fills the other, in the ratio the band demands. Typing an
+  // amount larger than the wallet holds is left alone: it is a quote, and the
+  // signature is where a balance actually matters.
   const mirror = (from, to, keyFrom) => {
-    const p = poolOf(); if (!p) return;
+    const p = pool;
     const { lower, upper } = ticksFor(p);
     const r = depositRatio(sqrtPriceFromX64(p.sqrtX64), lower, upper);
     const [pxF, pxT, shF, shT] = keyFrom === 'A'
       ? [p.priceUsdA, p.priceUsdB, r.shareA, r.shareB]
       : [p.priceUsdB, p.priceUsdA, r.shareB, r.shareA];
     const v = Number(from.value);
-    if (!(v > 0) || !(pxF > 0) || !(pxT > 0) || !(shF > 0)) return;
-    to.value = ((v * pxF / shF * shT) / pxT).toPrecision(8).replace(/0+$/, '');
+    if (!(v > 0)) { to.value = ''; paint(); return; }
+    if (!(shF > 0)) { to.value = ''; paint(); return; }          // single-sided band
+    if (!(pxF > 0) || !(pxT > 0)) { paint(); return; }
+    to.value = Number(((v * pxF / shF * shT) / pxT).toPrecision(8));
+    paint();
   };
-  A.oninput = () => mirror(A, B, 'A');
-  B.oninput = () => mirror(B, A, 'B');
-  paint();
+
+  // What the wallet actually holds, so "Max" means something.
+  const loadBalances = async () => {
+    const me = wallet.account() || account;
+    if (!me) return;
+    const p = pool;
+    try {
+      const [a, b] = await Promise.all([
+        balanceOf(me, p.tokenA.split('@')[1], p.symA).catch(() => null),
+        balanceOf(me, p.tokenB.split('@')[1], p.symB).catch(() => null),
+      ]);
+      if (pool !== p) return;
+      balA = a; balB = b;
+      q('#npBalA').textContent = a != null ? `${qty(a)} in your wallet` : '';
+      q('#npBalB').textContent = b != null ? `${qty(b)} in your wallet` : '';
+    } catch { /* balances are a convenience, not a requirement */ }
+  };
+
+  const setPool = p => {
+    pool = p;
+    custom = { lower: null, upper: null };
+    // Fee tiers for the pair, with the pooled value beside each: the tier with
+    // no liquidity in it is a choice people make by accident.
+    const tiers = tiersFor(p);
+    q('#npTiers').innerHTML = tiers.length > 1
+      ? `<span class="sub">Fee</span>` + tiers.map(t => `<button class="chip" data-tier="${esc(t.id)}" aria-pressed="${String(t.id === p.id)}">
+          ${(t.feeBps / 100).toFixed(2)}% <span class="dim">${usd(t.tvlReal)}</span></button>`).join('')
+      : '';
+    q('#npTiers').querySelectorAll('[data-tier]').forEach(b => b.onclick = () => {
+      const next = state.pools.find(x => x.dex === 'alcor' && String(x.id) === b.dataset.tier);
+      if (next) { setPool(next); loadBalances(); }
+    });
+    paint();
+  };
+
+  q('#npPool').onchange = () => {
+    const p = pools.find(x => String(x.id) === q('#npPool').value);
+    if (p) { setPool(p); loadBalances(); }
+  };
+  box.querySelectorAll('[data-band]').forEach(b => b.onclick = () => {
+    box.querySelectorAll('[data-band]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    band = b.dataset.band;
+    if (band === 'custom' && custom.lower == null) {
+      const t = ticksFor(pool);
+      custom = { lower: t.lower, upper: t.upper };
+    }
+    paint();
+    if (A.value) mirror(A, B, 'A');
+  });
+
+  // Typing a price picks the nearest tick on the pool's spacing, and says so by
+  // snapping the field to the price that tick actually stands for.
+  const readPrice = (el, which) => {
+    const v = Number(el.value);
+    if (!(v > 0)) return;
+    band = 'custom';
+    box.querySelectorAll('[data-band]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.band === 'custom')));
+    const spacing = pool.tickSpacing || 60;
+    const raw = v / 10 ** (pool.decA - pool.decB);
+    const t = Math.round(Math.log(raw) / Math.log(1.0001) / spacing) * spacing;
+    const cur = ticksFor(pool);
+    custom = which === 'lower' ? { lower: t, upper: cur.upper } : { lower: cur.lower, upper: t };
+    paint();
+    if (A.value) mirror(A, B, 'A');
+  };
+  MIN.onchange = () => readPrice(MIN, 'lower');
+  MAX.onchange = () => readPrice(MAX, 'upper');
+
+  A.oninput = debounce(() => mirror(A, B, 'A'), 120);
+  B.oninput = debounce(() => mirror(B, A, 'B'), 120);
+  q('#npMaxA').onclick = () => { if (balA != null) { A.value = balA; mirror(A, B, 'A'); } };
+  q('#npMaxB').onclick = () => { if (balB != null) { B.value = balB; mirror(B, A, 'B'); } };
+  q('#npClose').onclick = () => { box.innerHTML = ''; };
+
+  setPool(startPool);
+  loadBalances();
 
   q('#npGo').onclick = () => {
-    const p = poolOf();
+    const p = pool;
     const out = q('#npOut');
     if (!p) { out.innerHTML = '<div class="err">Pick a pool.</div>'; return; }
     const amountA = Number(A.value) || 0, amountB = Number(B.value) || 0;
     if (!(amountA > 0) && !(amountB > 0)) { out.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    if (balA != null && amountA > balA + 1e-9) { out.innerHTML = `<div class="err">You hold ${qty(balA)} ${esc(p.symA)}.</div>`; return; }
+    if (balB != null && amountB > balB + 1e-9) { out.innerHTML = `<div class="err">You hold ${qty(balB)} ${esc(p.symB)}.</div>`; return; }
     const { lower, upper } = ticksFor(p);
     const built = buildAddLiquidity({ pool: p, tickLower: lower, tickUpper: upper, amountA, amountB, me: account });
     const worth = amountA * (p.priceUsdA || 0) + amountB * (p.priceUsdB || 0);
+    const r = depositRatio(sqrtPriceFromX64(p.sqrtX64), lower, upper);
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      Open a ${band === 'full' ? 'full-range' : '±' + band + '%'} position in <b>${esc(p.symA)}/${esc(p.symB)}</b> at ${(p.feeBps / 100).toFixed(2)}%, with
-      <b>${qty(amountA)} ${esc(p.symA)}</b> and <b>${qty(amountB)} ${esc(p.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''}, ticks ${lower}…${upper}.
-      <br><span class="dim">${built.actions.length} actions in one signature.</span>
-      ${band !== 'full' ? '<br><span class="dim">Stops earning the moment the price leaves the band.</span>' : ''}
+      Open a ${band === 'full' ? 'full-range' : band === 'custom' ? 'custom' : '±' + band + '%'} position in <b>${esc(p.symA)}/${esc(p.symB)}</b> at ${(p.feeBps / 100).toFixed(2)}%, with
+      <b>${qty(amountA)} ${esc(p.symA)}</b> and <b>${qty(amountB)} ${esc(p.symB)}</b>${worth > 0 ? ` (${usd(worth)})` : ''}.
+      <br><span class="dim">${band === 'full' ? 'Ticks' : `${sigfig(priceAt(p, lower))} – ${sigfig(priceAt(p, upper))} ${esc(p.symB)} per ${esc(p.symA)}, ticks`} ${lower}…${upper} &middot; ${built.actions.length} actions in one signature.</span>
+      ${!r.inRange ? '<br><span class="neg">The price is outside this band: this deposits one token and earns nothing until the price reaches it.</span>'
+        : band !== 'full' ? '<br><span class="dim">Stops earning the moment the price leaves the band.</span>' : ''}
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="npConfirm">Sign and open</button></div></div>`;
     q('#npConfirm').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const r = await wallet.transact(built.actions, { verify: true });
+        const res = await wallet.transact(built.actions, { verify: true });
         out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Opened.</b> Load your positions to see it.
-          <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
+          <br><a class="mono" style="font-size:11px" href="${trxUrl(res.id)}" target="_blank" rel="noopener">${res.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
         const m = String(e.message || e);
         out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;

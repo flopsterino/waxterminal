@@ -1352,3 +1352,21 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
 .bannerad.empty .bannertag { padding: 0; color: var(--accent-ink); }
 .bannerad:hover { border-color: var(--line-2); text-decoration: none; }
 @media (max-width: 700px) { .bannerwrap { padding: 0 10px; } }
+
+/* --- open a position ---------------------------------------------------- */
+.npband { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.npprice { display: flex; flex-direction: column; gap: 3px; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.npprice input { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 7px 9px; color: var(--ink); font-family: var(--font-data); font-size: 13px; width: 100%; }
+.npprice input:disabled { opacity: .45; }
+.npprice .unit { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10.5px; }
+.npcard .rb-slot { margin-top: 10px; }
+.npamts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.npamt { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.npamt .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 600; }
+.npamt .in { display: flex; gap: 6px; align-items: center; }
+.npamt input { flex: 1; min-width: 0; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 7px 9px; color: var(--ink); font-family: var(--font-data); font-size: 13px; }
+#npFigs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 700px) { .npband, .npamts { grid-template-columns: 1fr; } #npFigs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
