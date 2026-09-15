@@ -917,152 +917,135 @@ function renderOverview() {
     <div class="section" id="ovWatchSec" hidden><h3>Your watchlist <span class="dim">— what moved since you last looked</span></h3>
       <div class="card"><div id="ovWatch"></div></div>
     </div>
-    <div class="section"><h3>Farms</h3>
-      <div class="card"><h3>Best rates <span class="dim">— what they pay today</span>
-        <span class="hero">${bestApr.length} of ${groups.length} farms</span></h3>
-        <div id="ovBest"></div></div>
-      <div class="grid g2">
-        <div class="card"><h3>Biggest daily payouts
+    <div class="ovgrid">
+      <div class="card"><h3>Top farms <span class="dim">&mdash; farm APR</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
+      <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
+      <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
+      <div class="card"><h3>Gainers <span class="dim">&mdash; 24h</span></h3><div id="ovUp"></div></div>
+      <div class="card"><h3>Losers <span class="dim">&mdash; 24h</span></h3><div id="ovDown"></div></div>
+      <div class="card"><h3>Ending soon <span class="dim">&mdash; farms with a date</span></h3><div id="ovEnding"></div></div>
+    </div>
+    <div class="grid g2" style="margin-top:10px">
+      <div class="card"><h3>WAX <span class="dim" id="ovWaxPx"></span>
+          <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
+        <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
+        <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
+      <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
+    </div>
+    <div class="grid g2" style="margin-top:10px">
+      <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
+      <div class="card"><h3>Biggest daily payouts
           <span style="margin-left:auto" class="switchwrap">
             <span class="switchlabel">risky</span>
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
-          </span></h3><div id="ovRew"></div></div>
-        <div class="card"><h3>Where the rates sit <span class="dim">— ${withApr.length} farms</span></h3><div id="ovApr"></div></div>
-      </div>
-    </div>
-    <div class="section"><h3>Where the liquidity is</h3>
-      <div class="grid g2">
-        <div class="card"><h3>Deepest pools <span class="hero" id="ovTopHero"></span></h3><div id="ovTop"></div></div>
-        <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees earned in 7 days</span></h3><div id="ovDex"></div></div>
-      </div>
-    </div>
-    <div class="section"><h3>Tokens</h3>
-      <div class="grid g2">
-        <div class="card"><h3>Most traded <span class="dim">— 24h volume</span></h3><div id="ovTokVol"></div></div>
-        <div class="card"><h3>Most pooled <span class="dim">— value behind the token</span></h3><div id="ovTokTvl"></div></div>
-      </div>
-    </div>
-    <div class="section"><h3>Market</h3>
-      <div class="grid g2">
-        <div class="card"><h3>WAX price <span class="dim">— from Alcor pool #314 state changes</span>
-          <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
-          <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
-          <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
-        <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovFee"></div></div>
-      </div>
-    </div>
-    <div class="section"><h3>Tracked over time</h3>
-      <div class="card"><h3>Total value locked <span class="dim">— one point per daily snapshot</span></h3><div id="ovHist"></div></div>
+          </span></h3><div id="ovPay"></div></div>
     </div>`;
 
-  // Best APRs first: it is the question people open a farm page to answer.
-  const bestBox = $('#ovBest');
-  if (!bestApr.length) bestBox.innerHTML = '<div class="chart-empty">No farm currently has both real rewards and real staked capital.</div>';
-  else {
-    bestBox.appendChild(bars(bestApr.slice(0, 10).map(g => ({
-      label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
-      sub: `${usd(g.pool?.tvlReal || 0)} pool`,
-      value: g.aprAt,
-      note: `you'd own ${(g.share * 100).toFixed(0)}% · pool ${usd(g.pool?.tvlReal || 0)} · pays ${[...new Set(g.rewards.map(r => r.symbol))].slice(0, 3).join(', ')}`,
-      go: () => openPool(g.key),
-    })), { fmt: v => v.toFixed(0) + '%', color: 'var(--c3)' }));
-  }
+  // The front page is a set of ranked lists, and a ranked list of numbers is a
+  // table. These were bar charts: a bar's length is a fine picture of one
+  // number and a poor way to carry three, and every one of them hid the rate,
+  // the size and the flow behind a hover. Each row opens what it names.
+  const pairCell = p2 => `<span data-pm="${esc(p2.tokenA)}|${esc(p2.symA)}|${esc(p2.tokenB)}|${esc(p2.symB)}"></span><span class="pairbig">${esc(p2.symA)}/${esc(p2.symB)}</span>`;
+  const tokCell = t => `<span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>`;
+  const mini = (id, rows, cols, empty) => {
+    const el = $(id);
+    if (!el) return;
+    el.innerHTML = !rows.length ? `<div class="chart-empty">${esc(empty)}</div>`
+      : `<table class="minitab"><thead><tr>${cols.map(c => `<th class="${c.r ? 'r' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${
+        rows.map(r => `<tr class="clickable" ${r.pool ? `data-poolkey="${esc(r.pool)}"` : `data-tokid="${esc(r.tok)}"`}>${
+          cols.map(c => `<td class="${c.r ? 'r num' : ''} ${c.cls ? c.cls(r.x) : ''}">${c.v(r.x)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    fillMarks(el);
+  };
+  const gKey = g => g.key;
+  const pKey = p2 => `${p2.dex}:${p2.id}`;
+
+  mini('#ovFarms', bestApr.slice(0, 10).map(g => ({ pool: gKey(g), x: g })), [
+    { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
+    { h: 'Farm APR', r: true, v: g => `<span class="apr">${pct(g.aprAt)}</span>` },
+    { h: 'Fee APR', r: true, v: g => pct(feeApr(g.pool)), cls: g => feeApr(g.pool) > 0 ? '' : 'dim' },
+    { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
+  ], 'No farm currently has both real rewards and real staked capital.');
+
+  const toks = tokenTable().filter(t => t.depth1 >= 5);
+  const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 10);
+  mini('#ovTraded', byVol.map(t => ({ tok: t.id, x: t })), [
+    { h: 'Token', v: tokCell },
+    { h: 'Price', r: true, v: t => px(t.price) },
+    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
+    { h: 'Volume', r: true, v: t => usd(t.vol24) },
+  ], 'Volume arrives with the next snapshot.');
+
+  // What the pools actually PAID their providers last week, which is the
+  // question someone with money to place has.
+  const paid = pools
+    .map(p2 => {
+      const perDay = p2.vol7d > 0 ? p2.vol7d / 7 : (p2.vol24 > 0 ? p2.vol24 : 0);
+      return { p: p2, fees: perDay * 7 * (lpCut(p2) / 10000) };
+    })
+    .filter(x => x.fees > 0)
+    .sort((a, b) => b.fees - a.fees)
+    .slice(0, 10);
+  mini('#ovPaid', paid.map(x => ({ pool: pKey(x.p), x })), [
+    { h: 'Pool', v: x => pairCell(x.p) + tierTag(x.p) },
+    { h: 'Fees 7d', r: true, v: x => usd(x.fees) },
+    { h: 'Fee APR', r: true, v: x => pct(feeApr(x.p)) },
+    { h: 'Liquidity', r: true, v: x => usd(x.p.tvlReal) },
+  ], 'No trading fees recorded this week.');
+
+  // Movers among tokens with a real market. A token with forty dollars behind
+  // it moves 30% on one trade, and a gainers list made of those is noise.
+  const movers = toks.filter(t => t.change24 != null && isFinite(t.change24) && t.tvl >= 100 && Math.abs(t.change24) >= 0.05);
+  mini('#ovUp', [...movers].filter(t => t.change24 > 0).sort((a, b) => b.change24 - a.change24).slice(0, 6).map(t => ({ tok: t.id, x: t })), [
+    { h: 'Token', v: tokCell },
+    { h: 'Price', r: true, v: t => px(t.price) },
+    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
+  ], 'Nothing with a real market rose today.');
+  mini('#ovDown', [...movers].filter(t => t.change24 < 0).sort((a, b) => a.change24 - b.change24).slice(0, 6).map(t => ({ tok: t.id, x: t })), [
+    { h: 'Token', v: tokCell },
+    { h: 'Price', r: true, v: t => px(t.price) },
+    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
+  ], 'Nothing with a real market fell today.');
+
+  // Yield with a date on it: a rate you can still take, and then cannot.
+  const now2 = Date.now();
+  const ending = groups
+    .filter(g => g.endsAt && g.endsAt > now2 && g.endsAt < now2 + 45 * 86400e3 && g.rewardRealDay > 0)
+    .sort((a, b) => a.endsAt - b.endsAt)
+    .slice(0, 6);
+  mini('#ovEnding', ending.map(g => ({ pool: gKey(g), x: g })), [
+    { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
+    { h: 'Ends', r: true, v: g => { const d = (g.endsAt - now2) / 86400e3; return d < 1 ? Math.round(d * 24) + 'h' : Math.round(d) + 'd'; }, cls: g => (g.endsAt - now2) < 7 * 86400e3 ? 'neg' : '' },
+    { h: 'Pays', r: true, v: g => usd(g.rewardRealDay) + '<span class="dim">/d</span>' },
+    { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
+  ], 'No farm ends in the next six weeks.');
 
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
   renderWatchlist(groups);
   renderPromoted();
+  mini('#ovDeep', top.map(p2 => ({ pool: pKey(p2), x: p2 })), [
+    { h: 'Pool', v: p2 => pairCell(p2) + tierTag(p2) },
+    { h: 'Liquidity', r: true, v: p2 => usd(p2.tvlReal) },
+    { h: 'Vol 24h', r: true, v: p2 => p2.vol24 > 0 ? usd(p2.vol24) : '—', cls: p2 => p2.vol24 > 0 ? '' : 'dim' },
+    { h: 'Fee APR', r: true, v: p2 => pct(feeApr(p2)), cls: p2 => feeApr(p2) > 0 ? '' : 'dim' },
+  ], 'No pools priced yet.');
 
-  $('#ovTopHero').textContent = usd(top.reduce((s, p) => s + (p.tvlReal || 0), 0)) + ' in the top 8';
-  $('#ovTop').appendChild(bars(top.map(p => {
-    const c = state.depth.get(p.tokenA)?.topPartner, d2 = state.depth.get(p.tokenB)?.topPartner;
-    return { label: `${p.symA}/${p.symB}`, value: p.tvlReal || 0,
-      note: `${(p.feeBps / 100).toFixed(2)}% fee · ${p.vol24 > 0 ? usd(p.vol24) + ' traded' : 'no volume'}`,
-      go: () => openPool(`${p.dex}:${p.id}`) };
-  }), { fmt: usd }));
-
-  const toks = tokenTable().filter(t => t.depth1 >= 5);
-  const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 8);
-  const byTvl = [...toks].sort((a, b) => b.tvl - a.tvl).slice(0, 8);
-  $('#ovTokVol').appendChild(byVol.length
-    ? bars(byVol.map(t => ({ label: t.symbol, value: t.vol24, sub: `${t.pools} pools &middot; ${usd(t.depth1)} tradeable`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c2)' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Volume arrives with the next daily snapshot.' }));
-  $('#ovTokTvl').appendChild(bars(byTvl.map(t => ({ label: t.symbol, value: t.tvl, sub: `${t.pools} pools &middot; ${usd(t.depth1)} tradeable at 1%`, go: () => openToken(t.id) })), { fmt: usd, color: 'var(--c1)' }));
-
-  // What the pools actually PAID their providers last week, which is the
-  // question someone with money to place has. It replaced a donut of which
-  // venue holds what share of the value — true, and nothing anyone can act on.
-  const paid = pools
-    .map(p => {
-      const perDay = p.vol7d > 0 ? p.vol7d / 7 : (p.vol24 > 0 ? p.vol24 : 0);
-      return { p, fees: perDay * 7 * (lpCut(p) / 10000) };
-    })
-    .filter(x => x.fees > 0)
-    .sort((a, b) => b.fees - a.fees)
-    .slice(0, 8);
-  $('#ovDex').appendChild(paid.length
-    ? bars(paid.map(({ p, fees }) => ({
-        label: `${p.symA}/${p.symB} ${(p.feeBps / 100).toFixed(2)}%`,
-        value: fees,
-        sub: `${usd(p.tvlReal)} pooled &middot; ${pct(feeApr(p))} a year at that rate`,
-        go: () => openPool(`${p.dex}:${p.id}`),
-      })), { fmt: usd, color: 'var(--c3)' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No trading fees recorded this week.' }));
-
-  // A farm emitting more in a day than its pool is worth is not a payout, it is
-  // a token about to be printed into the ground. BUZZ/SHIL pays $25.28 a day
-  // into a pool holding $0.53 — 48 times its own value, every day — and topping
-  // this chart with it told readers the opposite of the truth.
+  // A farm emitting more in a day than its pool is worth is a token being
+  // printed into the ground, not a payout — a toggle, not a decision made for
+  // the reader.
   const sane = g => g.pool?.tvlReal > 0 && g.rewardRealDay < g.pool.tvlReal * 0.5;
-  // Farms emitting more in a day than their pool is worth were hidden outright.
-  // They are worth seeing — they are often the highest number on the page — so
-  // they are a toggle rather than a decision made for the reader.
   const payers = groups.filter(g => g.rewardRealDay > 0 && (showRisky || sane(g)))
     .sort((a, b) => b.rewardRealDay - a.rewardRealDay).slice(0, 8);
-  const runaway = groups.filter(g => g.rewardRealDay > 0 && !sane(g)).length;
-  $('#ovRew').appendChild(payers.length
-    ? bars(payers.map(g => ({
-        label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : g.poolId,
-        value: g.rewardRealDay,
-        note: `${usd(g.rewardUsdDay)} at face value · ${g.tokenCount} token${g.tokenCount === 1 ? '' : 's'}`,
-        go: () => openPool(g.key),
-      })), { fmt: usd, color: 'var(--c2)' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm pays a reward with real liquidity behind it.' }));
-  if (runaway) {
-    const n = document.createElement('p');
-    n.className = 'sub'; n.style.marginTop = '10px';
-    n.textContent = showRisky
-      ? `Including ${runaway} farm${runaway === 1 ? '' : 's'} that emit more in a day than their pool is worth.`
-      : `${runaway} farm${runaway === 1 ? '' : 's'} hidden: each emits more in a day than its pool is worth.`;
-    $('#ovRew').appendChild(n);
-  }
+  mini('#ovPay', payers.map(g => ({ pool: gKey(g), x: g })), [
+    { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
+    { h: 'Pays / day', r: true, v: g => usd(g.rewardRealDay) },
+    { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
+    { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
+  ], 'No farm pays a reward with real liquidity behind it.');
   const rt = $('#riskyToggle');
   if (rt) rt.onclick = () => { showRisky = !showRisky; rt.setAttribute('aria-checked', String(showRisky)); renderOverview(); };
-
-  $('#ovApr').appendChild(withApr.length
-    ? histogram(withApr.map(g => g.aprAt), { fmtX: v => v.toFixed(0) + '%', color: 'var(--c3)', label: 'APR distribution' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No computed APRs yet.' }));
-
-  // Alcor only. Its fee is a real field on the pool row (0.05 / 0.30 / 1.00%);
-  // the other venues charge one flat rate that this terminal takes from their
-  // documentation, and charting an assumption next to a fact invents a "0.10%
-  // tier" that does not exist.
-  // Yield with a date on it. A farm ending in nine days is a rate you can still
-  // take and then cannot, and nothing on the site said so — where the previous
-  // chart here reported which fee tier holds the most value, which is a fact
-  // about Alcor's tier design rather than about anyone's money.
-  const now2 = Date.now();
-  const ending = groups
-    .filter(g => g.endsAt && g.endsAt > now2 && g.endsAt < now2 + 45 * 86400e3 && g.rewardRealDay > 0)
-    .sort((a, b) => b.rewardRealDay - a.rewardRealDay)
-    .slice(0, 8);
-  $('#ovFee').appendChild(ending.length
-    ? bars(ending.map(g => ({
-        label: g.pool ? `${g.pool.symA}/${g.pool.symB}` : String(g.poolId),
-        value: g.rewardRealDay,
-        sub: `${Math.max(0, Math.round((g.endsAt - now2) / 86400e3))} days left &middot; ${usd(g.stakedReal ?? g.stakedUsd)} staked`,
-        go: () => openFarm(g.key),
-      })), { fmt: v => usd(v) + '/day', color: 'var(--c4)' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'No farm ends in the next six weeks.' }));
+  box.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+  const wp = $('#ovWaxPx');
+  if (wp && state.waxUsd) wp.textContent = px(state.waxUsd);
 
   if (SNAPSHOT_ONLY) {
     $('#ovWax').innerHTML = '<div class="chart-empty">Snapshot mode — chain history not fetched.</div>';

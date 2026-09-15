@@ -1275,3 +1275,23 @@ td.rank { font-size: 11px; }
 .apr.thin { color: var(--ink-2); font-weight: 500; text-decoration: underline dotted var(--line-2); text-underline-offset: 3px; cursor: help; }
 tbody tr.faded td { opacity: 1; }
 tbody tr.faded .pairbig, tbody tr.faded .apr { opacity: .8; }
+
+/* --- overview: a wall of ranked tables --------------------------------- */
+.ovgrid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+.ovgrid > .card { min-width: 0; }
+.minitab { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+.minitab th { text-align: left; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  font-weight: 500; padding: 0 0 6px; background: none; position: static; border: 0; white-space: nowrap; }
+.minitab th.r, .minitab td.r { text-align: right; }
+.minitab td { padding: 0 0; height: 34px; border-bottom: 0; border-top: 1px solid var(--line); white-space: nowrap; }
+.minitab td:first-child { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.minitab tbody tr:hover td { background: var(--surface-2); }
+.minitab .pairbig { font-size: 12.5px; }
+.minitab .pairmark { margin-right: 6px; }
+.card h3 .more { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--accent-ink); cursor: pointer; white-space: nowrap; }
+.card h3 .more:hover { text-decoration: underline; }
+@media (max-width: 700px) {
+  .ovgrid { grid-template-columns: 1fr; }
+  .minitab { font-size: 12px; }
+  .minitab td:first-child { max-width: 130px; }
+}
