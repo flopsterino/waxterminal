@@ -29,7 +29,7 @@ import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
 import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, VOTES } from './ratings.js';
-import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT } from './cheese.js';
+import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT, bannerCalendar, buildBannerRent, buildBannerEdit, RENT_LEAD_SEC, JOIN_LEAD_SEC } from './cheese.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity, liquidityForAmounts, concentration } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -978,10 +978,10 @@ function keepScroll(fn) {
 const BASE = new URL(import.meta.url).pathname.replace(/js\/app\.js$/, '');
 const VIEW_PATHS = { overview: '', farms: 'markets', pools: 'markets', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', pool: 'market', farm: 'market', token: 'token',
-  stake: 'farm', account: 'wallet' };
+  stake: 'farm', account: 'wallet', ads: 'advertise' };
 const PATH_VIEWS = { '': 'overview', markets: 'farms', pools: 'farms', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', market: 'pool', token: 'token', farm: 'stake',
-  account: 'wallet', overview: 'overview', farms: 'farms' };
+  account: 'wallet', overview: 'overview', farms: 'farms', advertise: 'ads' };
 // @ and : are legal in a path and are half of what a WAX id looks like:
 // /token/CHEESE@cheeseburger reads, /token/CHEESE%40cheeseburger does not.
 const encPath = v => encodeURIComponent(v).replace(/%40/g, '@').replace(/%3A/gi, ':');
@@ -1020,6 +1020,7 @@ function routeFromHash() {
   if (view === 'stake' && arg) { openStake(arg); return true; }
   if (view === 'staking') { show('staking'); renderStaking(); return true; }
   if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
+  if (view === 'ads') { show('ads'); renderAds(); return true; }
   if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'staking'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
@@ -2852,7 +2853,8 @@ async function runStakeTx(box, actions, okMsg) {
     box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft);margin-top:10px"><b>${esc(okMsg)}</b>
       <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
     stakeRows = null;
-  } catch (e) { box.innerHTML = `<div style="margin-top:10px">${txError(e)}</div>`; }
+    return true;
+  } catch (e) { box.innerHTML = `<div style="margin-top:10px">${txError(e)}</div>`; return false; }
 }
 
 const forPeriod = sec => {
@@ -2905,9 +2907,153 @@ async function renderBanner() {
   bannerMarkup = `<div class="card bannerslot${tiles.length ? '' : ' empty'}">
     <div class="bannerhead"><span class="sponsored">Sponsored</span>
       <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}` : 'this CheeseHub banner spot is free today'}</span>
-      <a class="more" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">${tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
+      <a class="more" href="${routePath('ads')}" data-ads>${tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
     ${tiles.length ? `<div class="bannertiles">${tiles.join('')}</div>` : ''}</div>`;
   paintBanners();
+}
+
+// ------------------------------------------------------------- ADVERTISE ---
+// Renting the banner slot, here rather than a link away. The same contract
+// CheeseHub sells it from, so a slot bought here runs on both sites.
+const adsPick = new Map();          // `${time}:${position}` -> 'e' | 's' | 'j'
+let adsMode = 'e';
+const dayLabel = t => new Date(t * 1000).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+const cidOf = v => {
+  const m = /(?:\/ipfs\/|^)((?:Qm|baf)[A-Za-z0-9]+)/.exec(String(v || '').trim());
+  return m ? m[1] : '';
+};
+
+async function renderAds() {
+  const out = $('#adsOut');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the banner calendar…</span></div>';
+  let cal;
+  try { cal = await bannerCalendar(); } catch { out.innerHTML = '<div class="err">The banner contract could not be read right now.</div>'; return; }
+  const me = wallet.account();
+  const nowS = Date.now() / 1000;
+  const wax = units => `${(units / 1e8).toLocaleString(undefined, { maximumFractionDigits: 2 })} WAX`;
+  const times = [...new Set(cal.slots.map(x => x.time))];
+  const slotAt = (t, p) => cal.slots.find(x => x.time === t && x.position === p);
+  // What a reader can do with a slot, which is what the button says.
+  const status = sl => {
+    if (!sl) return { k: 'none', label: 'No slot' };
+    const mine = me && (sl.user === me || sl.sharedUser === me);
+    if (mine) return { k: 'mine', label: 'Yours' };
+    if (sl.time <= nowS) return { k: 'live', label: sl.user ? 'Running now' : 'Running unsold' };
+    if (!sl.user) return sl.time >= nowS + RENT_LEAD_SEC ? { k: 'free', label: 'Free' } : { k: 'soon', label: 'Closed · under 48h' };
+    if (sl.shared && !sl.sharedUser && sl.time >= nowS + JOIN_LEAD_SEC) return { k: 'join', label: 'Join shared' };
+    return { k: 'taken', label: sl.shared ? (sl.sharedUser ? 'Shared, full' : 'Shared') : 'Taken' };
+  };
+  // Picks that no longer make sense after a refresh are dropped.
+  for (const [k, mode] of adsPick) {
+    const [t, p] = k.split(':').map(Number);
+    const st = status(slotAt(t, p)).k;
+    if (!(st === 'free' || (st === 'join' && mode === 'j'))) adsPick.delete(k);
+  }
+
+  const mySlots = me ? cal.slots.filter(x => x.user === me || x.sharedUser === me) : [];
+  out.innerHTML = `
+    <div class="card adsintro">
+      <div class="adsfacts">
+        <div><span class="k">A spot for a day</span><b>${wax(cal.priceUnits)}</b></div>
+        <div><span class="k">Shared, two banners alternate</span><b>${wax(cal.sharedUnits)}</b></div>
+        <div><span class="k">Runs</span><b>24h from 14:00 UTC</b></div>
+        <div><span class="k">Book</span><b>48h ahead</b><span class="dim"> &middot; 12h to join a shared spot</span></div>
+      </div>
+      <p class="sub" style="margin:10px 0 0">Two spots a day, shown on CheeseHub and on every page here. Paid on chain to <span class="mono">cheesebannad</span>, CheeseHub&rsquo;s contract. Images are 580&times;150.</p>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>Pick your days
+        <span class="seg" role="radiogroup" id="adsMode" style="margin-left:auto">
+          <button role="radio" data-mode="e" aria-checked="${adsMode === 'e'}">Whole spot</button>
+          <button role="radio" data-mode="s" aria-checked="${adsMode === 's'}">Shared</button>
+        </span></h3>
+      <div class="adsgrid">${times.map(t => `<div class="adsday">
+          <div class="adsdate"><b>${esc(dayLabel(t))}</b></div>
+          ${[1, 2].map(pos => {
+            const sl = slotAt(t, pos), st = status(sl), key = `${t}:${pos}`, picked = adsPick.has(key);
+            const can = st.k === 'free' || st.k === 'join';
+            const price = st.k === 'join' ? cal.sharedUnits : adsMode === 'e' ? cal.priceUnits : cal.sharedUnits;
+            return `<button class="adsslot ${st.k}${picked ? ' picked' : ''}" data-slot="${key}" data-kind="${st.k}" ${can ? '' : 'disabled'}
+              title="Spot ${pos}${sl?.user ? ` · ${esc(sl.user)}${sl.sharedUser ? ' & ' + esc(sl.sharedUser) : ''}` : ''}">
+              <span class="pos">${pos}</span><span class="st">${st.label}</span>${can ? `<span class="pr">${wax(price)}</span>` : ''}</button>`;
+          }).join('')}
+        </div>`).join('')}</div>
+      <div class="adsbar">
+        <span id="adsSum" class="dim">Pick one or more free spots.</span>
+        <button class="btn" id="adsRent" disabled>Rent</button>
+      </div>
+      <div id="adsSteps"></div>
+    </div>
+
+    ${me ? `<div class="card" style="margin-top:12px"><h3>Your spots <span class="dim">&mdash; set the banner and where it links</span></h3>
+      ${mySlots.length ? `<div class="adsmine">${mySlots.map(x => {
+        const secondary = x.sharedUser === me && x.user !== me;
+        const img = secondary ? x.sharedImg : x.img;
+        return `<label class="adsmineRow"><input type="checkbox" class="adsminepick" data-t="${x.time}" data-p="${x.position}" data-sec="${secondary ? 1 : 0}" ${img ? '' : 'checked'} ${x.suspended ? 'disabled' : ''}>
+          <span><b>${esc(dayLabel(x.time))}</b> &middot; spot ${x.position}${x.shared ? ' &middot; shared' : ''}</span>
+          <span class="${img ? '' : 'warnish'}">${x.suspended ? 'suspended by CheeseHub' : img ? 'banner set' : 'no banner yet'}</span></label>`;
+      }).join('')}</div>
+      <div class="filters adsform">
+        <label>Banner image &mdash; IPFS CID or link<input id="adsCid" placeholder="bafy… or Qm…" autocomplete="off" spellcheck="false"></label>
+        <label>Where it links<input id="adsUrl" placeholder="https://" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="adspreview" id="adsPreview" hidden></div>
+      <p class="sub" style="margin:8px 0 0">Upload a 580&times;150 image to IPFS (Pinata&rsquo;s free plan works) and paste its CID. Saving writes it to every spot ticked above; your account pays the few bytes of RAM it takes.</p>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="adsSave">Save banner</button></div>
+      <div id="adsSaveSteps"></div>`
+      : '<p class="sub" style="margin:0">You have no upcoming spots.</p>'}</div>`
+    : '<div class="card" style="margin-top:12px"><p class="sub" style="margin:0">Connect a wallet to rent a spot or set your banner.</p></div>'}`;
+
+  const sum = () => {
+    const picks = [...adsPick].map(([k, mode]) => { const [time, position] = k.split(':').map(Number); return { time, position, mode }; });
+    const { actions, totalWax } = picks.length ? buildBannerRent({ account: me || 'eosio.null', picks, priceUnits: cal.priceUnits }) : { actions: [], totalWax: 0 };
+    const el = $('#adsSum'), btn = $('#adsRent');
+    if (el) el.innerHTML = picks.length
+      ? `<b>${picks.length} spot-day${picks.length === 1 ? '' : 's'}</b> &middot; ${totalWax.toLocaleString(undefined, { maximumFractionDigits: 2 })} WAX${actions.length > 1 ? ` &middot; ${actions.length} payments in one transaction` : ''}`
+      : 'Pick one or more free spots.';
+    if (btn) btn.disabled = !picks.length;
+    return picks;
+  };
+  out.querySelectorAll('#adsMode [data-mode]').forEach(b => b.onclick = () => {
+    adsMode = b.dataset.mode;
+    for (const [k, m] of adsPick) if (m !== 'j') adsPick.set(k, adsMode);
+    renderAds();
+  });
+  out.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => {
+    const k = b.dataset.slot;
+    if (adsPick.has(k)) adsPick.delete(k); else adsPick.set(k, b.dataset.kind === 'join' ? 'j' : adsMode);
+    b.classList.toggle('picked', adsPick.has(k));
+    sum();
+  });
+  sum();
+  const rent = $('#adsRent');
+  if (rent) rent.onclick = async () => {
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const picks = sum();
+    const { actions, totalWax } = buildBannerRent({ account: wallet.account(), picks, priceUnits: cal.priceUnits });
+    const ok = await runStakeTx($('#adsSteps'), actions, `Rented for ${totalWax.toLocaleString(undefined, { maximumFractionDigits: 2 })} WAX. Set your banner under Your spots.`);
+    if (ok) { adsPick.clear(); setTimeout(() => { if ($('#adsOut')) renderAds(); }, 3000); }
+  };
+  const cid = $('#adsCid'), url = $('#adsUrl'), prev = $('#adsPreview');
+  if (cid && prev) cid.oninput = () => {
+    const c = cidOf(cid.value);
+    prev.hidden = !c;
+    if (c) prev.innerHTML = `<img src="${esc(ipfs(c))}" alt="Banner preview" onerror="${esc(ipfsFallback(c, "this.replaceWith(Object.assign(document.createElement('span'),{className:'dim',textContent:'No image at that CID on the gateways tried.'}))"))}">`;
+  };
+  const save = $('#adsSave');
+  if (save) save.onclick = async () => {
+    const box = $('#adsSaveSteps');
+    const c = cidOf(cid?.value);
+    const u = String(url?.value || '').trim();
+    const slots = [...out.querySelectorAll('.adsminepick:checked')].map(x => ({ time: Number(x.dataset.t), position: Number(x.dataset.p), secondary: x.dataset.sec === '1' }));
+    if (!c) { box.innerHTML = '<div class="err" style="margin-top:10px">Paste an IPFS CID (starting Qm or baf), or a link that contains one.</div>'; return; }
+    if (u && !/^https?:\/\//.test(u)) { box.innerHTML = '<div class="err" style="margin-top:10px">The link has to start with https:// or http://.</div>'; return; }
+    if (!slots.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Tick at least one of your spots.</div>'; return; }
+    const ok = await runStakeTx(box, buildBannerEdit({ account: wallet.account() || me, slots, ipfs: c, url: u }), `Banner set on ${slots.length} spot${slots.length === 1 ? '' : 's'}.`);
+    if (ok) setTimeout(() => { if ($('#adsOut')) renderAds(); }, 3000);
+  };
 }
 
 // ---------------------------------------------------------------- RATINGS ---
@@ -3982,20 +4128,23 @@ function paintWalletAll() {
 
   // ---- waiting on you
   const todo = [];
-  const T = (tab, text, tone = '') => todo.push(`<button class="todo ${tone}" data-gotab="${tab}"><span class="tx">${text}</span><span class="go">${esc(tab === 'lp' ? 'LP' : tab[0].toUpperCase() + tab.slice(1))} &rarr;</span></button>`);
+  // One line each: what it is, and a button saying what you would do about it.
+  // (The text had class "tx", which the site sets in monospace for
+  // transaction ids — so the most useful list on the page read like a log.)
+  const T = (tab, text, tone = '', verb = 'Open') => todo.push(`<button class="todo ${tone}" data-gotab="${tab}"><span class="dot"></span><span class="todotx">${text}</span><span class="go">${esc(verb)}</span></button>`);
   const rewardsNow = (a.lp?.fees || 0) + (farmPendingUsd ? [...farmPendingUsd.values()].reduce((t, v) => t + v, 0) : 0);
-  if (rewardsNow >= 0.01) T('lp', `<b id="avRewards">${usd(rewardsNow)}</b> in fees and farm rewards to collect or compound`);
-  if (a.lpx?.oorCount) T('lp', `<b>${a.lpx.oorCount} position${a.lpx.oorCount === 1 ? '' : 's'} out of range</b> &mdash; ${usd(a.lpx.oorUsd)} earning nothing`, 'warn');
-  if (a.lpx?.gaps) T('lp', `<b>${a.lpx.gaps} position${a.lpx.gaps === 1 ? ' is' : 's are'} not in ${a.lpx.gaps === 1 ? 'its farm' : 'their farms'}</b>${a.lpx.missedUsdDay > 0 ? ` &mdash; missing about ${usd(a.lpx.missedUsdDay)} a day` : ''}`, 'warn');
-  if (a.vote?.staked > 0 && !a.vote.voting) T('resources', `<b>Staked WAX earns nothing</b> &mdash; it is not voting`, 'warn');
-  else if (a.vote?.voting && a.vote.ready && a.vote.waited >= 1) T('resources', `<b>Vote rewards unclaimed</b> for ${a.vote.waited} day${a.vote.waited === 1 ? '' : 's'}`);
-  if (a.farms?.waitingUsd >= 0.01 || a.farms?.waitingFarms) T('staking', `<b>${a.farms.waitingUsd >= 0.01 ? usd(a.farms.waitingUsd) : 'Rewards'}</b> waiting in ${a.farms.waitingFarms} PepperStake/WaxDAO farm${a.farms.waitingFarms === 1 ? '' : 's'}`);
-  if (a.farms?.endedHolding) T('staking', `<b>${a.farms.endedHolding} ended farm${a.farms.endedHolding === 1 ? '' : 's'}</b> still ${a.farms.endedHolding === 1 ? 'holds' : 'hold'} your stake`, 'warn');
+  if (rewardsNow >= 0.01) T('lp', `<b id="avRewards">${usd(rewardsNow)}</b> in fees and farm rewards ready`, '', 'Collect');
+  if (a.lpx?.oorCount) T('lp', `<b>${a.lpx.oorCount} position${a.lpx.oorCount === 1 ? '' : 's'} out of range</b> &mdash; ${usd(a.lpx.oorUsd)} earning nothing`, 'warn', 'Review');
+  if (a.lpx?.gaps) T('lp', `<b>${a.lpx.gaps} position${a.lpx.gaps === 1 ? ' is' : 's are'} not in ${a.lpx.gaps === 1 ? 'its farm' : 'their farms'}</b>${a.lpx.missedUsdDay > 0 ? ` &mdash; missing about ${usd(a.lpx.missedUsdDay)} a day` : ''}`, 'warn', 'Join farm');
+  if (a.vote?.staked > 0 && !a.vote.voting) T('resources', `<b>Staked WAX earns nothing</b> &mdash; it is not voting`, 'warn', 'Fix');
+  else if (a.vote?.voting && a.vote.ready && a.vote.waited >= 1) T('resources', `<b>Vote rewards unclaimed</b> for ${a.vote.waited} day${a.vote.waited === 1 ? '' : 's'}`, '', 'Claim');
+  if (a.farms?.waitingUsd >= 0.01 || a.farms?.waitingFarms) T('staking', `<b>${a.farms.waitingUsd >= 0.01 ? usd(a.farms.waitingUsd) : 'Rewards'}</b> waiting in ${a.farms.waitingFarms} PepperStake/WaxDAO farm${a.farms.waitingFarms === 1 ? '' : 's'}`, '', 'Claim');
+  if (a.farms?.endedHolding) T('staking', `<b>${a.farms.endedHolding} ended farm${a.farms.endedHolding === 1 ? '' : 's'}</b> still ${a.farms.endedHolding === 1 ? 'holds' : 'hold'} your stake`, 'warn', 'Unstake');
   if (a.res?.refund) {
     const r = a.res.refund, left = r.readyAt - Date.now();
-    T('resources', left <= 0 ? `<b>${qty(r.total)} WAX</b> unstaked and ready to claim` : `<b>${qty(r.total)} WAX</b> unstaking, arrives in ${forDays(left / 86400e3)}`);
+    T('resources', left <= 0 ? `<b>${qty(r.total)} WAX</b> unstaked and ready to claim` : `<b>${qty(r.total)} WAX</b> unstaking, arrives in ${forDays(left / 86400e3)}`, '', left <= 0 ? 'Claim' : 'View');
   }
-  if (a.res?.cpuFrac >= 0.8) T('resources', `<b>CPU ${(a.res.cpuFrac * 100).toFixed(0)}% used</b> &mdash; power up before it blocks a transaction`, 'warn');
+  if (a.res?.cpuFrac >= 0.8) T('resources', `<b>CPU ${(a.res.cpuFrac * 100).toFixed(0)}% used</b> &mdash; power up before it blocks a transaction`, 'warn', 'Power up');
   const allRead = a.lp && a.lpx !== undefined && a.vote && a.farms && a.res;
   $('#avTodo').innerHTML = todo.length ? `<div class="todolist">${todo.join('')}</div>`
     : `<div class="chart-empty">${allRead ? 'Nothing is waiting on you.' : 'Checking&hellip;'}</div>`;
@@ -4151,7 +4300,7 @@ async function renderWalletFarmStakes(account) {
     ${pending.length ? `<div class="card" style="margin-top:12px"><h3>Unstaking <span class="dim">&mdash; PepperStake cooldowns</span></h3>
       <div class="todolist">${pending.map(u => {
         const left = u.readyAt - Date.now();
-        return `<div class="todo static"><span class="tx"><b>${u.assets.length ? `${u.assets.length} NFT${u.assets.length === 1 ? '' : 's'}` : esc(u.quantity)}</b> from pool #${u.poolId}
+        return `<div class="todo static"><span class="dot"></span><span class="todotx"><b>${u.assets.length ? `${u.assets.length} NFT${u.assets.length === 1 ? '' : 's'}` : esc(u.quantity)}</b> from pool #${u.poolId}
           <span class="dim">${left <= 0 ? '&middot; ready' : `&middot; ready in ${forDays(left / 86400000)}`}</span></span>
           ${left <= 0 ? `<button class="btn" data-pepref="${u.id}">Take it back</button>` : ''}</div>`;
       }).join('')}</div></div>` : ''}
@@ -8542,6 +8691,12 @@ async function renderPoolLPs(p) {
 if (typeof location !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
   window.__wt = {
     state, walletTradeRow, drawRewards, tickRewards, candleChart,
+    seedAll(agg) {
+      walletShown = '__test';
+      walletAgg = { account: '__test', ...agg };
+      walletTab('all');
+      renderWalletAll('__test');
+    },
     seedFarms(account, pep, wd, pending) {
       walletShown = account;
       walletAgg = { account };
@@ -8561,6 +8716,13 @@ if (typeof location !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(locatio
 
 document.addEventListener('DOMContentLoaded', () => {
   boot();
+  document.addEventListener('click', e => {
+    const a2 = e.target.closest?.('[data-ads]');
+    if (!a2) return;
+    e.preventDefault();
+    show('ads');
+    renderAds();
+  });
   $('#tabs').addEventListener('click', e => {
     const b = e.target.closest('button[data-view]');
     if (b?.dataset.view === 'activity' && !activityLoaded) renderActivity();

@@ -80,3 +80,80 @@ export async function currentBanners({ now = Date.now() } = {}) {
     .sort((a, b) => a.position - b.position);
   return { slot: slot * 1000, banners, free: here.length - banners.length };
 }
+
+// ------------------------------------------------------------ renting a slot --
+// Read off the deployed cheesebannad contract (its ABI, not the README, which
+// names an action that does not exist): a slot is rented by sending WAX with
+// the memo `banner|<slot start>|<days>|<position>|<mode>`, and its picture is
+// set afterwards with editadbanner — or editsharedad for the second renter of
+// a shared slot. Mode e is the whole slot, s is half of one at 70% of the
+// price, j joins someone else's half. The contract refuses e and s less than
+// 48 hours before the slot starts, and j less than 12.
+export const BANNER_ACCOUNT = BANNER_CONTRACT;
+export const RENT_LEAD_SEC = 48 * 3600;
+export const JOIN_LEAD_SEC = 12 * 3600;
+const WAX_UNITS = 1e8;
+
+export async function bannerCalendar({ now = Date.now() } = {}) {
+  const [ads, cfg] = await Promise.all([
+    getRows(BANNER_CONTRACT, BANNER_CONTRACT, 'bannerads', { limit: 1000 }),
+    getRows(BANNER_CONTRACT, BANNER_CONTRACT, 'config', { limit: 1 }).catch(() => ({ rows: [] })),
+  ]);
+  // The price as the contract counts it: integer units, shared at 70/100.
+  const priceUnits = Math.round((parseFloat(String(cfg.rows?.[0]?.wax_price_per_day || '100')) || 100) * WAX_UNITS);
+  const sec = now / 1000;
+  const slots = (ads.rows || [])
+    .map(r => ({
+      time: Number(r.time), position: Number(r.position),
+      user: r.user === BANNER_CONTRACT ? null : r.user,
+      shared: Number(r.rental_type) === 1,
+      sharedUser: r.shared_user || null,
+      img: r.ipfs_hash || '', url: r.website_url || '',
+      sharedImg: r.shared_ipfs_hash || '', sharedUrl: r.shared_website_url || '',
+      suspended: !!Number(r.suspended) || r.suspended === true,
+    }))
+    .filter(r => r.time + 86400 > sec)
+    .sort((a, b) => a.time - b.time || a.position - b.position);
+  return { priceUnits, sharedUnits: Math.floor(priceUnits * 70 / 100), slots };
+}
+
+// One transfer per run of consecutive days on the same position and mode.
+export function buildBannerRent({ account, picks, priceUnits }) {
+  const auth = [{ actor: account, permission: 'active' }];
+  const groups = new Map();
+  for (const p of picks) {
+    const k = `${p.position}|${p.mode}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p.time);
+  }
+  const actions = [];
+  let total = 0;
+  for (const [k, times] of groups) {
+    const [position, mode] = k.split('|');
+    const unit = mode === 'e' ? priceUnits : Math.floor(priceUnits * 70 / 100);
+    times.sort((a, b) => a - b);
+    let start = times[0], n = 1;
+    const flush = () => {
+      const units = unit * n;
+      total += units;
+      actions.push({
+        account: 'eosio.token', name: 'transfer', authorization: auth,
+        data: { from: account, to: BANNER_CONTRACT, quantity: `${(units / WAX_UNITS).toFixed(8)} WAX`, memo: `banner|${start}|${n}|${position}|${mode}` },
+      });
+    };
+    for (let i = 1; i < times.length; i++) {
+      if (times[i] === start + n * 86400) { n++; continue; }
+      flush(); start = times[i]; n = 1;
+    }
+    flush();
+  }
+  return { actions, totalWax: total / WAX_UNITS };
+}
+
+export function buildBannerEdit({ account, slots, ipfs, url }) {
+  const auth = [{ actor: account, permission: 'active' }];
+  return slots.map(s => ({
+    account: BANNER_CONTRACT, name: s.secondary ? 'editsharedad' : 'editadbanner', authorization: auth,
+    data: { user: account, start_time: s.time, position: s.position, ipfs_hash: ipfs, website_url: url },
+  }));
+}
