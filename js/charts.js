@@ -780,7 +780,10 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   ctrl('+', 34, () => zoomAt(0.8, view.x + view.w / 2, view.y + view.h / 2));
   ctrl('\u21ba', 56, () => { view.x = 0; view.y = 0; view.w = size; view.h = H; applyView(); select(null); });
 
-  caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+  // Text under the map rather than inside it: SVG text does not wrap, and on a
+  // phone the line ran off both edges of the screen.
+  caption = document.createElement('p');
+  caption.className = 'sub bubblecap';
   // The caption says how to work it, and that differs by what you are holding.
   const touch = typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
   caption.textContent = ci > 0
@@ -788,9 +791,8 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
       ? 'One colour = wallets that send this token to each other · tap to inspect, pinch to zoom, drag to move'
       : 'One colour = wallets that send this token to each other · hover to isolate, drag to pull apart, Ctrl+scroll to zoom')
     : (touch ? 'No transfers between these wallets · tap one to see what it holds' : 'No transfers between these wallets · click one to see what it holds');
-  svg.appendChild(caption);
-
   wrap.appendChild(svg);
+  wrap.appendChild(caption);
   wrap.appendChild(readout);
   svg.addEventListener('click', ev => { if (ev.target === svg || ev.target.tagName === 'rect') select(null); });
   return wrap;

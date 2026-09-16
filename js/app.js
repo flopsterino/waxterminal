@@ -90,6 +90,10 @@ function qty(v) {
 const sigfig = v => {
   if (v == null || !isFinite(v) || v === 0) return '—';
   const a = Math.abs(v);
+  // Past a million the digits stop being a number anyone reads: a full-range
+  // band printed its top edge as 183,430,466,576,624,830.
+  if (a >= 1e15) return v.toExponential(2);
+  if (a >= 1e6) return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(v);
   if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
   if (a >= 1) return v.toPrecision(4).replace(/\.?0+$/, '');
   if (a >= 1e-4) return v.toPrecision(3);
@@ -835,6 +839,24 @@ function stickyHeads() {
 }
 let stickyFrame = 0;
 const stickySoon = () => { if (!stickyFrame) stickyFrame = requestAnimationFrame(() => { stickyFrame = 0; stickyHeads(); }); };
+
+// A table wider than the screen scrolls sideways, and a column cut off at the
+// edge read as a broken table rather than as more of one. Where there is more
+// to the right, the right edge fades — which says which way to swipe.
+function scrollHint(el) {
+  el.classList.toggle('more-right', el.scrollWidth - el.clientWidth - el.scrollLeft > 4);
+}
+let hintTimer = 0;
+const hintAll = () => { hintTimer = 0; document.querySelectorAll('.tablewrap, .minitabwrap').forEach(scrollHint); };
+document.addEventListener('scroll', e => {
+  const t = e.target;
+  if (t instanceof Element && (t.classList.contains('tablewrap') || t.classList.contains('minitabwrap'))) scrollHint(t);
+}, { capture: true, passive: true });
+window.addEventListener('resize', () => { if (!hintTimer) hintTimer = setTimeout(hintAll, 200); }, { passive: true });
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+  new MutationObserver(() => { if (!hintTimer) hintTimer = setTimeout(hintAll, 300); })
+    .observe(document.body, { childList: true, subtree: true });
+}
 window.addEventListener('scroll', stickySoon, { passive: true });
 window.addEventListener('resize', stickySoon, { passive: true });
 
@@ -1780,9 +1802,9 @@ function renderTokens() {
     { k: 'rank', label: '' },
     { k: 'symbol', label: 'Token' },
     { k: 'price', label: 'Price', r: true, s: true },
-    { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
+    { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
     { k: 'vol30d', label: 'Vol 30d', r: true, s: true },
     { k: 'depth1', label: 'Trade depth', r: true, s: true },
@@ -1791,7 +1813,9 @@ function renderTokens() {
     { k: 'pools', label: 'Pools', r: true, s: true },
     { k: 'bornAt', label: 'First seen', r: true, s: true },
   ];
-  if (tokFilters.lens === 'trending') cols.splice(6, 0, { k: 'heat', label: 'vs its week', r: true, s: true });
+  // Right after the day's volume it is measured against — and in the same
+  // place as its cells, which it was not.
+  if (tokFilters.lens === 'trending') cols.splice(5, 0, { k: 'heat', label: 'vs its week', r: true, s: true });
   const thead = $('#tokTable thead');
   thead.innerHTML = '<tr>' + cols.map(c => `<th class="${c.r ? 'r ' : ''}${c.s ? 'sortable' : ''}" data-k="${c.k}">${c.label}${tokFilters.sort === c.k ? ` <span class="dir">${tokFilters.dir < 0 ? '▾' : '▴'}</span>` : ''}</th>`).join('') + '</tr>';
   thead.querySelectorAll('th.sortable').forEach(th => th.onclick = () => {
@@ -1821,13 +1845,13 @@ function renderTokens() {
       <td class="rank">${i + 1}<span data-star="t|${esc(t.id)}|${esc(t.symbol)}"></span></td>
       <td><span data-pm="${esc(t.id)}|${esc(t.symbol)}"></span><span class="pairbig">${esc(t.symbol)}</span>${trustChip(t.id, { compact: true })}<span class="sub">${esc(t.contract)}</span></td>
       <td class="r num">${t.price == null ? '<span class="dim">—</span>' : px(t.price)}</td>
-      <td class="r num">${usd(t.tvl)}</td>
       <td class="r num ${chgCls(t.change24)}" title="${t.change24 == null
         ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was ${px(t.priceWas)}`}">${chgTxt(t.change24)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
+      ${tokFilters.lens === 'trending' ? `<td class="r num" title="${usd(t.vol24)} today against ${usd((t.vol7d || 0) / 7)} a day over the week">${t.heat.toFixed(1)}&times;</td>` : ''}
+      <td class="r num">${usd(t.tvl)}</td>
       <td class="r num ${t.vol7d > 0 ? '' : 'dim'}">${t.vol7d > 0 ? usd(t.vol7d) : '—'}</td>
       <td class="r num ${t.vol30d > 0 ? '' : 'dim'}">${t.vol30d > 0 ? usd(t.vol30d) : '—'}</td>
-      ${tokFilters.lens === 'trending' ? `<td class="r num" title="${usd(t.vol24)} today against ${usd((t.vol7d || 0) / 7)} a day over the week">${t.heat.toFixed(1)}&times;</td>` : ''}
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num ${t.taxBps > 0 ? 'neg' : 'dim'}" title="${t.taxBps > 0
         ? `Every transfer of ${esc(t.symbol)} costs ${(t.taxBps / 100).toFixed(2)}%${t.burnBps > 0 ? `, of which ${(t.burnBps / 100).toFixed(2)}% is burned` : ''}. A route through it pays this at each hop.`
@@ -2176,13 +2200,15 @@ function renderFarms() {
   const cols = [
     { k: 'rank', label: '', s: false },
     { k: 'pool', label: 'Pool', s: false },
+    // The sort column first after the name: this list opens sorted by volume,
+    // and on a phone volume was the seventh column, off the screen.
+    { k: 'vol24', label: 'Vol 24h', r: true, s: true },
+    { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'aprAt', label: 'Farm APR', r: true, s: true, title: 'What stakers earn now, valuing rewards at what they could be sold for' },
     { k: 'feeApr', label: `Fee APR ${farmFilters.feeWindow}`, r: true, s: true },
-    { k: 'tvlReal', label: 'Pooled value', r: true, s: true },
     { k: 'rewards', label: 'Pays per day', s: false },
     { k: 'stakedReal', label: 'Staked', r: true, s: true },
     { k: 'endsAt', label: 'Ends', r: true, s: true },
-    { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
     { k: 'change24', label: '24h', r: true, s: true },
     { k: 'bornAt', label: 'Age', r: true, s: true, title: 'How long this pool has existed' },
@@ -2255,10 +2281,11 @@ function renderFarms() {
     return `<tr class="clickable ${g.tooSmall ? 'faded' : ''}" data-pool="${g.dex}:${esc(g.poolId)}">
       <td class="rank">${i + 1}<span data-star="p|${esc(g.dex)}:${esc(String(g.poolId))}|${esc(g.pool ? g.pool.symA + '/' + g.pool.symB : String(g.poolId))}"></span></td>
       <td>${pool}</td>
-      <td class="r">${aprCell}</td>
-      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
+      <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
         g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
+      <td class="r">${aprCell}</td>
+      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
       <td class="paycell">${g.rewardUsdDay > 0 ? `<b class="payday">${payDay(g)}</b>` : ''}${chips}</td>
       <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
@@ -2266,7 +2293,6 @@ function renderFarms() {
         : rw == null ? '—'
         : rw < 1 ? Math.round(rw * 24) + 'h'
         : rw < 400 ? Math.round(rw) + 'd' : '400d+'}</td>
-      <td class="r num ${g.pool?.vol24 > 0 ? '' : 'dim'}">${g.pool?.vol24 > 0 ? usd(g.pool.vol24) : '—'}</td>
       <td class="r num ${g.pool?.vol7d > 0 ? '' : 'dim'}">${g.pool?.vol7d > 0 ? usd(g.pool.vol7d) : '—'}</td>
       <td class="r num ${chgCls(g.pool?.change24)}">${chgTxt(g.pool?.change24)}</td>
       <td class="r num dim" title="${g.pool?.bornAt ? new Date(g.pool.bornAt).toISOString().slice(0, 10) : 'No creation date on chain for this venue'}">${g.pool?.bornAt ? age(g.pool.bornAt) : '—'}</td>
@@ -4414,16 +4440,16 @@ function positionCard(p, mine = false) {
       </div>
       <div class="pc-val">
         <span class="v">${usdExact(p.valueUsd)}</span>
-        ${p.depositedUsd > 0 ? `<span class="d ${p.pnlUsd >= 0 ? 'pos' : 'neg'}">${p.pnlUsd >= 0 ? '+' : ''}${usdExact(p.pnlUsd)} since you opened it</span>` : ''}
+        ${p.depositedUsd > 0 ? `<span class="d ${p.pnlUsd >= 0 ? 'pos' : 'neg'}" title="Value now against what was put in">${p.pnlUsd >= 0 ? '+' : ''}${usdExact(p.pnlUsd)} since opened</span>` : ''}
       </div>
     </header>
 
     <div class="pc-pills">${pills}</div>
     <div class="rb-slot"></div>
     <div class="pc-band">
-      <span>${sigfig(bandLo)}</span>
+      <span>${p.tickLower <= -887000 ? '0' : sigfig(bandLo)}</span>
       <span class="now">${sigfig(bandNow)} now</span>
-      <span>${sigfig(bandHi)}</span>
+      <span>${p.tickUpper >= 887000 ? '&infin;' : sigfig(bandHi)}</span>
     </div>
 
     <div class="pc-split" title="${esc(pool.symA)} ${(wA * 100).toFixed(0)}% / ${esc(pool.symB)} ${((1 - wA) * 100).toFixed(0)}%">

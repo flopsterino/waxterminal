@@ -511,7 +511,7 @@ dl.facts {
 }
 dl.facts dt { color: var(--muted); font-size: 11.5px; }
 dl.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
-@media (max-width: 620px) { dl.facts { grid-template-columns: 1fr; gap: 2px 0; } dl.facts dd { margin-bottom: 8px; } }
+@media (max-width: 620px) { dl.facts { grid-template-columns: minmax(0, 38%) minmax(0, 1fr); gap: 7px 12px; } dl.facts dd { margin-bottom: 0; } }
 
 /* A route is a sequence, not a pair: it has to wrap on a phone and still read
    left to right, and the arrows must not break away from the symbols. */
@@ -1705,3 +1705,31 @@ body:has(#view-overview.active) #cheeseBanner { display: none; }
 .ffigs .s { font-size: 11px; color: var(--muted); }
 .fcard footer { display: flex; gap: 8px; }
 .fcard footer .btn { flex: 1; justify-content: center; }
+
+/* A position card on a phone: the value goes under the pair instead of
+   squeezing the name and its details into a column a few letters wide. */
+@media (max-width: 700px) {
+  .pc-head { flex-wrap: wrap; }
+  .pc-id { flex-basis: calc(100% - 50px); }
+  .pc-val { flex-basis: 100%; flex-direction: row; align-items: baseline; gap: 10px; text-align: left; padding-left: 49px; }
+}
+
+/* More table to the right: fade the edge it continues past. */
+.tablewrap.more-right, .minitabwrap.more-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+
+/* --- phone readability ----------------------------------------------------- */
+.bubblepick[hidden] { display: none; }
+.bubblecap { text-align: center; margin: 4px 0 0; font-size: 11px; }
+@media (max-width: 700px) {
+  /* A heading with a subtitle and controls: title and controls on one line,
+     the subtitle under them — not all three squeezed into columns. */
+  .card h3 { flex-wrap: wrap; row-gap: 3px; }
+  .card h3 > .dim { order: 2; flex: 1 1 100%; }
+  .section > h3 { flex-wrap: wrap; row-gap: 2px; }
+  .section > h3 > .dim { order: 2; flex: 1 1 100%; }
+  .section > h3:has(> .dim)::after { display: none; }
+  dl.facts.cols { grid-template-columns: minmax(0, 38%) minmax(0, 1fr); gap: 7px 12px; }
+}
