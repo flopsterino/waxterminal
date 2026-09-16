@@ -79,8 +79,12 @@ export async function loadRatings({ maxAgeMs = 4 * 60 * 1000 } = {}) {
   for (let page = 0; page < 3; page++) {
     let d;
     try {
+      // Only what was sent to the rating account. Unfiltered this read every
+      // HOLE transfer on the chain — 4,637 in 90 days against 23 to the rating
+      // account — three pages of a thousand on every page load, which is how a
+      // public Hyperion starts answering 429.
       d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
-        'act.account': cfg.token.contract, 'act.name': 'transfer', after,
+        'act.account': cfg.token.contract, 'act.name': 'transfer', 'transfer.to': cfg.account, after,
         limit: '1000', skip: String(page * 1000), sort: 'desc',
       })}`);
     } catch { break; }

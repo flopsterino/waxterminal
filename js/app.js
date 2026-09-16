@@ -2821,7 +2821,7 @@ function wireRatings(root = document) {
         bar.outerHTML = next;
         wireRatings(root);
       } catch (e) {
-        if (note) note.innerHTML = /cancel|reject|declin/i.test(String(e.message || e)) ? before : `<span class="neg">${esc(String(e.message || e)).slice(0, 80)}</span>`;
+        if (note) note.innerHTML = DECLINED.test(String(e.message || e)) ? before : `<span class="neg">${esc(String(e.message || e)).slice(0, 80)}</span>`;
       }
     });
   });
@@ -3202,10 +3202,12 @@ async function renderWalletResources(account) {
 }
 
 // Every signing path in this app reports a decline the same way, and a decline
-// is not an error worth alarming anyone about.
+// is not an error worth alarming anyone about. Closing the wallet's window is a
+// decline too: it surfaced as a red "Error: Modal closed".
+const DECLINED = /cancel|reject|declin|modal closed|closed by (the )?user/i;
 const txError = e => {
   const m = String(e?.message || e);
-  if (/cancel|reject|declin/i.test(m)) return '<div class="err">You declined the signature — nothing happened.</div>';
+  if (DECLINED.test(m)) return '<div class="err">You declined the signature — nothing happened.</div>';
   if (e?.simulated) return `<div class="err"><b>Stopped before sending.</b> A node ran this and it would have failed:
     <br><span class="mono" style="font-size:11.5px">${esc(m)}</span>
     <br><span class="sub">Nothing was broadcast, so it cost you no CPU or NET.</span></div>`;
@@ -3243,15 +3245,19 @@ async function renderWalletStake(account, feeBps, feeAccount) {
       
       ${info.lastClaim && !ready ? `<p class="sub" style="margin:0 0 10px">Claimed ${ago(new Date(info.lastClaim).toISOString())}. One claim a day.</p>` : ''}
       ${info.voting && ready && waited > 7 ? `<p class="sub" style="margin:0 0 10px"><b>${waited} days</b> since the last claim. The claim re-casts your vote too, so the weight stops decaying.</p>` : ''}
-      <div id="stakeSteps"></div>
+      <div class="wssteps"></div>
       <div class="toolbar" style="margin:0">
-        <button class="btn" id="stakeGo"${ready ? '' : ' disabled'}>Claim and restake</button>
+        <button class="btn wsgo"${ready ? '' : ' disabled'}>Claim and restake</button>
       </div>
       <p class="sub" style="margin:10px 0 0">Two signatures${feeBps > 0 && feeAccount ? `, ${(feeBps / 100).toFixed(2)}% fee` : ''}.${!info.voting ? ` Also votes ${acctLink(CFG?.commercial?.stakeProxy || 'a proxy')} &mdash; without a vote it earns nothing.` : ''}</p>
     </div>
   </div>`;
 
-  $('#stakeGo').onclick = () => runStake(account, info, feeBps, feeAccount, {});
+  // Scoped to this card: the Staking page's farm view once used the same ids,
+  // sits earlier in the document and stays there after a visit, so a global
+  // lookup wired that hidden button and this one did nothing.
+  const go = out.querySelector('.wsgo');
+  go.onclick = () => runStake(account, info, feeBps, feeAccount, { box: out.querySelector('.wssteps'), btn: go });
   lockForeign(account);
 }
 
@@ -3598,7 +3604,7 @@ async function renderWalletFarms(account) {
         <br><span class="mono" style="font-size:11px">${r.id.slice(0, 16)}…</span></div>`;
     } catch (e) {
       const m = String(e.message || e);
-      box.innerHTML = `<div class="err" style="margin-top:10px">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+      box.innerHTML = `<div class="err" style="margin-top:10px">${DECLINED.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
     }
   };
   out.querySelectorAll('button[data-wdout]').forEach(b => b.onclick = () => {
@@ -3699,7 +3705,9 @@ async function renderWalletBalances(account) {
     if (!rows.length) { pie.innerHTML = '<div class="chart-empty">Nothing here can be priced.</div>'; return; }
     // Eight named slices and the tail folded into one: past that the colours
     // stop being separable and a legend of thirty rows is not a chart.
-    pie.appendChild(donut(rows, { size: 170, top: 8, fmt: v2 => `${usd(v2)} · ${(v2 / total * 100).toFixed(1)}%` }));
+    // The share goes in the legend here; the tooltip adds it on its own, and a
+    // format carrying it too printed "95.9% · 95.9%".
+    pie.appendChild(donut(rows, { size: 170, top: 8, fmt: usd, legendShare: true }));
   };
   drawPie();
   redrawBalancePie = () => { if (walletShown === account) drawPie(); };
@@ -3754,7 +3762,7 @@ function reviewSend(account, rows) {
         <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
     } catch (e) {
       const m = String(e.message || e);
-      box.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing was sent.' : esc(m)}</div>`;
+      box.innerHTML = `<div class="err">${DECLINED.test(m) ? 'You declined the signature — nothing was sent.' : esc(m)}</div>`;
     }
   };
 }
@@ -3820,7 +3828,7 @@ function wireJoinFarm(root, account) {
       } catch (e) {
         btn.disabled = false; btn.textContent = label;
         const m = String(e.message || e);
-        box.querySelector('.sub').innerHTML = /cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m);
+        box.querySelector('.sub').innerHTML = DECLINED.test(m) ? 'You declined the signature — nothing happened.' : esc(m);
       }
     };
   });
@@ -4525,7 +4533,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
       <br><span class="mono" style="font-size:11px">${r1id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
   } catch (e) {
     const m = String(e.message || e);
-    const declined = /cancel|reject|declin/i.test(m);
+    const declined = DECLINED.test(m);
     const pending = loadResume();
     const mine = pending && String(pending.posId) === String(pos.posId);
 
@@ -4582,9 +4590,25 @@ async function resumeBanner() {
   };
 }
 
-async function runStake(account, info, feeBps, feeAccount, { claimOnly = false } = {}) {
-  const box = $('#stakeSteps');
-  const btn = $('#stakeGo');
+// What the claim paid, read from the transaction's own trace: the inline
+// eosio.voters -> you transfer. Exact, and immune to a balance read from a
+// node a block behind the one that ran the claim.
+function voterPayIn(tx, me) {
+  const traces = tx?.pushed?.processed?.action_traces || tx?.result?.response?.processed?.action_traces || [];
+  let sum = 0;
+  for (const t of traces) {
+    const a = t.act || {};
+    if (a.account !== 'eosio.token' || a.name !== 'transfer') continue;
+    if (t.receiver && t.receiver !== 'eosio.token') continue;      // notifications repeat it
+    const d = a.data || {};
+    if (d.to !== me || (d.from !== 'eosio.voters' && d.from !== 'eosio')) continue;
+    sum += parseFloat(String(d.quantity || '')) || 0;
+  }
+  return sum;
+}
+
+async function runStake(account, info, feeBps, feeAccount, { claimOnly = false, box = null, btn = null } = {}) {
+  if (!box || !btn) return;
   const steps = claimOnly
     ? [{ t: 'Claim', d: `Re-cast your existing ${info.proxy ? `proxy (${info.proxy})` : 'producers'} to refresh the vote weight, then collect the reward into your wallet. No fee, nothing staked.` }]
     : [
@@ -4621,17 +4645,27 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
     }
 
     render(1, 'Measuring what arrived…');
-    await new Promise(r => setTimeout(r, 2500));
-    const after = await balanceOf(account, 'eosio.token', 'WAX');
-    const claimed = after - before;
-    if (!(claimed > 0)) throw new Error('The claim paid nothing. The reward may already have been collected today, or the vote may have decayed to zero.');
+    let claimed = voterPayIn(r1, account);
+    // No trace to read (some wallets return none): fall back to the balance,
+    // asked again for a few seconds, because the node answering may not have
+    // the claim's block yet.
+    for (let i = 0; !(claimed > 0) && i < 5; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const after = await balanceOf(account, 'eosio.token', 'WAX').catch(() => before);
+      claimed = after - before;
+    }
+    if (!(claimed > 0)) throw new Error('The claim went through but paid nothing measurable, so nothing was staked. The reward may already have been collected today.');
 
     // Leave the CPU cost of the second transaction unstaked, or a wallet with
     // no spare WAX cannot pay for the very transaction that stakes it.
     const KEEP = 0.01;
     const stakeable = Math.max(0, claimed - KEEP);
+    // Back into CPU and NET in the proportion the account already runs. This
+    // passed the whole stake as CPU, so an account staked entirely to NET had
+    // its reward moved to CPU.
+    const own = await resourcesOf(account).then(x => x.staked).catch(() => ({ cpu: 1, net: 0 }));
     const back = buildStakeBack({
-      claimed: stakeable, cpuWeight: info.staked, netWeight: 0,
+      claimed: stakeable, cpuWeight: own.cpu, netWeight: own.net,
       account, feeBps, feeAccount,
     });
     if (!back.actions.length) throw new Error('Nothing left to stake after the claim.');
@@ -4644,7 +4678,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false }
       <br><span class="mono" style="font-size:11px">${r1.id.slice(0, 16)}… &middot; ${r2.id.slice(0, 16)}…</span></div>`;
   } catch (e) {
     const m = String(e.message || e);
-    render(0, null, /cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : m);
+    render(0, null, DECLINED.test(m) ? 'You declined the signature — nothing happened.' : m);
     btn.disabled = false;
   }
 }
@@ -4952,7 +4986,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
           <br><a class="mono" style="font-size:11px" href="${trxUrl(res.id)}" target="_blank" rel="noopener">${res.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
         const m = String(e.message || e);
-        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+        out.innerHTML = `<div class="err">${DECLINED.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
       }
     };
   };
@@ -5029,7 +5063,7 @@ function renderAddLiquidity(box, pos, account) {
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
         const m = String(e.message || e);
-        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+        out.innerHTML = `<div class="err">${DECLINED.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
       }
     };
   };
@@ -5089,7 +5123,7 @@ function renderRemoveLiquidity(box, pos, account) {
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) {
         const m = String(e.message || e);
-        out.innerHTML = `<div class="err">${/cancel|reject|declin/i.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
+        out.innerHTML = `<div class="err">${DECLINED.test(m) ? 'You declined the signature — nothing happened.' : esc(m)}</div>`;
       }
     };
   };

@@ -200,7 +200,7 @@ export async function transact(actions, { broadcast = true, verify = false } = {
   }
 
   const sent = await rpcAny('push_transaction', tx);
-  return { id: String(sent.transaction_id || id), result, simulated, verified: true };
+  return { id: String(sent.transaction_id || id), result, simulated, pushed: sent, verified: true };
 }
 
 // Broadcast, walking the host list on network failure only.

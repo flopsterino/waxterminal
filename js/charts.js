@@ -234,7 +234,7 @@ export function columns(points, { height = 170, color = 'var(--c2)', fmtY = v =>
 // nothing, and past a handful the colours stop being separable, so the tail
 // folds into one "other" slice. Every slice is direct-labelled in the legend,
 // which is also the relief for the light theme's lower-contrast slots.
-export function donut(items, { size = 150, thickness = 22, top = 5, fmt = v => v } = {}) {
+export function donut(items, { size = 150, thickness = 22, top = 5, fmt = v => v, legendShare = false } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'donut';
   const sorted = [...items].filter(i => i.value > 0).sort((a, b) => b.value - a.value);
@@ -272,7 +272,7 @@ export function donut(items, { size = 150, thickness = 22, top = 5, fmt = v => v
   head.forEach((it, i) => {
     const row = document.createElement('div');
     row.innerHTML = `<span class="sw" style="background:${it.other ? 'var(--line-2)' : SERIES(i)}"></span>
-      <span class="lb">${it.label}</span><span class="vl mono">${fmt(it.value)}</span>`;
+      <span class="lb">${it.label}</span><span class="vl mono">${fmt(it.value)}${legendShare ? ` · ${(it.value / total * 100).toFixed(1)}%` : ''}</span>`;
     leg.appendChild(row);
   });
   wrap.appendChild(leg);

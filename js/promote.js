@@ -65,7 +65,9 @@ export async function activePromotions({ now = Date.now() } = {}) {
     let d;
     try {
       d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
-        'act.account': cfg.token.contract, 'act.name': 'transfer', after,
+        // Only transfers to the promotion account; see ratings.js for what the
+        // unfiltered read cost.
+        'act.account': cfg.token.contract, 'act.name': 'transfer', 'transfer.to': cfg.account, after,
         limit: '1000', skip: String(page * 1000), sort: 'desc',
       })}`);
     } catch { break; }
