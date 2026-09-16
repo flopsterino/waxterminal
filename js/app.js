@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
@@ -3238,25 +3238,41 @@ async function renderWalletResources(account) {
   const refund = r.refund;
   const ready = refund && Date.now() >= refund.readyAt;
 
-  out.innerHTML = `<div class="section"><h3>Resources <span class="dim">&mdash; what makes an account able to transact at all</span></h3>
-    <div class="grid g2">
-      <div class="card"><h3>Where you stand</h3>
-        ${meter('CPU', useFraction(r.cpu), `${micros(r.cpu.available)} left &mdash; about ${cpuTransactions(r.cpu.available).toLocaleString()} more transactions, from ${qty(r.staked.cpu)} WAX staked`)}
-        ${meter('NET', useFraction(r.net), `${bytes(r.net.available)} left, from ${qty(r.staked.net)} WAX staked`)}
-        ${meter('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)} free of ${bytes(r.ram.max)} &mdash; RAM is bought, not staked, and holds your token rows`)}
-        <p class="sub" style="margin:10px 0 0">CPU refills over a day.</p>
-      </div>
-
-      <div class="card"><h3>Power up <span class="dim">&mdash; the CHEESE is burned, not paid to anyone</span></h3>
-        <div class="toolbar" style="margin:0 0 8px">
-          <button class="chip" data-pwtok="cheese" aria-pressed="true">Pay in CHEESE</button>
-          <button class="chip" data-pwtok="wax">Pay in WAX</button>
+  // Three numbers decide whether an account can act at all, so they lead, each
+  // with the one thing that fixes it. Then the two ways to buy more, then the
+  // stake itself: its vote, taking it out, and what is on its way back.
+  const tile = (name, frac, big, sub, jump, verb) => `
+    <div class="restile ${frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : ''}">
+      <div class="rt-head"><span class="rt-name">${name}</span><span class="rt-pct">${(frac * 100).toFixed(0)}% used</span></div>
+      <div class="metertrack"><span class="meterfill ${frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : ''}" style="width:${Math.max(1, frac * 100).toFixed(1)}%"></span></div>
+      <div class="rt-big">${big}</div>
+      <div class="rt-sub">${sub}</div>
+      <button class="chip rt-act" data-jump="${jump}">${verb}</button>
+    </div>`;
+  out.innerHTML = `<div class="section"><h3>Resources <span class="dim">&mdash; what lets this account transact</span></h3>
+    <div class="restiles">
+      ${r.cpu.max < 0 ? tile('CPU', 0, 'Unlimited', 'a system account', 'resPw', 'Power up')
+        : tile('CPU', useFraction(r.cpu), `~${cpuTransactions(r.cpu.available).toLocaleString()} transactions left`, `${micros(r.cpu.available)} &middot; ${qty(r.staked.cpu)} WAX staked &middot; refills over a day`, 'resPw', 'Power up')}
+      ${r.net.max < 0 ? tile('NET', 0, 'Unlimited', 'a system account', 'resPw', 'Power up')
+        : tile('NET', useFraction(r.net), `${bytes(r.net.available)} left`, `${qty(r.staked.net)} WAX staked`, 'resPw', 'Power up')}
+      ${r.ram.max < 0 ? tile('RAM', 0, 'Unlimited', 'a system account', 'resRam', 'Buy RAM')
+        : tile('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)} free`, `of ${bytes(r.ram.max)} &middot; bought, not staked`, 'resRam', 'Buy RAM')}
+    </div>
+    <div class="grid g2 resbuy">
+      <div class="card" id="resPw"><h3>Power up <span class="dim">&mdash; the CHEESE is burned, not paid to anyone</span></h3>
+        <div class="seg" role="radiogroup" id="pwPay" style="margin:0 0 10px">
+          <button role="radio" data-pwtok="cheese" aria-checked="true">With CHEESE</button>
+          <button role="radio" data-pwtok="wax" aria-checked="false">With WAX</button>
         </div>
-        <div class="toolbar" style="margin:0">
-          ${[0.5, 2, 5, 20].map((a, i) => `<button class="chip" data-pw="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a}</button>`).join('')}
-          <span class="dim" id="pwUnit" style="font-size:12px">CHEESE</span>
+        <div class="amtrow">
+          <input id="pwAmt" type="number" step="any" min="0" inputmode="decimal" value="2" aria-label="Amount">
+          <span class="cur" id="pwUnit">CHEESE</span>
+          <button class="chip" id="pwMax">Max</button>
         </div>
-        <div class="toolbar" style="margin:8px 0 0">
+        <p class="sub" id="pwBal" style="margin:6px 0 0"></p>
+        <label class="pwtop" id="pwTopWrap" hidden><input type="checkbox" id="pwTop" checked>
+          <span>Buy the missing <b id="pwShort"></b> CHEESE with WAX, in the same transaction</span></label>
+        <div class="toolbar" style="margin:10px 0 0">
           <span class="sub">Into</span>
           ${[['100', 'CPU only'], ['70', '70 / 30'], ['50', 'half and half'], ['0', 'NET only']]
             .map(([v, label], i) => `<button class="chip" data-pwsplit="${v}"${i === 0 ? ' aria-pressed="true"' : ''}>${label}</button>`).join('')}
@@ -3265,32 +3281,26 @@ async function renderWalletResources(account) {
         <div id="pwOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwGo">Power up</button></div>
       </div>
-    </div>
-
-
-    <div class="grid g2" style="margin-top:12px">
-      <div class="card"><h3>Buy RAM with CHEESE <span class="dim">&mdash; through ram.chz</span></h3>
-        <div class="toolbar" style="margin:0">
-          ${[1, 5, 25, 100].map((a, i) => `<button class="chip" data-ram="${a}"${i === 1 ? ' aria-pressed="true"' : ''}>${a}</button>`).join('')}
-          <span class="dim" style="font-size:12px">CHEESE</span>
+      <div class="card" id="resRam"><h3>Buy RAM with CHEESE <span class="dim">&mdash; through ram.chz</span></h3>
+        <div class="amtrow">
+          <input id="ramAmt" type="number" step="any" min="0" inputmode="decimal" value="5" aria-label="CHEESE to spend">
+          <span class="cur">CHEESE</span>
+          ${[1, 5, 25, 100].map(a => `<button class="chip" data-ram="${a}">${a}</button>`).join('')}
         </div>
+        <p class="sub" id="ramBal" style="margin:6px 0 0"></p>
         <p class="sub" style="margin:9px 0 0">RAM is bought, not rented: it stays yours until you sell it back.
           The bytes land on ${esc(account)}. <span class="dim">0.5% standard spread each way.</span></p>
         <div id="ramOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramGo">Buy RAM</button>
           <a class="plink" href="${CHEESEHUB}/ram" target="_blank" rel="noopener">CheeseHub RAM desk &nearr;</a></div>
       </div>
-      <div class="card"><h3>Unstake <span class="dim">&mdash; three days in a queue before it lands</span></h3>
-        <div class="filters" style="display:grid;gap:8px;margin:0">
-          <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
-          <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
-        </div>
-        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET.</p>
-        <div id="unOut" style="margin-top:10px"></div>
-        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unGo">Review</button></div>
-      </div>
-
-      <div class="card"><h3>Voting</h3>
+    </div>
+  </div>`;
+  // Under the staked-WAX card (its claim and restake), in a pane of its own.
+  const mgmt = $('#walletStakeMgmt');
+  if (mgmt) mgmt.innerHTML = `<div class="section"><h3>Manage the stake <span class="dim">&mdash; its vote, taking it out, and what is on its way back</span></h3>
+    <div class="card stakebox">
+      <div class="sb-col"><h4>Vote</h4>
         ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
           <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? acctLink(r.voter.proxy) : `${r.voter.producers.length} producers`}${r.voter.weight > 0 ? '' : ' &mdash; weight decayed to nothing'}.</p>`
         : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting</b> &mdash; this stake earns nothing.</p>`}
@@ -3302,9 +3312,19 @@ async function renderWalletResources(account) {
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
           <span class="sub">Re-cast this vote on every claim, so the weight never decays</span></label>
         <div id="voteOut" style="margin-top:10px"></div>
-              </div>
-
-      <div class="card"><h3>Refund queue</h3>
+              
+      </div>
+      <div class="sb-col"><h4>Unstake <span class="dim">&mdash; three days in a queue</span></h4>
+        <div class="filters" style="display:grid;gap:8px;margin:0">
+          <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
+          <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
+        </div>
+        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET.</p>
+        <div id="unOut" style="margin-top:10px"></div>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unGo">Review</button></div>
+      
+      </div>
+      <div class="sb-col"><h4>Refund</h4>
         ${refund ? `<div class="stats" style="margin:0 0 10px">
             <div class="stat"><span class="v">${qty(refund.total)} WAX</span><span class="k">on its way back</span><span class="sub">${qty(refund.cpu)} from CPU, ${qty(refund.net)} from NET</span></div>
             <div class="stat"><span class="v ${ready ? 'pos' : ''}">${ready ? 'ready' : ago(new Date(refund.readyAt).toISOString()).replace(' ago', '')}</span><span class="k">${ready ? 'claim it' : 'until it lands'}</span><span class="sub">unstaked ${ago(new Date(refund.at).toISOString())}</span></div>
@@ -3315,89 +3335,144 @@ async function renderWalletResources(account) {
       </div>
     </div>
   </div>`;
+  out.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+    const t = document.getElementById(b.dataset.jump);
+    t?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    t?.classList.add('flashcard');
+    setTimeout(() => t?.classList.remove('flashcard'), 1200);
+  });
 
   // ---- power up ------------------------------------------------------------
-  let pw = 2, pwCpu = 100;
+  // Any amount, not four presets; CHEESE from the wallet first, and WAX only
+  // for what is missing — or all of it, when that is what was chosen.
+  let pwCpu = 100, pwTok = 'cheese', pwGen = 0;
+  const bal = { cheese: null, wax: null };
   const pwNote = $('#pwNote');
-  let pwTok = 'cheese';
-  let pwGen = 0;
-  const paintPw = async () => {
-    const mine = ++pwGen;
+  const pwAmt = () => Math.max(0, Number($('#pwAmt')?.value) || 0);
+  const cheesePerWax = () => {
+    const c = state.prices.get('CHEESE@cheeseburger')?.usd, w = state.waxUsd;
+    return c > 0 && w > 0 ? w / c : null;
+  };
+  const readPwBalances = async () => {
+    const me = wallet.account();
+    if (!me) return;
+    const [c, w2] = await Promise.all([
+      balanceOf(me, 'cheeseburger', 'CHEESE').catch(() => null),
+      balanceOf(me, 'eosio.token', 'WAX').catch(() => null),
+    ]);
+    bal.cheese = c; bal.wax = w2;
+    paintPw();
+    paintRamBal();
+  };
+  const paintPw = () => {
+    const amt = pwAmt();
     const unit = $('#pwUnit'); if (unit) unit.textContent = pwTok === 'wax' ? 'WAX' : 'CHEESE';
-    if (pwTok === 'wax') {
-      let bought = null;
-      try {
-        const b = await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: account });
-        bought = b.buys;
-      } catch { /* no route or no price; the note says so */ }
-      // A quote is a network call, so a stale one must not overwrite a fresh one.
-      if (mine !== pwGen) return;
-      pwNote.innerHTML = bought
-        ? `${pw} WAX buys at least ${qty(bought)} CHEESE, which is burned for roughly ${qty(bought * 1.81)} WAX of CPU and NET for a day. One transaction.`
-        : `${pw} WAX cannot be routed to CHEESE right now.`;
-      return;
-    }
-    // Priced from what the service has actually done: 2,636 CHEESE bought 4,778
-    // WAX of powerup over its life. An observed rate, not a promised one.
-    const waxish = pw * 1.81;
+    const have = pwTok === 'wax' ? bal.wax : bal.cheese;
+    const balEl = $('#pwBal');
+    if (balEl) balEl.innerHTML = !wallet.account() ? 'Connect a wallet to pay from it.'
+      : have == null ? 'Reading your balance…'
+      : `You hold <b>${qty(have)}</b> ${pwTok === 'wax' ? 'WAX' : 'CHEESE'}.`;
+    const short = pwTok === 'cheese' && bal.cheese != null ? Math.max(0, amt - bal.cheese) : 0;
+    const wrap = $('#pwTopWrap');
+    if (wrap) wrap.hidden = !(short > 0);
+    const sh = $('#pwShort'); if (sh) sh.textContent = qty(short);
     const into = pwCpu >= 100 ? 'CPU' : pwCpu <= 0 ? 'NET' : `${pwCpu}% CPU and ${100 - pwCpu}% NET`;
-    pwNote.innerHTML = `${pw} CHEESE buys roughly ${qty(waxish)} WAX of ${into} for a day, going by what this service has historically delivered.
-      The CHEESE is burned to <span class="mono">eosio.null</span> &mdash; it pays nobody, it leaves circulation.`;
+    const cpw = cheesePerWax();
+    const cheese = pwTok === 'wax' ? (cpw ? amt * cpw : null) : amt;
+    // Priced from what the service has actually done: 2,636 CHEESE bought
+    // 4,778 WAX of powerup over its life. An observed rate, not a promise.
+    if (pwNote) pwNote.innerHTML = !(amt > 0) ? 'Enter an amount.'
+      : `${pwTok === 'wax' ? `${qty(amt)} WAX buys about ${cheese != null ? qty(cheese) : '?'} CHEESE, which buys` : `${qty(amt)} CHEESE buys`} roughly
+        ${cheese != null ? qty(cheese * 1.81) : '?'} WAX of ${into} for a day, going by what this service has delivered. The CHEESE is burned.`;
   };
   paintPw();
-  out.querySelectorAll('[data-pwtok]').forEach(b => b.onclick = () => {
-    out.querySelectorAll('[data-pwtok]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  readPwBalances();
+  $('#pwAmt')?.addEventListener('input', paintPw);
+  const maxBtn = $('#pwMax');
+  if (maxBtn) maxBtn.onclick = () => {
+    const have = pwTok === 'wax' ? bal.wax : bal.cheese;
+    // Leave a little WAX behind: the account still has to pay for its next move.
+    if (have != null) $('#pwAmt').value = String(pwTok === 'wax' ? Math.max(0, Math.floor((have - 1) * 1e4) / 1e4) : Math.floor(have * 1e4) / 1e4);
+    paintPw();
+  };
+  out.querySelectorAll('#pwPay [data-pwtok]').forEach(b => b.onclick = () => {
+    out.querySelectorAll('#pwPay [data-pwtok]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
     pwTok = b.dataset.pwtok; paintPw();
   });
-  out.querySelectorAll('[data-pw]').forEach(b => b.onclick = () => {
-    out.querySelectorAll('[data-pw]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    pw = Number(b.dataset.pw); paintPw();
-  });
   // How the powerup is split. CPU is what runs out first for most people, but
-  // an account that mints or transfers a lot burns NET instead, and paying for
-  // the wrong one is money spent on a resource that was never short.
+  // an account that mints or transfers a lot burns NET instead.
   out.querySelectorAll('[data-pwsplit]').forEach(b => b.onclick = () => {
     out.querySelectorAll('[data-pwsplit]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     pwCpu = Number(b.dataset.pwsplit); paintPw();
   });
   $('#pwGo').onclick = async () => {
     const box = $('#pwOut');
-    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-    let built;
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } await readPwBalances(); }
+    const me = wallet.account();
+    const amt = pwAmt();
+    if (!(amt > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    const auth = [{ actor: me, permission: 'active' }];
+    let actions = [], sendCheese = 0, fromWallet = 0, bought = null;
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Working out the transaction…</span></div>';
     try {
-      built = pwTok === 'wax'
-        ? await buildPowerupVia({ amount: pw, target: account, from: 'WAX@eosio.token', to: 'CHEESE@cheeseburger', me: wallet.account() })
-        : { actions: buildCheesePowerup({ account: wallet.account(), amount: pw, receiver: account, cpuPct: pwCpu }) };
+      if (pwTok === 'wax') {
+        if (bal.wax != null && amt > bal.wax) throw new Error(`You hold ${qty(bal.wax)} WAX.`);
+        const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: amt, me, auth });
+        if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
+        actions.push(...leg.actions);
+        sendCheese = leg.minOut; bought = { wax: amt, cheese: leg.minOut };
+      } else {
+        const have = bal.cheese ?? 0;
+        if (amt <= have) { sendCheese = amt; fromWallet = amt; }
+        else if ($('#pwTop')?.checked) {
+          const cpw = cheesePerWax();
+          if (!cpw) throw new Error('No CHEESE price to size the top-up with.');
+          // A few per cent over the shortfall, so the swap's guaranteed minimum
+          // still covers it; whatever is over stays in the wallet.
+          const waxIn = Math.ceil(((amt - have) / cpw) * 1.04 * 1e4) / 1e4;
+          if (bal.wax != null && waxIn > bal.wax) throw new Error(`Buying the missing CHEESE takes about ${qty(waxIn)} WAX; you hold ${qty(bal.wax)}.`);
+          const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: waxIn, me, auth });
+          if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
+          actions.push(...leg.actions);
+          sendCheese = Math.min(amt, have + leg.minOut); fromWallet = have; bought = { wax: waxIn, cheese: leg.minOut };
+        } else throw new Error(`You hold ${qty(have)} CHEESE. Lower the amount, or tick the box to buy the rest with WAX.`);
+      }
+      actions.push(...buildCheesePowerup({ account: me, amount: sendCheese, receiver: account, cpuPct: pwCpu }));
     } catch (e) { box.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; return; }
+    const into = pwCpu >= 100 ? 'CPU' : pwCpu <= 0 ? 'NET' : `${pwCpu}/${100 - pwCpu} CPU and NET`;
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      ${pwTok === 'wax' ? `Sell <b>${pw} WAX</b> for CHEESE and burn it` : `Send <b>${pw} CHEESE</b> to <span class="mono">${POWERUP_ACCOUNT}</span>`} to power up
-      <span class="mono">${esc(account)}</span>${pwCpu >= 100 ? '' : pwCpu <= 0 ? ' with NET' : ` with ${pwCpu}/${100 - pwCpu} CPU and NET`}.
-      <br><span class="dim">One transfer. The service burns the CHEESE.</span>
+      Burn <b>${qty(sendCheese)} CHEESE</b> through <span class="mono">${POWERUP_ACCOUNT}</span> for ${into} on <span class="mono">${esc(account)}</span>.
+      <br><span class="dim">${bought ? `${fromWallet > 0 ? `${qty(fromWallet)} from your wallet, the rest ` : ''}bought with ${qty(bought.wax)} WAX` : 'All of it from your wallet, nothing swapped'} &mdash; one transaction.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
     $('#pwSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
-        const tx = await wallet.transact(built.actions, { verify: true });
+        const tx = await wallet.transact(actions, { verify: true });
         box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Powered up.</b> CPU and NET should be available within a block.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+        readPwBalances();
       } catch (e) { box.innerHTML = txError(e); }
     };
   };
 
   // ---- RAM, bought with CHEESE through ram.chz -----------------------------
-  let ramAmt = 5;
-  out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => {
-    out.querySelectorAll('[data-ram]').forEach(x => x.setAttribute('aria-pressed', String(x === b2)));
-    ramAmt = Number(b2.dataset.ram);
-  });
+  const ramInput = $('#ramAmt');
+  function paintRamBal() {
+    const el = $('#ramBal');
+    if (el) el.innerHTML = !wallet.account() ? '' : bal.cheese == null ? '' : `You hold <b>${qty(bal.cheese)}</b> CHEESE.`;
+  }
+  out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => { if (ramInput) ramInput.value = b2.dataset.ram; });
   const ramBtn = $('#ramGo');
   if (ramBtn) ramBtn.onclick = async () => {
     const box = $('#ramOut');
-    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } await readPwBalances(); }
+    const ramAmt = Math.max(0, Number(ramInput?.value) || 0);
+    if (!(ramAmt > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    if (bal.cheese != null && ramAmt > bal.cheese) { box.innerHTML = `<div class="err">You hold ${qty(bal.cheese)} CHEESE.</div>`; return; }
     const actions = buildCheeseRam({ account: wallet.account(), amount: ramAmt, receiver: account });
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      Send <b>${ramAmt} CHEESE</b> to <span class="mono">${RAM_ACCOUNT}</span> and receive RAM on <span class="mono">${esc(account)}</span>.
-      <br><span class="dim">The contract buys at the system price and keeps a 0.5% spread. RAM stays yours.</span>
+      Send <b>${qty(ramAmt)} CHEESE</b> to <span class="mono">${RAM_ACCOUNT}</span> and receive RAM on <span class="mono">${esc(account)}</span>.
+      <br><span class="dim">0.5% standard spread each way. RAM stays yours.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramSign">Sign and buy</button></div></div>`;
     $('#ramSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -3405,6 +3480,7 @@ async function renderWalletResources(account) {
         const tx = await wallet.transact(actions, { verify: true });
         box.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Bought.</b> The RAM lands within a block.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(tx.id)}" target="_blank" rel="noopener">${tx.id.slice(0, 16)}… &nearr;</a></div>`;
+        readPwBalances();
       } catch (e) { box.innerHTML = txError(e); }
     };
   };
@@ -4131,18 +4207,18 @@ function paintWalletAll() {
   // One line each: what it is, and a button saying what you would do about it.
   // (The text had class "tx", which the site sets in monospace for
   // transaction ids — so the most useful list on the page read like a log.)
-  const T = (tab, text, tone = '', verb = 'Open') => todo.push(`<button class="todo ${tone}" data-gotab="${tab}"><span class="dot"></span><span class="todotx">${text}</span><span class="go">${esc(verb)}</span></button>`);
+  const T = (tab, text, tone = 'info', verb = 'Open') => todo.push(`<button class="todo ${tone}" data-gotab="${tab}"><span class="dot"></span><span class="todotx">${text}</span><span class="go">${esc(verb)}</span></button>`);
   const rewardsNow = (a.lp?.fees || 0) + (farmPendingUsd ? [...farmPendingUsd.values()].reduce((t, v) => t + v, 0) : 0);
-  if (rewardsNow >= 0.01) T('lp', `<b id="avRewards">${usd(rewardsNow)}</b> in fees and farm rewards ready`, '', 'Collect');
+  if (rewardsNow >= 0.01) T('lp', `<b id="avRewards">${usd(rewardsNow)}</b> in fees and farm rewards ready`, 'good', 'Collect');
   if (a.lpx?.oorCount) T('lp', `<b>${a.lpx.oorCount} position${a.lpx.oorCount === 1 ? '' : 's'} out of range</b> &mdash; ${usd(a.lpx.oorUsd)} earning nothing`, 'warn', 'Review');
   if (a.lpx?.gaps) T('lp', `<b>${a.lpx.gaps} position${a.lpx.gaps === 1 ? ' is' : 's are'} not in ${a.lpx.gaps === 1 ? 'its farm' : 'their farms'}</b>${a.lpx.missedUsdDay > 0 ? ` &mdash; missing about ${usd(a.lpx.missedUsdDay)} a day` : ''}`, 'warn', 'Join farm');
   if (a.vote?.staked > 0 && !a.vote.voting) T('resources', `<b>Staked WAX earns nothing</b> &mdash; it is not voting`, 'warn', 'Fix');
-  else if (a.vote?.voting && a.vote.ready && a.vote.waited >= 1) T('resources', `<b>Vote rewards unclaimed</b> for ${a.vote.waited} day${a.vote.waited === 1 ? '' : 's'}`, '', 'Claim');
-  if (a.farms?.waitingUsd >= 0.01 || a.farms?.waitingFarms) T('staking', `<b>${a.farms.waitingUsd >= 0.01 ? usd(a.farms.waitingUsd) : 'Rewards'}</b> waiting in ${a.farms.waitingFarms} PepperStake/WaxDAO farm${a.farms.waitingFarms === 1 ? '' : 's'}`, '', 'Claim');
+  else if (a.vote?.voting && a.vote.ready && a.vote.waited >= 1) T('resources', `<b>Vote rewards unclaimed</b> for ${a.vote.waited} day${a.vote.waited === 1 ? '' : 's'}`, 'good', 'Claim');
+  if (a.farms?.waitingUsd >= 0.01 || a.farms?.waitingFarms) T('staking', `<b>${a.farms.waitingUsd >= 0.01 ? usd(a.farms.waitingUsd) : 'Rewards'}</b> waiting in ${a.farms.waitingFarms} PepperStake/WaxDAO farm${a.farms.waitingFarms === 1 ? '' : 's'}`, 'good', 'Claim');
   if (a.farms?.endedHolding) T('staking', `<b>${a.farms.endedHolding} ended farm${a.farms.endedHolding === 1 ? '' : 's'}</b> still ${a.farms.endedHolding === 1 ? 'holds' : 'hold'} your stake`, 'warn', 'Unstake');
   if (a.res?.refund) {
     const r = a.res.refund, left = r.readyAt - Date.now();
-    T('resources', left <= 0 ? `<b>${qty(r.total)} WAX</b> unstaked and ready to claim` : `<b>${qty(r.total)} WAX</b> unstaking, arrives in ${forDays(left / 86400e3)}`, '', left <= 0 ? 'Claim' : 'View');
+    T('resources', left <= 0 ? `<b>${qty(r.total)} WAX</b> unstaked and ready to claim` : `<b>${qty(r.total)} WAX</b> unstaking, arrives in ${forDays(left / 86400e3)}`, left <= 0 ? 'good' : 'info', left <= 0 ? 'Claim' : 'View');
   }
   if (a.res?.cpuFrac >= 0.8) T('resources', `<b>CPU ${(a.res.cpuFrac * 100).toFixed(0)}% used</b> &mdash; power up before it blocks a transaction`, 'warn', 'Power up');
   const allRead = a.lp && a.lpx !== undefined && a.vote && a.farms && a.res;

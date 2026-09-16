@@ -182,7 +182,7 @@ export function buildHarvest({ pool, position, basket, plan, me = account(), aut
 // graph only estimates depth. Alcor's expected output already includes it.
 //
 // `me` is the receiver written into the memo, so it must be the signer.
-async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
+export async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
   const from = tokenMeta(fromId), to = tokenMeta(toId);
   const send = parseFloat(dec(amountIn, from.decimals));
   if (!(send > 0)) return { skipped: `below one ${from.symbol} unit` };

@@ -16,7 +16,8 @@ export const POWERUP_ACCOUNT = 'cheesepowerz';
 export const RAM_ACCOUNT = 'ram.chz';
 const BANNER_CONTRACT = 'cheesebannad';
 
-const qty = (n, d = 4) => Number(n).toFixed(d);
+// Rounded down: a transfer of a hair more than the wallet holds reverts.
+const qty = (n, d = 4) => (Math.floor(Number(n) * 10 ** d + 1e-9) / 10 ** d).toFixed(d);
 
 // CPU, NET or a split of the two. The memo shapes are the contract's, read off
 // CheeseHub's own transfers: "cpu:60,net:40:receiver", "net:receiver", or just
