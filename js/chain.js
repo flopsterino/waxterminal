@@ -50,6 +50,7 @@ export const HYPERION_HOSTS = [
   'https://wax.eosusa.io',
   'https://wax.cryptolions.io',
   'https://api.waxsweden.org',
+  'https://wax-history.eosdac.io',
 ];
 
 const benched = new Map();

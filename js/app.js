@@ -18,6 +18,7 @@ import { watchPoolTrades, tradeSide, tradePrice, poolSwapHistory } from './live.
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
+import { accountValueHistory } from './acctvalue.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -3670,10 +3671,114 @@ function cachedFor(key, account, fn) {
 const myPepper = a => cachedFor('pepper', a, () => pepperStakes(a));
 const myWaxdao = a => cachedFor('waxdao', a, () => waxdaoStakes(a));
 
+// A holding is worth what could be sold for it. 700M of a token whose every
+// pool together holds $13 of anything else is not $3.1M, whatever the last
+// trade in that pool says; the depth model already knows each token's exit.
+const sellable = (id, v) => {
+  if (!(v > 0)) return 0;
+  const d = state.depth.get(id);
+  if (!d || d.anchored) return v;
+  return Math.min(v, d.exit || 0);
+};
+
 function aggSet(account, key, val) {
   if (!walletAgg || walletAgg.account !== account) return;
   walletAgg[key] = val;
   paintWalletAll();
+  // The history is rebuilt backwards from today, so it waits for today: the
+  // wallet, the stake and the positions.
+  const w = walletAgg;
+  if (!w.histStarted && w.tokens && w.staked && w.lp) {
+    w.histStarted = true;
+    renderAcctHistory(account).catch(() => {});
+  }
+}
+
+const sumParts = w => WALLET_PARTS.reduce((t, p) => t + (w[p.k]?.usd || 0), 0);
+
+// ---- value over time ---------------------------------------------------------
+async function renderAcctHistory(account) {
+  const el = $('#acctHist');
+  if (!el) return;
+  const w = walletAgg;
+  const holdings = new Map();
+  const hold = (id, amt) => { if (amt > 0) holdings.set(id, (holdings.get(id) || 0) + amt); };
+  for (const r of w.tokens?.rows || []) hold(r.id, r.amount);
+  if (w.staked?.wax > 0) hold(WAX_ID, w.staked.wax);
+  if (walletPositionsFor?.account === account) {
+    for (const p of walletPositionsFor.list) if (p.pool?.dex === 'alcor' || p.pool?.dex === 'taco') { hold(p.pool.tokenA, p.amountA); hold(p.pool.tokenB, p.amountB); }
+  }
+  el.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading transfers…</span></div>';
+  let res;
+  try {
+    res = await accountValueHistory({
+      account, holdingsNow: holdings, pools: state.pools, prices: state.prices, stables: STABLES, waxId: WAX_ID, cap: sellable,
+      onProgress: m => { const t = $('#acctHist .loading span:last-child'); if (t) t.textContent = m; },
+    });
+  } catch {
+    if (stillWallet(account) && $('#acctHist')) $('#acctHist').innerHTML = '<div class="chart-empty">The history could not be read right now.</div>';
+    return;
+  }
+  if (!stillWallet(account) || walletAgg !== w) return;
+  const box = $('#acctHist');
+  if (!box) return;
+  if (res.points.length < 3) {
+    box.innerHTML = '<div class="chart-empty">Too little history to draw yet.</div>';
+    return;
+  }
+
+  const pts = res.points;
+  const nowV = pts.at(-1).value;
+  const first = pts[0].time;
+  // What it was worth N days ago, where the rebuild reaches that far.
+  const ago = d => {
+    const t = pts.at(-1).time - d * 86400;
+    if (first > t) return null;
+    let best = pts[0];
+    for (const p of pts) if (p.time <= t) best = p; else break;
+    return best.value;
+  };
+  const stat = (d, label) => {
+    const v = ago(d);
+    if (v == null) return `<div class="hs"><span class="k">${label}</span><span class="v dim">—</span><span class="c dim">not that far back</span></div>`;
+    const ch = v > 0 ? (nowV - v) / v : null;
+    return `<div class="hs"><span class="k">${label}</span><span class="v">${usd(v)}</span>
+      <span class="c ${ch == null ? 'dim' : ch >= 0 ? 'pos' : 'neg'}">${ch == null ? '—' : `${ch >= 0 ? '+' : ''}${(ch * 100).toFixed(1)}% since`}</span></div>`;
+  };
+  const st = $('#acctHistStats');
+  if (st) st.innerHTML = stat(30, '1 month ago') + stat(90, '3 months ago') + stat(365, '1 year ago');
+
+  const foot = $('#acctHistFoot');
+  if (foot) {
+    foot.innerHTML = `Rebuilt from ${res.transfers.toLocaleString()} transfers back to ${new Date(first * 1000).toISOString().slice(0, 10)}${
+      res.complete ? '' : ', as far as one read of the history goes'}: each day&rsquo;s tokens at that day&rsquo;s close.
+      Liquidity counts as the tokens in your positions today; NFTs and farm stakes are not in it.
+      Money that came in or went out moves the line too.${
+      w.tokens && Math.abs(nowV - sumParts(w)) > Math.max(1, sumParts(w) * 0.05)
+        ? ` It ends at ${usd(nowV)} where the headline says ${usd(sumParts(w))}: the line prices only the ${res.tokens} largest tokens, together, and leaves out NFTs and farm stakes.` : ''}${res.flat.length ? ` ${res.flat.length} token${res.flat.length === 1 ? ' has' : 's have'} no price history and ${res.flat.length === 1 ? 'is' : 'are'} held at today&rsquo;s price.` : ''}`;
+  }
+
+  let range = 365;
+  const draw = () => {
+    const target = $('#acctHist');
+    if (!target) return;
+    const cut = pts.at(-1).time - range * 86400;
+    const shown = pts.filter(p => p.time >= cut);
+    target.innerHTML = '';
+    lineSeriesChart(target, shown, { height: 240, color: 'var(--c1)', fmt: usd })
+      .catch(() => {
+        target.innerHTML = '';
+        target.appendChild(areaChart(shown.map(p => ({ x: p.time * 1000, y: p.value })), {
+          fmtY: usd, fmtX: t => new Date(t).toISOString().slice(0, 10), color: 'var(--c1)', label: 'Account value',
+        }));
+      });
+  };
+  draw();
+  document.querySelectorAll('#acctRange [data-days]').forEach(b => b.onclick = () => {
+    range = Number(b.dataset.days);
+    document.querySelectorAll('#acctRange [data-days]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    draw();
+  });
 }
 
 // AtomicHub's own valuation: the suggested median of every NFT the account
@@ -3708,7 +3813,15 @@ function renderWalletAll(account) {
   const out = $('#walletAll');
   if (!out) return;
   out.innerHTML = `<div class="card acctval" id="acctVal"></div>
-    <div class="card" style="margin-top:12px"><h3>Largest holdings <span class="dim">&mdash; wallet, pools and stake together</span></h3><div id="acctTop"></div></div>`;
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h3>Value over time
+          <span class="subtabs inline" id="acctRange" style="margin-left:auto">${[['30', '1M'], ['90', '3M'], ['365', '1Y']]
+            .map(([d, l]) => `<button class="chip" data-days="${d}" aria-pressed="${d === '365'}">${l}</button>`).join('')}</span></h3>
+        <div class="histstats" id="acctHistStats"></div>
+        <div id="acctHist"><div class="loading"><span class="spinner"></span><span>Waiting for today&rsquo;s holdings…</span></div></div>
+        <p class="sub" id="acctHistFoot" style="margin:8px 0 0"></p></div>
+      <div class="card"><h3>Largest holdings <span class="dim">&mdash; wallet, pools and stake together</span></h3><div id="acctTop"></div></div>
+    </div>`;
   paintWalletAll();
 }
 
@@ -3719,14 +3832,15 @@ function paintWalletAll() {
   const account = a.account;
   const parts = WALLET_PARTS.map(p => ({ ...p, v: a[p.k] || null }));
   const total = parts.reduce((s2, p) => s2 + (p.v?.usd || 0), 0);
+  const face = parts.reduce((s2, p) => s2 + (p.v?.face ?? p.v?.usd ?? 0), 0);
   const waiting = parts.filter(p => !p.v).length;
   const note = p => {
     const v = p.v;
     if (!v) return 'reading…';
     if (v.failed) return 'could not be read';
     switch (p.k) {
-      case 'tokens': return `${v.count} priced${v.unpriced ? ` &middot; ${v.unpriced} without a price` : ''}`;
-      case 'lp': return v.count ? `${v.count} position${v.count === 1 ? '' : 's'}${v.fees > 0.005 ? ` &middot; ${usd(v.fees)} fees waiting` : ''}` : 'no positions';
+      case 'tokens': return v.face > v.usd * 1.1 ? `${usd(v.face)} at face value` : `${v.count} priced${v.unpriced ? ` &middot; ${v.unpriced} without a price` : ''}`;
+      case 'lp': return v.face > v.usd * 1.1 ? `${usd(v.face)} at face value` : v.count ? `${v.count} position${v.count === 1 ? '' : 's'}${v.fees > 0.005 ? ` &middot; ${usd(v.fees)} fees waiting` : ''}` : 'no positions';
       case 'staked': return v.wax > 0 ? `${qty(v.wax)} WAX${v.refund > 0 ? ` &middot; ${qty(v.refund)} unstaking` : ''}` : 'nothing staked';
       case 'farms': return v.farms ? `${v.farms} farm${v.farms === 1 ? '' : 's'}${v.nfts ? ` &middot; ${v.nfts.toLocaleString()} NFT${v.nfts === 1 ? '' : 's'}, not valued` : ''}` : 'nothing staked';
       case 'nfts': return v.count ? `${v.count.toLocaleString()} held &middot; suggested median` : 'none held';
@@ -3745,7 +3859,9 @@ function paintWalletAll() {
   };
   box.innerHTML = `<div class="avhead"><span class="k">Account value</span>
       <span class="big">${usd(total)}</span>
-      <span class="sub">${waiting ? `still reading ${waiting} of ${parts.length}&hellip;` : 'at today&rsquo;s prices'}</span></div>
+      <span class="sub">${waiting ? `still reading ${waiting} of ${parts.length}&hellip;`
+        : face > total * 1.1 ? `what it could be sold for &middot; ${usd(face)} at face value, most of it in tokens with almost nothing to sell into`
+        : 'at today&rsquo;s prices'}</span></div>
     <div class="avbar">${parts.filter(p => p.v?.usd > 0).map(p =>
       `<span style="flex-grow:${p.v.usd};background:${p.color}" title="${p.label}: ${usd(p.v.usd)}"></span>`).join('') || '<span class="empty"></span>'}</div>
     <div class="avparts">${parts.map(tile).join('')}</div>`;
@@ -3765,13 +3881,16 @@ function paintWalletAll() {
   for (const x of positionSlices(account)) add(x.label, x.id, x.value, 'pools');
   if (a.staked?.usd > 0) add('WAX', 'WAX@eosio.token', a.staked.usd, 'staked');
   for (const x of a.farms?.tokens || []) add(x.sym, x.id, x.usd, 'farms');
-  const rows = [...merged.values()].sort((x, y) => y.usd - x.usd).slice(0, 10);
+  // Capped once per token, after every place it is held is added together:
+  // the exit is the token's, not each holding's.
+  for (const m of merged.values()) { m.face = m.usd; if (m.id) m.usd = sellable(m.id, m.usd); }
+  const rows = [...merged.values()].filter(m => m.usd > 0.005).sort((x, y) => y.usd - x.usd).slice(0, 10);
   const sum = [...merged.values()].reduce((s2, m) => s2 + m.usd, 0);
   top.innerHTML = rows.length ? `<table class="minitab"><thead><tr><th>Token</th><th>Held in</th><th class="r">Value</th><th class="r">Share</th></tr></thead><tbody>${
     rows.map(m => `<tr${m.id ? ` class="clickable" data-tokid="${esc(m.id)}"` : ''}>
       <td>${m.id ? `<span data-pm="${esc(m.id)}|${esc(m.sym)}"></span>` : ''}<span class="pairbig">${esc(m.sym)}</span></td>
       <td>${[...m.where].map(w => `<span class="wherechip">${w}</span>`).join('')}</td>
-      <td class="r num">${usd(m.usd)}</td>
+      <td class="r num"${m.face > m.usd * 1.1 ? ` title="${usd(m.face)} at face value; its pools could pay out about ${usd(m.usd)}"` : ''}>${usd(m.usd)}${m.face > m.usd * 1.1 ? '<span class="capmark">*</span>' : ''}</td>
       <td class="r num dim">${sum > 0 ? (m.usd / sum * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table>`
     : `<div class="chart-empty">${waiting ? 'Reading…' : 'Nothing here can be priced.'}</div>`;
   fillMarks(top);
@@ -3793,7 +3912,7 @@ async function renderWalletFarmStakes(account) {
     const nfts = s2.nfts?.length || 0;
     if (!(s2.stakedTokens > 0 || nfts)) continue;
     const px = s2.stakedTokens > 0 && p?.acceptSymbol ? priceOf(p.acceptSymbol, p.acceptContract) : null;
-    const v = px != null ? s2.stakedTokens * px : null;
+    const v = px != null ? sellable(`${p.acceptSymbol}@${p.acceptContract}`, s2.stakedTokens * px) : null;
     if (v != null) tokens.push({ sym: p.acceptSymbol, id: `${p.acceptSymbol}@${p.acceptContract}`, usd: v });
     rows.push({
       key: `pepper:${s2.poolId}`, venue: 'PepperStake', name: p?.name || `Pool ${s2.poolId}`,
@@ -3848,7 +3967,10 @@ async function renderWalletBalances(account) {
   if (!stillWallet(account)) return;
   const v = valueBalances(info.balances, state.prices, state.depth);
   const priced = v.rows.filter(r => r.usd != null);
-  aggSet(account, 'tokens', { usd: v.priced, count: priced.length, rows: priced, unpriced: v.unpriced });
+  aggSet(account, 'tokens', {
+    usd: priced.reduce((t, r) => t + sellable(r.id, r.usd), 0), face: v.priced,
+    count: priced.length, rows: priced, unpriced: v.unpriced,
+  });
 
   // A pie of what the wallet is, before the list of what is in it. "82% WAX"
   // is a fact about a portfolio that a column of dollar figures makes you
@@ -4210,7 +4332,8 @@ async function lookupWallet(account) {
 
   const all = [...res.alcor, ...res.taco];
   aggSet(account, 'lp', {
-    usd: all.reduce((s2, p) => s2 + (p.valueUsd || 0), 0),
+    usd: all.reduce((s2, p) => s2 + (p.valueUsd || 0) * (p.pool?.tvl > 0 && p.pool.tvlReal != null ? Math.min(1, p.pool.tvlReal / p.pool.tvl) : 1), 0),
+    face: all.reduce((s2, p) => s2 + (p.valueUsd || 0), 0),
     count: all.length,
     fees: res.alcor.reduce((s2, p) => s2 + (p.feesUsd || 0), 0),
   });
