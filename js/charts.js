@@ -488,8 +488,12 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   settle();
 
   const H = size + 22;
+  let caption = null;
   const svg = el('svg', { viewBox: `0 0 ${size} ${H}`, role: 'img', 'aria-label': 'Holder map' });
-  svg.style.cssText = `width:100%;max-width:${size}px;height:auto;display:block;margin:0 auto;overflow:visible;touch-action:none`;
+  // pan-y: a finger that lands on the map still scrolls the page. With "none"
+  // the map swallowed every swipe that started on it, and on a phone it is
+  // most of the screen.
+  svg.style.cssText = `width:100%;max-width:${size}px;height:auto;display:block;margin:0 auto;overflow:visible;touch-action:pan-y`;
   // The map is pannable and zoomable, because on a 390px screen sixteen
   // bubbles with names under them is a picture of a knot. Drag the background
   // to move, pinch or wheel to zoom, and there is a control to put it back.
@@ -507,7 +511,19 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
     const box = svg.getBoundingClientRect();
     return { x: view.x + (ev.clientX - box.left) * (view.w / box.width), y: view.y + (ev.clientY - box.top) * (view.h / box.height) };
   };
+  // Zoom on Ctrl or Cmd with the wheel — which is also what a trackpad pinch
+  // sends. A plain wheel scrolls the page: taking it made the page stop
+  // scrolling and the map lurch whenever the pointer crossed it on the way down.
+  let hintTimer = 0;
   svg.addEventListener('wheel', ev => {
+    if (!ev.ctrlKey && !ev.metaKey) {
+      if (caption && !hintTimer) {
+        const was = caption.textContent;
+        caption.textContent = 'Hold Ctrl (or \u2318) and scroll to zoom the map';
+        hintTimer = setTimeout(() => { caption.textContent = was; hintTimer = 0; }, 1600);
+      }
+      return;
+    }
     ev.preventDefault();
     const p2 = svgPoint(ev);
     zoomAt(ev.deltaY > 0 ? 1.12 : 0.89, p2.x, p2.y);
@@ -573,6 +589,8 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
 
   const labelled = new Set([...live].sort((a, b) => b.value - a.value).slice(0, 10).map(n => n.id));
   const nodeEls = new Map();
+  const gNodes = el('g');
+  svg.appendChild(gNodes);
   for (const p of P) {
     const n = p.n, gi = groupOf.get(n.id);
     const g = el('g');
@@ -601,7 +619,7 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
       label.textContent = n.id.length > 13 ? n.id.slice(0, 12) + '…' : n.id;
     }
     g.append(c, ...(pctText ? [pctText] : []), ...(label ? [label] : []));
-    svg.appendChild(g);
+    gNodes.appendChild(g);
     nodeEls.set(n.id, { g, c, pctText, label, p });
   }
 
@@ -678,8 +696,10 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
       if (ev.pointerType === 'touch') return;          // touch selects, it does not hover
       focus(nid);
       // Lift the hovered bubble above its neighbours so a small one inside a
-      // cluster can actually be read and clicked.
-      e.g.parentNode.appendChild(e.g);
+      // cluster can actually be read and clicked — once. Moving it in the DOM
+      // on every enter re-fired leave and enter under a still pointer, and the
+      // highlight flickered on and off.
+      if (gNodes.lastChild !== e.g) gNodes.appendChild(e.g);
       e.c.setAttribute('stroke-width', 3);
     });
     e.g.addEventListener('pointerleave', ev => {
@@ -741,13 +761,13 @@ export function bubbleMap(nodes, links, { size = 430, fmt = v => v, onPick = nul
   ctrl('+', 34, () => zoomAt(0.8, view.x + view.w / 2, view.y + view.h / 2));
   ctrl('\u21ba', 56, () => { view.x = 0; view.y = 0; view.w = size; view.h = H; applyView(); select(null); });
 
-  const caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+  caption = el('text', { x: cx, y: H - 4, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
   // The caption says how to work it, and that differs by what you are holding.
   const touch = typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
   caption.textContent = ci > 0
     ? (touch
       ? 'One colour = wallets that send this token to each other · tap to inspect, pinch to zoom, drag to move'
-      : 'One colour = wallets that send this token to each other · hover to isolate, drag to pull apart, click to open a wallet')
+      : 'One colour = wallets that send this token to each other · hover to isolate, drag to pull apart, Ctrl+scroll to zoom')
     : (touch ? 'No transfers between these wallets · tap one to see what it holds' : 'No transfers between these wallets · click one to see what it holds');
   svg.appendChild(caption);
 

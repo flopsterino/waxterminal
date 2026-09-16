@@ -449,7 +449,11 @@ export async function transferGraph(contract, symbol, holders, { supply = 0, see
     seen.set(b, (seen.get(b) || 0) + amt);
   };
 
-  await Promise.all(seedList.map(async h => {
+  // Four at a time. Sixteen at once is a burst a public node answers with 429,
+  // and every history that fails is a wallet whose lines are missing from the
+  // map — which reads as "less detail", not as an error.
+  let read = 0, next = 0;
+  const one = async h => {
     try {
       const q = new URLSearchParams({
         account: h.account, 'act.account': contract, 'act.name': 'transfer',
@@ -469,7 +473,11 @@ export async function transferGraph(contract, symbol, holders, { supply = 0, see
         if (!seedSet.has(x.from) && !seedSet.has(x.to)) continue;
         bump(x.from, x.to, amt);
       }
+      read++;
     } catch { /* one unreadable history must not void the graph */ }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, seedList.length) }, async () => {
+    while (next < seedList.length) await one(seedList[next++]);
   }));
 
   // Every seed, plus the counterparties that moved the most.
@@ -499,5 +507,5 @@ export async function transferGraph(contract, symbol, holders, { supply = 0, see
     .filter(l => keep.has(l.source) && keep.has(l.target))
     .sort((a, b) => b.value - a.value);
 
-  return { nodes, links };
+  return { nodes, links, read, seeds: seedList.length };
 }

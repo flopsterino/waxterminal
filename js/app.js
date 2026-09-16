@@ -6824,7 +6824,8 @@ async function openToken(id) {
       <span class="dim" style="font-size:11.5px">Show transfers over</span>
       ${[[0.001, '0.1%'], [0.0001, '0.01%'], [0.00002, '0.002%']].map(([v, lbl]) =>
         `<button class="chip" data-detail="${v}" aria-pressed="${v === mapDetail}">${lbl} of supply</button>`).join('')}
-      <span class="dim" style="font-size:11.5px">${g.nodes.length} wallets &middot; ${g.links.length} link${g.links.length === 1 ? '' : 's'}</span>
+      <span class="dim" style="font-size:11.5px">${g.nodes.length} wallets &middot; ${g.links.length} link${g.links.length === 1 ? '' : 's'}${
+        g.read < g.seeds ? ` &middot; <span class="warnish">${g.seeds - g.read} of ${g.seeds} histories did not load, so lines are missing</span>` : ''}</span>
     </div>`;
     const holder = document.createElement('div');
     box.appendChild(holder);

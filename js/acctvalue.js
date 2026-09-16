@@ -35,7 +35,12 @@ const tsOf = a => new Date(a.timestamp + (String(a.timestamp).endsWith('Z') ? ''
 // most also serves a hundred rows a page where the others serve a thousand,
 // which is why it is not simply used for everything.
 const historyCache = new Map();
-const pageSize = new Map([['https://wax-history.eosdac.io', 100]]);
+const DEEP_HOST = 'https://wax-history.eosdac.io';
+// Not in the shared rotation: it refuses any page over a hundred rows, and the
+// rest of the app asks for 250 and 1,000 — a quarter of those requests failed
+// and were retried onto nodes already rate-limiting.
+const HISTORY_HOSTS = [...HYPERION_HOSTS, DEEP_HOST];
+const pageSize = new Map([[DEEP_HOST, 100]]);
 export async function transferHistory(account, { days = 365, maxRequests = 30, onProgress = null } = {}) {
   const since = Date.now() - days * DAY;
   const after = new Date(since).toISOString();
@@ -98,7 +103,7 @@ const limitOf = host => pageSize.get(host) || 1000;
 // Each node's oldest transfer for this account inside the window, asked for as
 // a single row.
 async function probeHosts(account, after) {
-  const probes = await Promise.all(HYPERION_HOSTS.map(async host => {
+  const probes = await Promise.all(HISTORY_HOSTS.map(async host => {
     try {
       const q = new URLSearchParams({ account, 'act.name': 'transfer', after, limit: '1', sort: 'asc' });
       const d = await get(`${host}/v2/history/get_actions?${q}`);
