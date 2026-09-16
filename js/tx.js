@@ -24,6 +24,32 @@ const dec = (v, d) => {
 };
 export const asset = (amount, symbol, decimals) => `${dec(amount, decimals)} ${symbol}`;
 
+// Pool math rounds each leg down by a unit or two. On a large output that is
+// nothing; on a 30-unit output it is more than the 2% tolerance, so a small
+// conversion — 0.0000003 WAXWBTC — reverted every compound on WAXETH/WAXWBTC
+// with "Received lower than minTokenOut: 30". Outputs under a thousand units
+// get an absolute margin on top of the percentage, and an output under ten
+// units is not worth a swap that rounding alone can eat a third of.
+const DUST_UNITS = 10;
+const tooSmallToSwap = (expect, decimals) => expect * 10 ** decimals < DUST_UNITS;
+function roundingSafeMin(minOut, expect, decimals) {
+  const unit = 10 ** -decimals;
+  const units = expect / unit;
+  if (!(units > 0) || units >= 1000) return minOut;
+  const margin = Math.max(3, Math.ceil(units * 0.05)) * unit;
+  return Math.max(unit, Math.min(minOut, expect - margin));
+}
+// The same margin written into a memo Alcor's router built: only the minimum
+// asset changes, and only ever downward.
+function loosenMemo(send, to) {
+  const safe = roundingSafeMin(send.min, send.expect, to.decimals);
+  if (!(safe < send.min)) return send;
+  const parts = String(send.memo).split('#');
+  if (parts.length < 5 || parts[0] !== 'swapexactin') return send;
+  parts[3] = `${asset(safe, to.symbol, to.decimals)}@${to.contract}`;
+  return { ...send, memo: parts.join('#'), min: parseFloat(dec(safe, to.decimals)) };
+}
+
 // account() returns null, not undefined, when nothing is connected — and a
 // default parameter only fills in for undefined. So `me = account()` yields
 // null, passes explicitly into the next builder where the same default cannot
@@ -164,12 +190,14 @@ async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
   const q = await routeQuote({ from, to, amount: send, slippagePct: SLIPPAGE * 100, receiver: me });
   if (q) {
     if (!(q.min > 0)) return { skipped: `would return less than one ${to.symbol} unit` };
+    if (tooSmallToSwap(q.expect, to.decimals)) return { skipped: `too small to swap — rounding would take most of it` };
+    const sends = q.sends.map(x => loosenMemo(x, to));
     return {
-      actions: q.sends.map(x => ({
+      actions: sends.map(x => ({
         account: from.contract, name: 'transfer', authorization: auth,
         data: { from: me, to: ALCOR, quantity: x.inputAsset, memo: x.memo },
       })),
-      amountIn: send, minOut: q.min, expect: q.expect,
+      amountIn: send, minOut: sends.reduce((t, x) => t + x.min, 0), expect: q.expect,
       path: q.route, hops: q.hops, impact: q.impact, routed: 'alcor', split: q.split,
     };
   }
@@ -180,7 +208,8 @@ async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
   if (!path || !path.length) return { skipped: 'no route' };
   const expect = send * pFrom / pTo;
   const impact = path.impact || 0;
-  const minOut = expect * (1 - SLIPPAGE - impact);
+  if (tooSmallToSwap(expect, to.decimals)) return { skipped: `too small to swap — rounding would take most of it` };
+  const minOut = roundingSafeMin(expect * (1 - SLIPPAGE - impact), expect, to.decimals);
   if (parseFloat(dec(minOut, to.decimals)) <= 0) return { skipped: `would return less than one ${to.symbol} unit` };
   return {
     actions: [{
@@ -923,7 +952,7 @@ export async function buildZapSwap({ pool, plan, feeAccount = '', me = account()
       // One transfer per part. Alcor splits an order across routes when that
       // gets more out, and each part carries its own memo and its own share.
       // The amount is Alcor's own string: it is what the quote was for.
-      for (const s of q.sends) {
+      for (const s of q.sends.map(x => loosenMemo(x, to))) {
         actions.push({
           account: from.contract, name: 'transfer', authorization: auth,
           data: { from: me, to: ALCOR, quantity: s.inputAsset, memo: s.memo },
@@ -943,7 +972,7 @@ export async function buildZapSwap({ pool, plan, feeAccount = '', me = account()
         + `the best route holds ${'$' + (path.bottleneck || 0).toFixed(2)} of depth. Zap a smaller amount, or a different pair.`);
     }
     if (!(leg.expect > 0)) throw new Error(`No quote for ${from.symbol} into ${leg.sym}.`);
-    const minOut = leg.expect * (1 - SLIPPAGE - impact);
+    const minOut = roundingSafeMin(leg.expect * (1 - SLIPPAGE - impact), leg.expect, to.decimals);
     if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${leg.sym} unit.`);
     actions.push({
       account: from.contract, name: 'transfer', authorization: auth,
