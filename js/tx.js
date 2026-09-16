@@ -449,8 +449,8 @@ export function buildStakeBack({
   const fee = claimed * (bps / 10000);
   const net = Math.max(0, claimed - fee);
 
-  // Keep their existing split rather than imposing one. An account staked
-  // entirely to CPU should stay that way.
+  // The split is the caller's. The claim-and-restake flow passes CPU only:
+  // NET is what almost nobody runs short of.
   const total = cpuWeight + netWeight;
   const cpuShare = total > 0 ? cpuWeight / total : 1;
   const toCpu = net * cpuShare;

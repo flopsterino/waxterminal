@@ -4948,7 +4948,7 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false, 
     ? [{ t: 'Claim', d: `Re-cast your existing ${info.proxy ? `proxy (${info.proxy})` : 'producers'} to refresh the vote weight, then collect the reward into your wallet. No fee, nothing staked.` }]
     : [
       { t: 'Claim', d: `Re-cast your existing ${info.proxy ? `proxy (${info.proxy})` : 'producers'} to refresh the vote weight, then collect the reward. Nothing is staked or spent.` },
-      { t: 'Restake', d: 'Read what actually arrived and stake exactly that back into CPU and NET.' },
+      { t: 'Restake', d: 'Read what actually arrived and stake exactly that into CPU.' },
     ];
   const render = (i, msg, err) => {
     box.innerHTML = `<div class="steps">${steps.map((s, n) => `
@@ -4995,12 +4995,10 @@ async function runStake(account, info, feeBps, feeAccount, { claimOnly = false, 
     // no spare WAX cannot pay for the very transaction that stakes it.
     const KEEP = 0.01;
     const stakeable = Math.max(0, claimed - KEEP);
-    // Back into CPU and NET in the proportion the account already runs. This
-    // passed the whole stake as CPU, so an account staked entirely to NET had
-    // its reward moved to CPU.
-    const own = await resourcesOf(account).then(x => x.staked).catch(() => ({ cpu: 1, net: 0 }));
+    // All of it into CPU. NET is what almost nobody runs short of; CPU is what
+    // stops an account transacting. Also one read fewer.
     const back = buildStakeBack({
-      claimed: stakeable, cpuWeight: own.cpu, netWeight: own.net,
+      claimed: stakeable, cpuWeight: 1, netWeight: 0,
       account, feeBps, feeAccount,
     });
     if (!back.actions.length) throw new Error('Nothing left to stake after the claim.');
