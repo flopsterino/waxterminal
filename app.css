@@ -1552,7 +1552,12 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
 /* --- the CheeseHub slot: whole artwork, in the flow, labelled ------------- */
 .ovgrid { grid-auto-flow: row dense; }
 .ovgrid > .ovbanner { grid-column: 1 / -1; }
-body:has(#view-overview.active) #cheeseBanner { display: none; }
+/* One banner a page: where the page has its own spot, the one above the
+   footer stays out of it. */
+body:has(.view.active:not(#view-wallet) .inview-banner) #cheeseBanner,
+body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #cheeseBanner { display: none; }
+.inview-banner:not(.ovbanner) { margin: 0 0 16px; }
+#walletAll .inview-banner { margin: 12px 0 0; }
 .bannerslot { padding: 10px 14px 14px; }
 .bannerhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; min-width: 0; }
 .bannerhead .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1561,19 +1566,10 @@ body:has(#view-overview.active) #cheeseBanner { display: none; }
 .bannerhead .more { margin-left: auto; flex: none; font-size: 11.5px; font-weight: 500; color: var(--accent-ink); text-decoration: none; }
 .bannerhead .more:hover { text-decoration: underline; }
 .bannertiles { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
-.bannertile { flex: 1 1 380px; max-width: 720px; aspect-ratio: 580 / 150; display: block; overflow: hidden;
+.bannertile { flex: 1 1 380px; max-width: 580px; aspect-ratio: 580 / 150; display: block; overflow: hidden;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); }
 .bannertile img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .bannertile:hover { border-color: var(--line-2); }
-.bannertile.open { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  border-style: dashed; text-decoration: none; color: var(--ink-2); font-size: 12px; }
-.bannertile.open b { font-size: 15px; color: var(--ink); }
-.bannertile.open span { color: var(--accent-ink); }
-.bannertile.open:hover { border-color: var(--accent); }
-@media (max-width: 700px) {
-  .bannertile.open { aspect-ratio: auto; flex-direction: row; gap: 8px; padding: 8px 10px; }
-  .bannertile.open b { font-size: 13px; }
-}
 
 /* --- filter blocks: one labelled choice per question ---------------------- */
 .filterblocks { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
@@ -1733,3 +1729,16 @@ body:has(#view-overview.active) #cheeseBanner { display: none; }
   .section > h3:has(> .dim)::after { display: none; }
   dl.facts.cols { grid-template-columns: minmax(0, 38%) minmax(0, 1fr); gap: 7px 12px; }
 }
+.bannerslot.empty { padding: 8px 14px; }
+.bannerslot.empty .bannerhead { margin: 0; }
+@media (max-width: 700px) {
+  /* One banner on a phone: two stacked is a screenful of advertising. */
+  .bannertile + .bannertile { display: none; }
+  .bannerslot { padding: 8px 10px 10px; }
+  .bannerhead { font-size: 11px; margin-bottom: 7px; }
+}
+/* The card as wide as its banner, not the page: an ad framed by a
+   screen-wide empty box reads bigger than it is. */
+[data-banner-host] .bannerslot { width: fit-content; max-width: 100%; margin-inline: auto; }
+[data-banner-host] .bannerslot .bannertiles { min-width: min(580px, 100%); }
+[data-banner-host] .bannertile { flex-basis: 580px; }

@@ -1082,7 +1082,7 @@ function renderOverview() {
             <span class="switchlabel">risky</span>
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
           </span></h3><div id="ovPay"></div></div>
-      <div class="ovbanner" data-banner-host hidden></div>
+      <div class="ovbanner inview-banner" data-banner-host hidden></div>
       <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
@@ -2891,20 +2891,22 @@ async function renderBanner() {
   // is the same thing over enough visits.
   const sold = (got?.banners || []).slice(0, 2)
     .map(b => b.shared?.img && Math.random() < 0.5 ? { ...b, ...b.shared } : b);
+  // Which of two sold banners leads is also a coin: a phone shows only the
+  // first, and both buyers paid for the same slot.
+  if (sold.length === 2 && Math.random() < 0.5) sold.reverse();
   const free = got?.free || 0;
   if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
   const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
   const tiles = sold.map(b => `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
       <img src="${esc(ipfs(b.img))}" alt="Banner by ${esc(b.user)}" width="580" height="150" onerror="${esc(ipfsFallback(b.img, giveUp))}"></a>`);
-  const openTile = tiles.length < 2 && free > 0;
-  if (openTile) tiles.push(`<a class="bannertile open" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">
-      <b>Your banner here</b><span>Rent this spot on CheeseHub &nearr;</span></a>`);
   const users = [...new Set(sold.map(b => b.user))];
-  bannerMarkup = `<div class="card bannerslot">
+  // An unsold slot is a line, not a banner-sized box: a page should not be
+  // mostly advertising, least of all for advertising.
+  bannerMarkup = `<div class="card bannerslot${tiles.length ? '' : ' empty'}">
     <div class="bannerhead"><span class="sponsored">Sponsored</span>
-      <span class="dim">${users.length ? `bought on CheeseHub by ${users.map(esc).join(' &amp; ')}` : 'CheeseHub banner slots'}</span>
-      ${openTile ? '' : `<a class="more" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">Advertise &rarr;</a>`}</div>
-    <div class="bannertiles">${tiles.join('')}</div></div>`;
+      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}` : 'this CheeseHub banner spot is free today'}</span>
+      <a class="more" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">${tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
+    ${tiles.length ? `<div class="bannertiles">${tiles.join('')}</div>` : ''}</div>`;
   paintBanners();
 }
 
@@ -3905,8 +3907,10 @@ function renderWalletAll(account) {
       <div class="card"><h3>Waiting on you</h3><div id="avTodo"></div></div>
       <div class="card"><h3>Earning <span class="dim">&mdash; at today&rsquo;s rates</span></h3><div id="avEarn"></div></div>
     </div>
+    <div class="inview-banner" data-banner-host hidden></div>
     <div class="card avrow"><h3>Holdings <span class="dim">&mdash; wallet, pools and stake together</span></h3><div id="acctTop"></div></div>`;
   paintWalletAll();
+  paintBanners();
 }
 
 // Token 24h changes, from the table the Tokens page already builds.
@@ -6212,6 +6216,7 @@ async function openToken(id) {
       <div class="card"><p class="sub" style="margin:0">No venue holding ${esc(t.symbol)} keeps replayable state — no chart, no history.</p></div>
     </div>`}
 
+    <div class="inview-banner" data-banner-host hidden></div>
     <div class="section"><h3>The token itself</h3>
       <div class="card"><dl class="facts cols" id="tokFacts">
           <dt>Contract</dt><dd class="mono">${esc(t.contract)}</dd>
@@ -6283,6 +6288,7 @@ async function openToken(id) {
   renderOrderBook('#tokBook', id, t.symbol).catch(() => {});
   $('#tokStar')?.appendChild(watchStar('t', id, t.symbol));
   paintRatings($('#tokenDetail')).catch(() => {});
+  paintBanners();
 
   // ---- where it trades -----------------------------------------------------
   // A table rather than bars: two pools on the same pair are common on Alcor and
@@ -8207,6 +8213,7 @@ async function openPool(key) {
         <div id="poolSwaps"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div>
         <div id="poolLiq" hidden></div></div>
     </div>
+    <div class="inview-banner" data-banner-host hidden></div>
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Where the liquidity sits
       <span class="dim">&mdash; ${esc(p.symB)} per ${esc(p.symA)}</span></h3>
       <div id="poolDepth"><div class="loading"><span class="spinner"></span><span>Reading ticks…</span></div></div>
@@ -8324,6 +8331,7 @@ async function openPool(key) {
 
   wirePromote($('#poolDetail'));
   paintRatings($('#poolDetail')).catch(() => {});
+  paintBanners();
 
   // Adds and removes: the other half of what happens in a pool, and the half
   // no venue API publishes. Read on demand, because it means paging the
