@@ -234,6 +234,44 @@ async function candlesFor(pool, bucketSec, onProgress) {
   return { candles: toCandles(rows, { bucketSec }), source: 'deltas', span: (Date.now() - rows[0].ts) / 86400000, rows };
 }
 
+// The connected wallet's own buys and sells of a token, for the chart. Read
+// once per five minutes per account and shared by every chart on every page:
+// the swaps come off Hyperion, which this machine shares with other work, so
+// redrawing at another candle size must not read them again. Only ever the
+// wallet that is connected — never somebody else's.
+const mySwapsCache = new Map();
+function mySwaps(account) {
+  const hit = mySwapsCache.get(account);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.p;
+  const p = accountSwaps(account, { hours: 24 * 90, maxPages: 3 }).catch(() => []);
+  mySwapsCache.set(account, { at: Date.now(), p });
+  return p;
+}
+const VENUE_CONTRACT = { alcor: 'swap.alcor', taco: 'swap.taco', defibox: 'swap.box', adex: 'swap.adex' };
+async function myTradeMarks(tokenId, { pool = null } = {}) {
+  const me = wallet.account();
+  if (!me) return [];
+  const trades = tradeList(await mySwaps(me), { limit: 100000 });
+  const out = [];
+  for (const t of trades) {
+    const idOf = x => `${x.symbol}@${x.contract}`;
+    if (pool) {
+      // On a market page, only what went through this market.
+      if (pool.dex === 'alcor') { if (!t.route?.map(String).includes(String(pool.id))) continue; }
+      else {
+        const ids = new Set([...t.sold, ...t.bought].map(idOf));
+        if (t.venue !== VENUE_CONTRACT[pool.dex] || !ids.has(pool.tokenA) || !ids.has(pool.tokenB)) continue;
+      }
+    }
+    const got = t.bought.filter(x => idOf(x) === tokenId).reduce((a, x) => a + x.amount, 0);
+    const sold = t.sold.filter(x => idOf(x) === tokenId).reduce((a, x) => a + x.amount, 0);
+    // Out and back in one transaction nets to nothing and is not a position.
+    if (got > sold * 1.001) out.push({ ts: t.ts, side: 'buy' });
+    else if (sold > got * 1.001) out.push({ ts: t.ts, side: 'sell' });
+  }
+  return out;
+}
+
 function invertCandles(candles) {
   return candles
     .filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0)
@@ -6362,14 +6400,27 @@ async function openToken(id) {
         const shown = flipped ? invertCandles(got.candles) : got.candles;
         const pair = $('#tokPair');
         if (pair) pair.textContent = flipped ? `${deepest.symB}/${deepest.symA}` : `${deepest.symA}/${deepest.symB}`;
-        await candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
-          .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; });
+        const handle = await candleChart(box, shown, { height: 280, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
+          .catch(() => { box.innerHTML = '<div class="chart-empty">Chart unavailable.</div>'; return null; });
         const note = box.nextElementSibling?.classList?.contains('chartspan') ? box.nextElementSibling : (() => {
           const n = document.createElement('p'); n.className = 'sub chartspan'; n.style.marginTop = '8px'; box.after(n); return n;
         })();
         const [num2, den2] = flipped ? [deepest.symA, deepest.symB] : [deepest.symB, deepest.symA];
-        note.textContent = `${den2} priced in ${num2} · ${shown.length.toLocaleString()} candles, back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
+        const base = `${den2} priced in ${num2} · ${shown.length.toLocaleString()} candles, back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
           + (got.source === 'alcor' ? ' — the whole life of the pool, from Alcor.' : ' — rebuilt from pool state changes, which the history node only keeps so far back.');
+        note.textContent = base;
+        // Your trades in this token, from every market it trades in. Read from
+        // the token's side; with the chart flipped the priced token is the
+        // other one, so a buy of this token is a sell of that.
+        if (handle && wallet.account()) {
+          const pricedIsToken = (flipped ? deepest.tokenB : deepest.tokenA) === id;
+          myTradeMarks(id).then(ms => {
+            if (stale()) return;
+            const marks = pricedIsToken ? ms : ms.map(m => ({ ...m, side: m.side === 'buy' ? 'sell' : 'buy' }));
+            const n = handle.setMarkers(marks);
+            if (ms.length) note.textContent = `${base} · B and S mark your ${ms.length} trade${ms.length === 1 ? '' : 's'} in ${t.symbol} over 90 days${n ? '' : ', none inside these candles'}`;
+          }).catch(() => {});
+        }
       } finally { busy = false; }
     };
     draw();
@@ -8346,8 +8397,18 @@ async function openPool(key) {
         // The last few days in view, not the pool's whole life: one launch-day
         // spike otherwise sets the scale and every candle since is a flat line
         // along the bottom. Zooming out is a scroll away.
-        await candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
-          .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; });
+        const handle = await candleChart(box, shown, { height: 300, precision: precisionFor(shown.at(-1)?.close), fmt: pxNum, visible: 140 })
+          .catch(() => { box.innerHTML = '<div class="empty">Chart library unavailable.</div>'; return null; });
+        // Your trades through this market, on the token the chart prices.
+        if (handle && wallet.account()) {
+          const priced = flipped ? p.tokenB : p.tokenA;
+          const base = note.textContent;
+          myTradeMarks(priced, { pool: p }).then(ms => {
+            if (stale()) return;
+            const n = handle.setMarkers(ms);
+            if (ms.length) note.textContent = `${base} · B and S mark your ${ms.length} trade${ms.length === 1 ? '' : 's'} here over 90 days${n ? '' : ', none inside these candles'}`;
+          }).catch(() => {});
+        }
       } catch (e) {
         const box2 = $('#poolChart');
         if (box2) box2.innerHTML = `<div class="empty">History unavailable: ${esc(e.message)}</div>`;
@@ -8431,7 +8492,7 @@ async function renderPoolLPs(p) {
 // nodes that share an IP with the owner's bots. Absent on the published site.
 if (typeof location !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
   window.__wt = {
-    state, walletTradeRow, drawRewards, tickRewards,
+    state, walletTradeRow, drawRewards, tickRewards, candleChart,
     setRewards(positions, farm) {
       walletShown = '__test';
       rewardsCtx = { account: '__test', positions, drawnWithFarm: false };

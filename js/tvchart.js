@@ -109,7 +109,7 @@ function mount(container, createChart, options, height) {
 
 // candles: [{time, open, high, low, close, volume}] with time in SECONDS.
 export async function candleChart(container, candles, { height = 320, precision = 6, fmt = null, visible = 0 } = {}) {
-  const { createChart, CandlestickSeries, HistogramSeries } = await load();
+  const { createChart, CandlestickSeries, HistogramSeries, createSeriesMarkers } = await load();
   const { chart, stop } = mount(container, createChart, themeOptions(), height);
   const up = solid('var(--good)', '#44cc99');
   const down = solid('var(--bad)', '#cc5544');
@@ -138,8 +138,46 @@ export async function candleChart(container, candles, { height = 320, precision 
   if (visible && candles.length > visible) {
     chart.timeScale().setVisibleLogicalRange({ from: candles.length - visible, to: candles.length + 2 });
   } else chart.timeScale().fitContent();
+
+  // Your own trades on the candles: a green B under the bar you bought in, a
+  // red S over the one you sold in. Several in one candle are one mark with a
+  // count, because a stack of arrows on one bar is unreadable. Trades outside
+  // the candles drawn are left off rather than pinned to an edge.
+  let markerApi = null;
+  const setMarkers = trades => {
+    if (!createSeriesMarkers || !candles.length) return 0;
+    const times = candles.map(c => c.time);
+    const step = times.length > 1 ? times[times.length - 1] - times[times.length - 2] : 3600;
+    const barOf = sec => {
+      if (sec < times[0] || sec >= times[times.length - 1] + step) return null;
+      let lo = 0, hi = times.length - 1;
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (times[mid] <= sec) lo = mid; else hi = mid - 1; }
+      return times[lo];
+    };
+    const by = new Map();
+    for (const t of trades || []) {
+      const bar = barOf(Math.floor(t.ts / 1000));
+      if (bar == null) continue;
+      const k = `${bar}:${t.side}`;
+      const m = by.get(k) || { time: bar, side: t.side, n: 0 };
+      m.n++;
+      by.set(k, m);
+    }
+    const list = [...by.values()].sort((a, b) => a.time - b.time).map(m => ({
+      time: m.time,
+      position: m.side === 'buy' ? 'belowBar' : 'aboveBar',
+      shape: m.side === 'buy' ? 'arrowUp' : 'arrowDown',
+      color: m.side === 'buy' ? up : down,
+      text: (m.side === 'buy' ? 'B' : 'S') + (m.n > 1 ? `×${m.n}` : ''),
+    }));
+    try {
+      if (!markerApi) markerApi = createSeriesMarkers(price, list);
+      else markerApi.setMarkers(list);
+    } catch { return 0; }
+    return by.size;
+  };
   return {
-    chart,
+    chart, setMarkers,
     destroy: () => { stop(); try { chart.remove(); } catch {} },
     retheme: () => chart.applyOptions(themeOptions()),
   };
