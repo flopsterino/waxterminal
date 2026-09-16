@@ -1535,3 +1535,24 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
   .acc-row { grid-template-columns: auto 1fr auto; column-gap: 9px; }
   #view-wallet .wpane .tablewrap table { width: 100%; min-width: 0; }
 }
+
+/* --- overview: one grid, so every card edge sits on the same lines ------- */
+/* Three grids stacked (a full-width table, then three columns, then two) put
+   the card edges somewhere different on every row. One grid: the payouts lead
+   across it, the charts share its columns, nothing is left on a row alone. */
+.ovgrid { grid-template-columns: minmax(0, 1fr); }
+.ovgrid > .card.ovpay { grid-column: 1 / -1; }
+.ovapr tbody tr:nth-child(n+11) { display: none; }
+@media (min-width: 1000px) {
+  .ovgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1600px) {
+  .ovgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ovgrid > .card.ovpay { grid-column: span 2; }
+  .ovgrid > .card.ovwax { grid-column: 1 / -1; }
+  .ovapr tbody tr:nth-child(n+11) { display: table-row; }
+}
+.minitab th + th, .minitab td + td { padding-left: 14px; }
+.bannerwrap { max-width: min(1680px, 96vw); }
+.minitab td > [data-pm] > .tokmark { margin-right: 6px; }
+@media (max-width: 700px) { .minitab th + th, .minitab td + td { padding-left: 10px; } }

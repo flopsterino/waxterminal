@@ -1014,25 +1014,20 @@ function renderOverview() {
       <div class="card"><div id="ovWatch"></div></div>
     </div>
     <div class="ovgrid">
-      <div class="card wide"><h3>Biggest daily payouts <span class="dim">&mdash; what farms actually hand out, per day</span>
+      <div class="card ovpay"><h3>Biggest daily payouts <span class="dim">&mdash; what farms actually hand out, per day</span>
           <span style="margin-left:auto" class="switchwrap">
             <span class="switchlabel">risky</span>
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
           </span></h3><div id="ovPay"></div></div>
-      <div class="card"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
+      <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
-      <div class="card"><h3>Gainers <span class="dim">&mdash; 24h</span></h3><div id="ovUp"></div></div>
-      <div class="card"><h3>Losers <span class="dim">&mdash; 24h</span></h3><div id="ovDown"></div></div>
-    </div>
-    <div class="grid g2" style="margin-top:10px">
-      <div class="card"><h3>WAX <span class="dim" id="ovWaxPx"></span>
+      <div class="card"><h3>Movers <span class="dim">&mdash; 24h, tokens with a real market</span></h3><div id="ovMovers"></div></div>
+      <div class="card ovwax"><h3>WAX <span class="dim" id="ovWaxPx"></span>
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
         <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
         <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
       <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
-    </div>
-    <div class="grid g2" style="margin-top:10px">
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
       <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovEnding2"></div></div>
     </div>`;
@@ -1047,7 +1042,7 @@ function renderOverview() {
     const el = $(id);
     if (!el) return;
     el.innerHTML = !rows.length ? `<div class="chart-empty">${esc(empty)}</div>`
-      : `<div class="minitabwrap"><table class="minitab"><thead><tr>${cols.map(c => `<th class="${c.r ? 'r' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${
+      : `<div class="minitabwrap"><table class="minitab"><thead><tr>${cols.map(c => `<th class="${c.r ? 'r' : ''}"${c.w ? ` style="width:${c.w}"` : ''}>${c.h}</th>`).join('')}</tr></thead><tbody>${
         rows.map(r => `<tr class="clickable" ${r.pool ? `data-poolkey="${esc(r.pool)}"` : `data-tokid="${esc(r.tok)}"`}>${
           cols.map(c => `<td class="${c.r ? 'r num' : ''} ${c.cls ? c.cls(r.x) : ''}">${c.v(r.x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     fillMarks(el);
@@ -1055,7 +1050,7 @@ function renderOverview() {
   const gKey = g => g.key;
   const pKey = p2 => `${p2.dex}:${p2.id}`;
 
-  mini('#ovFarms', bestApr.slice(0, 10).map(g => ({ pool: gKey(g), x: g })), [
+  mini('#ovFarms', bestApr.slice(0, 14).map(g => ({ pool: gKey(g), x: g })), [
     { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
     { h: 'Farm APR', r: true, v: g => `<span class="apr">${pct(g.aprAt)}</span>` },
     { h: 'Fee APR', r: true, v: g => pct(feeApr(g.pool)), cls: g => feeApr(g.pool) > 0 ? '' : 'dim' },
@@ -1091,16 +1086,19 @@ function renderOverview() {
   // Movers among tokens with a real market. A token with forty dollars behind
   // it moves 30% on one trade, and a gainers list made of those is noise.
   const movers = toks.filter(t => t.change24 != null && isFinite(t.change24) && t.tvl >= 100 && Math.abs(t.change24) >= 0.05);
-  mini('#ovUp', [...movers].filter(t => t.change24 > 0).sort((a, b) => b.change24 - a.change24).slice(0, 6).map(t => ({ tok: t.id, x: t })), [
+  // One card rather than two: a day with two gainers left a card that was mostly
+  // empty and pushed its neighbour onto a row of its own. Up to five each way,
+  // the other side filling in when one runs short.
+  const ups = [...movers].filter(t => t.change24 > 0).sort((a, b) => b.change24 - a.change24);
+  const downs = [...movers].filter(t => t.change24 < 0).sort((a, b) => a.change24 - b.change24);
+  const nUp = Math.min(ups.length, Math.max(5, 10 - downs.length));
+  const moved = [...ups.slice(0, nUp), ...downs.slice(0, 10 - nUp)].sort((a, b) => b.change24 - a.change24);
+  mini('#ovMovers', moved.map(t => ({ tok: t.id, x: t })), [
     { h: 'Token', v: tokCell },
     { h: 'Price', r: true, v: t => px(t.price) },
     { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
-  ], 'Nothing with a real market rose today.');
-  mini('#ovDown', [...movers].filter(t => t.change24 < 0).sort((a, b) => a.change24 - b.change24).slice(0, 6).map(t => ({ tok: t.id, x: t })), [
-    { h: 'Token', v: tokCell },
-    { h: 'Price', r: true, v: t => px(t.price) },
-    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
-  ], 'Nothing with a real market fell today.');
+    { h: 'Volume', r: true, v: t => t.vol24 > 0 ? usd(t.vol24) : '—', cls: t => t.vol24 > 0 ? '' : 'dim' },
+  ], 'Nothing with a real market moved 5% today.');
 
   // Yield with a date on it: a rate you can still take, and then cannot.
   const now2 = Date.now();
@@ -1136,7 +1134,7 @@ function renderOverview() {
     // Where the quoted value of the rewards runs well ahead of what they could
     // be sold for, the figure is marked rather than printed twice in a column
     // of its own that mostly repeated it.
-    { h: 'Pays / day', r: true, cls: () => 'strong', v: payDay },
+    { h: 'Pays / day', r: true, w: '9%', cls: () => 'strong', v: payDay },
     { h: 'In', v: g => {
       const byTok = new Map();
       for (const r of g.rewards) {
@@ -1147,10 +1145,10 @@ function renderOverview() {
       return list.slice(0, 2).map(([tok, r]) => `<span class="rew"><span data-pm="${esc(tok)}|${esc(r.symbol)}"></span><b>${qty(r.perDay)}</b>&nbsp;${esc(r.symbol)}</span>`).join('')
         + (list.length > 2 ? `<span class="rew more">+${list.length - 2}</span>` : '');
     } },
-    { h: 'Stakers', r: true, v: g => (g.stakers ? g.stakers.toLocaleString() : '—'), cls: g => g.stakers ? '' : 'dim' },
-    { h: 'APR', r: true, v: g => g.aprAt != null ? `<span class="apr${g.aprThin ? ' thin' : ''}">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
-    { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
-    { h: 'Ends', r: true, v: g => { if (!g.endsAt) return '<span class="dim">—</span>'; const d = (g.endsAt - Date.now()) / 86400e3; return d < 0 ? 'ended' : d < 1 ? Math.round(d * 24) + 'h' : Math.round(d) + 'd'; },
+    { h: 'Stakers', r: true, w: '8%', v: g => (g.stakers ? g.stakers.toLocaleString() : '—'), cls: g => g.stakers ? '' : 'dim' },
+    { h: 'APR', r: true, w: '8%', v: g => g.aprAt != null ? `<span class="apr${g.aprThin ? ' thin' : ''}">${pct(g.aprAt)}</span>` : '<span class="dim">—</span>' },
+    { h: 'Liquidity', r: true, w: '9%', v: g => usd(g.pool?.tvlReal) },
+    { h: 'Ends', r: true, w: '6%', v: g => { if (!g.endsAt) return '<span class="dim">—</span>'; const d = (g.endsAt - Date.now()) / 86400e3; return d < 0 ? 'ended' : d < 1 ? Math.round(d * 24) + 'h' : Math.round(d) + 'd'; },
       cls: g => g.endsAt && (g.endsAt - Date.now()) < 7 * 86400e3 ? 'neg' : 'dim' },
   ], 'No farm pays a reward with real liquidity behind it.');
   const rt = $('#riskyToggle');
