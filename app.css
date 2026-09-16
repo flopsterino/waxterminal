@@ -1536,11 +1536,12 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
 .ovapr tbody tr:nth-child(n+11) { display: none; }
 @media (min-width: 1000px) {
   .ovgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ovgrid > .card.ovwax { grid-column: 1 / -1; }
 }
 @media (min-width: 1600px) {
   .ovgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ovgrid > .card.ovpay { grid-column: span 2; }
-  .ovgrid > .card.ovwax { grid-column: 1 / -1; }
+  .ovgrid > .card.ovwax { grid-column: span 2; }
   .ovapr tbody tr:nth-child(n+11) { display: table-row; }
 }
 .minitab th + th, .minitab td + td { padding-left: 14px; }
@@ -1647,3 +1648,4 @@ body:has(#view-overview.active) #cheeseBanner { display: none; }
 .rwhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
 .rwhead .big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
 #walRewards .minitab td:first-child { max-width: none; }
+.ratedtab th .em { font-size: 13px; letter-spacing: 0; font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif; }

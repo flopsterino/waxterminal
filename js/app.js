@@ -1031,6 +1031,8 @@ function renderOverview() {
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
         <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
         <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
+      <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
+          <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
       <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
       <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovEnding2"></div></div>
@@ -1053,6 +1055,63 @@ function renderOverview() {
   };
   const gKey = g => g.key;
   const pKey = p2 => `${p2.dex}:${p2.id}`;
+
+  // What people paid to call good. A vote is a HOLE transfer, so this is a
+  // ranking somebody spent money on, and it is the last 24 hours by default
+  // for the same reason the buttons are: a reputation bought once should not
+  // stand for a season. Rockets and fires count for, poo and flags against.
+  (async () => {
+    const box = $('#ovRated');
+    if (!box) return;
+    if (!ratingsConfigured()) { box.closest('.card')?.remove(); return; }
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Counting votes…</span></div>';
+    let all;
+    try { all = await loadRatings(); } catch { if ($('#ovRated')) $('#ovRated').innerHTML = '<div class="chart-empty">Votes could not be read right now.</div>'; return; }
+    if (!$('#ovRated')) return;
+    const score = x => (x.rocket + x.fire) - (x.poo + x.flag);
+    const named = subject => {
+      if (subject.startsWith('t:')) {
+        const id = subject.slice(2), t = state.tokens.get(id);
+        return t ? { attr: `data-tokid="${esc(id)}"`, cell: tokCell({ id, symbol: t.symbol }) } : null;
+      }
+      if (subject.startsWith('p:')) {
+        const [, dex, pid] = subject.split(':');
+        const p2 = state.pools.find(x => x.dex === dex && String(x.id) === pid);
+        return p2 ? { attr: `data-poolkey="${esc(dex)}:${esc(pid)}"`, cell: pairCell(p2) + tierTag(p2) } : null;
+      }
+      return null;
+    };
+    const rowsFor = win => [...all]
+      .map(([subject, t]) => ({ x: win === 'day' ? t : t.all, info: named(subject) }))
+      .filter(r => r.info && r.x && r.x.voters > 0 && score(r.x) > 0)
+      .sort((a2, b2) => score(b2.x) - score(a2.x) || b2.x.voters - a2.x.voters)
+      .slice(0, 8);
+    const terms = ratingTerms();
+    const draw = win => {
+      const el2 = $('#ovRated');
+      if (!el2) return;
+      const rows = rowsFor(win);
+      const note = $('#ovRatedNote');
+      if (note) note.innerHTML = `&mdash; votes paid in ${esc(terms.symbol)}, ${win === 'day' ? 'last 24 hours' : 'last 90 days'}`;
+      el2.innerHTML = rows.length
+        ? `<div class="minitabwrap"><table class="minitab ratedtab"><thead><tr><th>Name</th>${VOTES.map(v => `<th class="r" title="${esc(v.label)}"><span class="em">${v.emoji}</span></th>`).join('')}<th class="r">Score</th></tr></thead><tbody>${
+          rows.map(r => `<tr class="clickable" ${r.info.attr}><td>${r.info.cell}</td>${
+            VOTES.map(v => `<td class="r num ${r.x[v.key] ? '' : 'dim'}">${r.x[v.key] || '·'}</td>`).join('')}<td class="r num pos strong">+${score(r.x)}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="chart-empty">${win === 'day' ? 'Nothing voted up in the last 24 hours.' : 'Nothing voted up yet.'}<br>
+            <span class="dim">Rate a token or a market on its own page &mdash; a vote is ${terms.price} ${esc(terms.symbol)}.</span></div>`;
+      fillMarks(el2);
+    };
+    // Today first; the ninety days when today is empty, and said so above.
+    let win = rowsFor('day').length ? 'day' : 'all';
+    const chips = $('#ovRatedWin');
+    const paintChips = () => {
+      if (!chips) return;
+      chips.innerHTML = [['day', '24h'], ['all', '90d']].map(([k, l]) => `<button class="chip" data-win="${k}" aria-pressed="${k === win}">${l}</button>`).join('');
+      chips.querySelectorAll('[data-win]').forEach(b2 => b2.onclick = () => { win = b2.dataset.win; paintChips(); draw(win); });
+    };
+    paintChips();
+    draw(win);
+  })();
 
   mini('#ovFarms', bestApr.slice(0, 14).map(g => ({ pool: gKey(g), x: g })), [
     { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
