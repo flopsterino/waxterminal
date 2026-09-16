@@ -108,10 +108,16 @@ async function probeHosts(account, after) {
       const q = new URLSearchParams({ account, 'act.name': 'transfer', after, limit: '1', sort: 'asc' });
       const d = await get(`${host}/v2/history/get_actions?${q}`);
       const a = d.actions?.[0];
-      return a ? { host, oldest: tsOf(a) } : null;
+      // Answered with nothing: a node that has no transfers for this account
+      // in the window. Different from not answering at all.
+      return { host, oldest: a ? tsOf(a) : Infinity };
     } catch { return null; }
   }));
-  return probes.filter(Boolean);
+  const answered = probes.filter(Boolean);
+  // Not one node answered. Carrying today's holdings back a year and calling
+  // it a history would draw a line out of nothing.
+  if (!answered.length) throw new Error('No history node answered');
+  return answered;
 }
 
 async function get(url) {

@@ -62,8 +62,27 @@ function tooltip() {
   }
   return tip;
 }
+// And a watchdog, because none of those events is guaranteed on a phone: a
+// tap raises the tooltip, there is no hover to leave, and switching a tab hides
+// the chart without anything firing on it — so "CHEESE/WAXUSDC 53.8%" stayed
+// on screen over the Staking tab. While a tooltip is up it checks, a few times
+// a second, that its chart is still on screen; on a touch screen it also goes
+// away on its own after a moment.
+let shownAt = 0, watch = 0;
+const touchScreen = () => typeof matchMedia === 'function' && matchMedia('(hover: none)').matches;
+function watchTip() {
+  if (watch) return;
+  watch = setInterval(() => {
+    if (!tip || tip.hidden) { clearInterval(watch); watch = 0; return; }
+    const r = tipOwner && tipOwner.isConnected ? tipOwner.getBoundingClientRect() : null;
+    const onScreen = r && r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
+    if (!onScreen || (touchScreen() && Date.now() - shownAt > 2500)) hideTip();
+  }, 250);
+}
 function showTip(html, x, y) {
   const t = tooltip();
+  shownAt = Date.now();
+  watchTip();
   // The chart under the pointer owns the tooltip until the pointer leaves it.
   const under = typeof document !== 'undefined' && document.elementFromPoint ? document.elementFromPoint(x, y) : pointerTarget;
   tipOwner = (under && under.closest && under.closest('.chart, .bubblemap, .bars, .donut, svg')) || under || null;
