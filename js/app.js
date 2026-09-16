@@ -2325,7 +2325,7 @@ async function renderTradeFlow(account) {
 //
 // Both are read the same way: one table read for the list, one more for what a
 // pool accepts. Nothing here is written without a signature.
-const stakeFilters = { q: '', venue: 'all', kind: 'all', ended: false, mine: false, sort: 'usdDay', dir: -1 };
+const stakeFilters = { q: '', venue: 'all', kind: 'all', status: 'live', mine: false, sort: 'usdDay', dir: -1 };
 let stakeRows = null;
 // Which of these the connected wallet is actually in. Read once per wallet, so
 // the "only mine" toggle is instant after the first press.
@@ -2425,10 +2425,9 @@ async function renderStaking() {
   }
   const f = stakeFilters;
   let rows = stakeRows.filter(r => {
-    // "Only mine" ignores the live filter on purpose: a farm you are in that
-    // has ended is exactly the one you need to find, to take your NFTs back.
     if (f.mine && !myStakeKeys?.has(r.key)) return false;
-    if (!f.ended && !f.mine && !r.live) return false;
+    if (f.status === 'live' && !r.live) return false;
+    if (f.status === 'ended' && r.live) return false;
     if (f.venue !== 'all' && r.venue !== f.venue) return false;
     if (f.kind !== 'all' && r.kind !== f.kind) return false;
     if (f.q) {
@@ -2462,15 +2461,17 @@ async function renderStaking() {
   // compare before clicking.
   const SORTS = [
     { k: 'usdDay', label: 'Pays most' },
-    { k: 'staked', label: 'Most staked' },
-    { k: 'apr', label: 'Best APR' },
-    { k: 'users', label: 'Most stakers' },
-    { k: 'endsAt', label: 'Ending soonest', dir: 1 },
+    { k: 'staked', label: 'Staked' },
+    { k: 'apr', label: 'APR' },
+    { k: 'users', label: 'Stakers' },
+    { k: 'endsAt', label: 'Ending soon', dir: 1 },
   ];
   const sortBar = $('#stakeSort');
   if (sortBar) {
-    sortBar.innerHTML = '<span class="sub">Sort</span>' + SORTS.map(o =>
-      `<button class="chip" data-sort="${o.k}" aria-pressed="${String(f.sort === o.k)}">${o.label}</button>`).join('');
+    // The active sort shows its direction; pressing it again flips it.
+    sortBar.innerHTML = SORTS.map(o =>
+      `<button role="radio" data-sort="${o.k}" aria-checked="${String(f.sort === o.k)}">${o.label}${
+        f.sort === o.k ? ` <span class="dir">${f.dir === (o.dir ?? -1) ? '&darr;' : '&uarr;'}</span>` : ''}</button>`).join('');
     sortBar.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => {
       const o = SORTS.find(x => x.k === b.dataset.sort);
       if (f.sort === o.k) f.dir *= -1; else { f.sort = o.k; f.dir = o.dir ?? -1; }
@@ -2524,41 +2525,41 @@ async function renderStaking() {
 function wireStaking() {
   wireCsv('#view-staking .toolbar', '#stakeCount', 'wax-staking', 'staking');
   $('#stakeSearch').oninput = e => { stakeFilters.q = e.target.value.trim().toLowerCase(); renderStaking(); };
-  const venue = v => {
-    stakeFilters.venue = v;
-    [['all', '#stAll'], ['pepperstake', '#stPepper'], ['waxdao', '#stWaxdao']]
-      .forEach(([x, id]) => $(id)?.setAttribute('aria-pressed', String(v === x)));
+  // Five blocks, one choice each. They were nine loose chips where some were
+  // radio buttons (the platforms) and some were toggles that undid themselves
+  // on a second press (token/NFT), with nothing on screen to tell which was
+  // which. "Mine" leads, because it is the question someone with a stake asks.
+  const blocks = $('#stakeFilterBlocks');
+  if (!blocks) return;
+  const sync = () => blocks.querySelectorAll('.seg[data-f]').forEach(seg => {
+    const k = seg.dataset.f;
+    const v = k === 'mine' ? (stakeFilters.mine ? 'mine' : 'all') : stakeFilters[k];
+    seg.querySelectorAll('button[data-v]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.v === v)));
+  });
+  blocks.querySelectorAll('.seg[data-f] button[data-v]').forEach(b => b.onclick = async () => {
+    const k = b.closest('.seg').dataset.f, v = b.dataset.v;
+    if (k === 'mine') {
+      const want = v === 'mine';
+      if (want === stakeFilters.mine) return;
+      if (want && !wallet.account()) {
+        try { await wallet.connect(); } catch { return; }
+        if (!wallet.account()) return;
+      }
+      stakeFilters.mine = want;
+      if (want) {
+        // A farm you are in that has ended is the one you most need to find:
+        // it is where your NFTs are still sitting.
+        stakeFilters.status = 'all';
+        sync();
+        b.textContent = 'Reading…';
+        await loadMyStakes();
+        b.textContent = `Mine (${myStakeKeys?.size ?? 0})`;
+      }
+    } else stakeFilters[k] = v;
+    sync();
     renderStaking();
-  };
-  $('#stAll').onclick = () => venue('all');
-  $('#stPepper').onclick = () => venue('pepperstake');
-  $('#stWaxdao').onclick = () => venue('waxdao');
-  const kind = k => {
-    stakeFilters.kind = stakeFilters.kind === k ? 'all' : k;
-    $('#stToken').setAttribute('aria-pressed', String(stakeFilters.kind === 'token'));
-    $('#stNft').setAttribute('aria-pressed', String(stakeFilters.kind === 'nft'));
-    renderStaking();
-  };
-  $('#stToken').onclick = () => kind('token');
-  $('#stNft').onclick = () => kind('nft');
-  $('#stMine').onclick = async e => {
-    if (!stakeFilters.mine && !wallet.account()) {
-      try { await wallet.connect(); } catch { return; }
-    }
-    stakeFilters.mine = !stakeFilters.mine;
-    e.target.setAttribute('aria-pressed', String(stakeFilters.mine));
-    if (stakeFilters.mine) {
-      e.target.textContent = 'Reading…';
-      await loadMyStakes();
-      e.target.textContent = `Only mine (${myStakeKeys.size})`;
-    } else e.target.textContent = 'Only mine';
-    renderStaking();
-  };
-  $('#stEnded').onclick = e => {
-    stakeFilters.ended = !stakeFilters.ended;
-    e.target.setAttribute('aria-pressed', String(stakeFilters.ended));
-    renderStaking();
-  };
+  });
+  sync();
 }
 
 // ---- one farm --------------------------------------------------------------

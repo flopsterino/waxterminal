@@ -118,17 +118,24 @@
     <div class="stats" id="stakeStats"></div>
     <div class="toolbar">
       <input class="search" id="stakeSearch" placeholder="Search a farm, a token or a collection…" autocomplete="off">
-      <button class="chip" id="stAll" aria-pressed="true">All</button>
-      <button class="chip" id="stPepper" aria-pressed="false">PepperStake</button>
-      <button class="chip" id="stWaxdao" aria-pressed="false">WaxDAO</button>
-      <span class="sep"></span>
-      <button class="chip" id="stToken" aria-pressed="false">Token farms</button>
-      <button class="chip" id="stNft" aria-pressed="false">NFT farms</button>
-      <button class="chip" id="stMine" aria-pressed="false">Only mine</button>
-      <button class="chip" id="stEnded" aria-pressed="false">Show ended</button>
       <span class="dim" id="stakeCount" style="font-size:12px"></span>
     </div>
-    <div class="toolbar" id="stakeSort"></div>
+    <div class="filterblocks" id="stakeFilterBlocks">
+      <div class="fblock mineblock"><span class="fl">Show</span>
+        <div class="seg" role="radiogroup" aria-label="Show" data-f="mine">
+          <button role="radio" data-v="all">All farms</button><button role="radio" data-v="mine">Mine</button></div></div>
+      <div class="fblock"><span class="fl">Platform</span>
+        <div class="seg" role="radiogroup" aria-label="Platform" data-f="venue">
+          <button role="radio" data-v="all">All</button><button role="radio" data-v="pepperstake">PepperStake</button><button role="radio" data-v="waxdao">WaxDAO</button></div></div>
+      <div class="fblock"><span class="fl">Stakes</span>
+        <div class="seg" role="radiogroup" aria-label="Stakes" data-f="kind">
+          <button role="radio" data-v="all">Any</button><button role="radio" data-v="token">Tokens</button><button role="radio" data-v="nft">NFTs</button></div></div>
+      <div class="fblock"><span class="fl">Status</span>
+        <div class="seg" role="radiogroup" aria-label="Status" data-f="status">
+          <button role="radio" data-v="live">Live</button><button role="radio" data-v="ended">Ended</button><button role="radio" data-v="all">Both</button></div></div>
+      <div class="fblock sortblock"><span class="fl">Sort by</span>
+        <div class="seg" role="radiogroup" aria-label="Sort by" id="stakeSort"></div></div>
+    </div>
     <div class="stakegrid" id="stakeGrid"></div>
     <p class="sub" id="stakeNote" style="margin-top:10px"></p>
   </section>
