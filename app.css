@@ -1796,18 +1796,6 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 
 /* --- resources ---------------------------------------------------------------- */
 .pwtop[hidden] { display: none; }
-.restiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-.restile { display: flex; flex-direction: column; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; }
-.restile .rt-head { display: flex; justify-content: space-between; align-items: baseline; }
-.restile .rt-name { font-size: 11px; letter-spacing: .08em; font-weight: 700; color: var(--muted); }
-.restile .rt-pct { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.restile.warm .rt-pct { color: var(--accent-ink); }
-.restile.hot { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
-.restile.hot .rt-pct { color: var(--bad); font-weight: 600; }
-.restile .rt-big { font-size: 18px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; margin-top: 4px; }
-.restile .rt-sub { font-size: 11.5px; color: var(--muted); }
-.restile .rt-act { align-self: flex-start; margin-top: 4px; }
-.meterfill.hot { background: var(--bad); }
 .stakebox { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; padding: 0; }
 .stakebox .sb-col { padding: 14px 16px; min-width: 0; }
 .stakebox .sb-col + .sb-col { border-left: 1px solid var(--line); }
@@ -1816,7 +1804,6 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .stakebox .stats { grid-template-columns: 1fr; }
 .flashcard { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow .3s; }
 @media (max-width: 900px) {
-  .restiles { grid-template-columns: 1fr; }
   .stakebox { grid-template-columns: 1fr; }
   .stakebox .sb-col + .sb-col { border-left: 0; border-top: 1px solid var(--line); }
 }
@@ -1825,3 +1812,68 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .proxypick select { flex: 1; min-width: 0; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line);
   border-radius: var(--r); padding: 7px 9px; font: inherit; font-size: 13px; }
 .proxypick select:focus { outline: none; border-color: var(--accent); }
+
+/* --- resources, with some life in it ------------------------------------------ */
+.restiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.restile { --tone: var(--good); position: relative; display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 14px;
+  padding: 16px 16px 14px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  background: radial-gradient(130% 120% at 0% 0%, color-mix(in srgb, var(--tone) 14%, transparent), transparent 55%), var(--surface); }
+.restile.warm { --tone: var(--accent); }
+.restile.hot { --tone: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.ring { position: relative; width: 76px; height: 76px; }
+.ring svg { width: 100%; height: 100%; }
+.ring .track { fill: none; stroke: var(--surface-3); stroke-width: 6; }
+.ring .fill { fill: none; stroke: var(--tone); stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray .6s ease; }
+.ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ring-pct small { font-size: 10px; font-weight: 600; color: var(--muted); margin-left: 1px; }
+.rt-body { min-width: 0; }
+.rt-name { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .09em; font-weight: 700; color: var(--muted); }
+.rt-icon { display: inline-grid; width: 16px; height: 16px; color: var(--tone); }
+.rt-icon svg { width: 16px; height: 16px; }
+.rt-big { font-size: 19px; font-weight: 700; color: var(--ink); margin-top: 4px; letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rt-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.rt-act { grid-column: 1 / -1; justify-self: start; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--accent-ink);
+  background: none; border: 0; padding: 0; cursor: pointer; }
+.rt-act:hover { text-decoration: underline; }
+
+.buycard { display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, var(--surface)), var(--surface) 40%); }
+.buyhead { display: flex; align-items: center; gap: 12px; }
+.buyicon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; flex: none;
+  color: #111; background: linear-gradient(135deg, #f7c65a, var(--accent)); box-shadow: 0 6px 18px -8px var(--accent); }
+.buyicon.ram { color: #fff; background: linear-gradient(135deg, #6aa8ff, var(--c1)); box-shadow: 0 6px 18px -8px var(--c1); }
+.buyicon svg { width: 22px; height: 22px; }
+.buytitle { font-size: 16px; font-weight: 700; color: var(--ink); }
+.buyinput { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 6px 6px 6px 14px; }
+.buyinput:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.buyinput input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--ink); font: inherit;
+  font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; padding: 4px 0; }
+.buyinput .unit { font-size: 13px; font-weight: 600; color: var(--ink-2); padding: 0 10px; }
+.buyinput .seg { flex: none; }
+.buymeta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--muted); margin-top: -4px; }
+.buymeta b { color: var(--ink-2); }
+.buymeta .quick { display: flex; gap: 4px; }
+.linkbtn { font: inherit; font-size: 12px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 0; border-radius: 99px; padding: 3px 10px; cursor: pointer; }
+.linkbtn:hover { filter: brightness(1.15); }
+.splitbox { display: flex; flex-direction: column; gap: 6px; }
+.splitlabels { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--ink-2); }
+.splitlabels b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.splitlabels i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px; vertical-align: middle; }
+.splitlabels i.cpu { background: var(--accent); margin-left: 0; }
+.splitlabels i.net { background: var(--c1); margin-right: 0; }
+#pwSplit { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 99px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) calc(var(--v, 100) * 1%), var(--c1) calc(var(--v, 100) * 1%), var(--c1) 100%); }
+#pwSplit::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 2px solid var(--bg); box-shadow: 0 1px 6px rgba(0,0,0,.5); }
+#pwSplit::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid var(--bg); }
+.buyresult { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 12px;
+  background: var(--surface-2); border: 1px dashed var(--line-2); }
+.buyresult .k { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.buyresult b { font-size: 24px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.btn.big { width: 100%; justify-content: center; padding: 11px 16px; font-size: 14px; border-radius: 12px; }
+.unrows { display: flex; flex-direction: column; gap: 8px; }
+.unrows label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
+.unrows input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--ink); font: inherit; font-size: 14px; }
+.unrows input:focus { outline: none; border-color: var(--accent); }
+.stakebox { border-radius: 14px; }
+@media (max-width: 900px) { .restiles { grid-template-columns: 1fr; } }

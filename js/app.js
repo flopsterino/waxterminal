@@ -24,7 +24,7 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake } from './waxdao.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
-import { balanceOf, getAllRows } from './chain.js';
+import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
@@ -3239,60 +3239,74 @@ async function renderWalletResources(account) {
   const ready = refund && Date.now() >= refund.readyAt;
 
   // Three numbers decide whether an account can act at all, so they lead, each
-  // with the one thing that fixes it. Then the two ways to buy more, then the
-  // stake itself: its vote, taking it out, and what is on its way back.
-  const tile = (name, frac, big, sub, jump, verb) => `
-    <div class="restile ${frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : ''}">
-      <div class="rt-head"><span class="rt-name">${name}</span><span class="rt-pct">${(frac * 100).toFixed(0)}% used</span></div>
-      <div class="metertrack"><span class="meterfill ${frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : ''}" style="width:${Math.max(1, frac * 100).toFixed(1)}%"></span></div>
-      <div class="rt-big">${big}</div>
-      <div class="rt-sub">${sub}</div>
-      <button class="chip rt-act" data-jump="${jump}">${verb}</button>
+  // as a gauge with the one thing that fixes it. Then the two ways to buy more,
+  // then the stake itself: its vote, taking it out, and what is coming back.
+  const ICON = {
+    CPU: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10h4v4h-4zM9.5 2.5v3M14.5 2.5v3M9.5 18.5v3M14.5 18.5v3M2.5 9.5h3M2.5 14.5h3M18.5 9.5h3M18.5 14.5h3"/></svg>',
+    NET: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.8 16a5 5 0 0 1 6.4 0"/><circle cx="12" cy="19.3" r="1.1" fill="currentColor"/></svg>',
+    RAM: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2.5" y="7" width="19" height="9" rx="2"/><path d="M6.5 16v3M10.5 16v3M14.5 16v3M18.5 16v3M7 10.5v2M11 10.5v2M15 10.5v2"/></svg>',
+    BOLT: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M13 2.5 4.5 13.5h6.5l-1 8 8.5-11h-6.5z"/></svg>',
+  };
+  const RING = 2 * Math.PI * 26;
+  const tile = (name, frac, big, sub, jump, verb) => {
+    const tone = frac > 0.9 ? 'hot' : frac > 0.7 ? 'warm' : 'ok';
+    return `<div class="restile ${tone}">
+      <div class="ring">
+        <svg viewBox="0 0 64 64"><circle class="track" cx="32" cy="32" r="26"/>
+          <circle class="fill" cx="32" cy="32" r="26" stroke-dasharray="${(Math.max(0.01, frac) * RING).toFixed(1)} ${RING.toFixed(1)}" transform="rotate(-90 32 32)"/></svg>
+        <span class="ring-pct">${(frac * 100).toFixed(0)}<small>%</small></span>
+      </div>
+      <div class="rt-body">
+        <div class="rt-name"><span class="rt-icon">${ICON[name]}</span>${name}</div>
+        <div class="rt-big">${big}</div>
+        <div class="rt-sub">${sub}</div>
+      </div>
+      <button class="rt-act" data-jump="${jump}">${verb} &rarr;</button>
     </div>`;
+  };
   out.innerHTML = `<div class="section"><h3>Resources <span class="dim">&mdash; what lets this account transact</span></h3>
     <div class="restiles">
       ${r.cpu.max < 0 ? tile('CPU', 0, 'Unlimited', 'a system account', 'resPw', 'Power up')
-        : tile('CPU', useFraction(r.cpu), `~${cpuTransactions(r.cpu.available).toLocaleString()} transactions left`, `${micros(r.cpu.available)} &middot; ${qty(r.staked.cpu)} WAX staked &middot; refills over a day`, 'resPw', 'Power up')}
+        : tile('CPU', useFraction(r.cpu), `~${cpuTransactions(r.cpu.available).toLocaleString()} transactions`, `left &middot; refills over 24h &middot; ${qty(r.staked.cpu)} WAX staked`, 'resPw', 'Power up')}
       ${r.net.max < 0 ? tile('NET', 0, 'Unlimited', 'a system account', 'resPw', 'Power up')
-        : tile('NET', useFraction(r.net), `${bytes(r.net.available)} left`, `${qty(r.staked.net)} WAX staked`, 'resPw', 'Power up')}
+        : tile('NET', useFraction(r.net), `${bytes(r.net.available)}`, `left &middot; ${qty(r.staked.net)} WAX staked`, 'resPw', 'Power up')}
       ${r.ram.max < 0 ? tile('RAM', 0, 'Unlimited', 'a system account', 'resRam', 'Buy RAM')
-        : tile('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)} free`, `of ${bytes(r.ram.max)} &middot; bought, not staked`, 'resRam', 'Buy RAM')}
+        : tile('RAM', useFraction(r.ram), `${bytes(r.ram.max - r.ram.used)}`, `free of ${bytes(r.ram.max)} &middot; yours to keep`, 'resRam', 'Buy RAM')}
     </div>
     <div class="grid g2 resbuy">
-      <div class="card" id="resPw"><h3>Power up <span class="dim">&mdash; the CHEESE is burned, not paid to anyone</span></h3>
-        <div class="seg" role="radiogroup" id="pwPay" style="margin:0 0 10px">
-          <button role="radio" data-pwtok="cheese" aria-checked="true">With CHEESE</button>
-          <button role="radio" data-pwtok="wax" aria-checked="false">With WAX</button>
-        </div>
-        <div class="amtrow">
+      <div class="card buycard allow-foreign" id="resPw">
+        <div class="buyhead"><span class="buyicon bolt">${ICON.BOLT}</span>
+          <div><div class="buytitle">Power up</div><div class="sub">CPU and NET for 24 hours &middot; the CHEESE is burned</div></div></div>
+        <div class="buyinput">
           <input id="pwAmt" type="number" step="any" min="0" inputmode="decimal" value="2" aria-label="Amount">
-          <span class="cur" id="pwUnit">CHEESE</span>
-          <button class="chip" id="pwMax">Max</button>
+          <div class="seg" role="radiogroup" id="pwPay">
+            <button role="radio" data-pwtok="cheese" aria-checked="true">CHEESE</button>
+            <button role="radio" data-pwtok="wax" aria-checked="false">WAX</button>
+          </div>
         </div>
-        <p class="sub" id="pwBal" style="margin:6px 0 0"></p>
+        <div class="buymeta"><span id="pwBal"></span><button class="linkbtn" id="pwMax">Max</button></div>
         <label class="pwtop" id="pwTopWrap" hidden><input type="checkbox" id="pwTop" checked>
           <span>Buy the missing <b id="pwShort"></b> CHEESE with WAX, in the same transaction</span></label>
-        <div class="toolbar" style="margin:10px 0 0">
-          <span class="sub">Into</span>
-          ${[['100', 'CPU only'], ['70', '70 / 30'], ['50', 'half and half'], ['0', 'NET only']]
-            .map(([v, label], i) => `<button class="chip" data-pwsplit="${v}"${i === 0 ? ' aria-pressed="true"' : ''}>${label}</button>`).join('')}
+        <div class="splitbox">
+          <div class="splitlabels"><span><i class="cpu"></i>CPU <b id="pwCpuPct">100%</b></span><span>NET <b id="pwNetPct">0%</b><i class="net"></i></span></div>
+          <input type="range" id="pwSplit" min="0" max="100" step="10" value="100" aria-label="Share that goes to CPU">
         </div>
-        <p class="sub" style="margin:9px 0 0" id="pwNote"></p>
-        <div id="pwOut" style="margin-top:10px"></div>
-        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwGo">Power up</button></div>
+        <div class="buyresult"><span class="k">You get about</span><b id="pwGet">—</b><span class="sub" id="pwNote"></span></div>
+        <div id="pwOut"></div>
+        <button class="btn big" id="pwGo">Power up</button>
       </div>
-      <div class="card" id="resRam"><h3>Buy RAM with CHEESE <span class="dim">&mdash; through ram.chz</span></h3>
-        <div class="amtrow">
+      <div class="card buycard allow-foreign" id="resRam">
+        <div class="buyhead"><span class="buyicon ram">${ICON.RAM}</span>
+          <div><div class="buytitle">Buy RAM</div><div class="sub">Bought, not rented &middot; through ram.chz &middot; 0.5% standard spread each way</div></div></div>
+        <div class="buyinput">
           <input id="ramAmt" type="number" step="any" min="0" inputmode="decimal" value="5" aria-label="CHEESE to spend">
-          <span class="cur">CHEESE</span>
-          ${[1, 5, 25, 100].map(a => `<button class="chip" data-ram="${a}">${a}</button>`).join('')}
+          <span class="unit">CHEESE</span>
         </div>
-        <p class="sub" id="ramBal" style="margin:6px 0 0"></p>
-        <p class="sub" style="margin:9px 0 0">RAM is bought, not rented: it stays yours until you sell it back.
-          The bytes land on ${esc(account)}. <span class="dim">0.5% standard spread each way.</span></p>
-        <div id="ramOut" style="margin-top:10px"></div>
-        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramGo">Buy RAM</button>
-          <a class="plink" href="${CHEESEHUB}/ram" target="_blank" rel="noopener">CheeseHub RAM desk &nearr;</a></div>
+        <div class="buymeta"><span id="ramBal"></span><span class="quick">${[1, 5, 25, 100].map(a => `<button class="linkbtn" data-ram="${a}">${a}</button>`).join('')}</span></div>
+        <div class="buyresult"><span class="k">You get about</span><b id="ramGet">—</b><span class="sub">of RAM on ${esc(account)}, yours until you sell it</span></div>
+        <div id="ramOut"></div>
+        <button class="btn big" id="ramGo">Buy RAM</button>
+        <a class="plink" href="${CHEESEHUB}/ram" target="_blank" rel="noopener" style="align-self:center">CheeseHub RAM desk &nearr;</a>
       </div>
     </div>
   </div>`;
@@ -3316,11 +3330,10 @@ async function renderWalletResources(account) {
               
       </div>
       <div class="sb-col"><h4>Unstake <span class="dim">&mdash; three days in a queue</span></h4>
-        <div class="filters" style="display:grid;gap:8px;margin:0">
-          <label>From CPU<input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
-          <label>From NET<input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
+        <div class="unrows">
+          <label><span>From CPU <span class="dim">&middot; ${qty(r.staked.cpu)}</span></span><input id="unCpu" type="number" step="any" min="0" max="${r.staked.cpu}" placeholder="0" inputmode="decimal"></label>
+          <label><span>From NET <span class="dim">&middot; ${qty(r.staked.net)}</span></span><input id="unNet" type="number" step="any" min="0" max="${r.staked.net}" placeholder="0" inputmode="decimal"></label>
         </div>
-        <p class="sub" style="margin:9px 0 0">${qty(r.staked.cpu)} WAX in CPU, ${qty(r.staked.net)} in NET.</p>
         <div id="unOut" style="margin-top:10px"></div>
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="unGo">Review</button></div>
       
@@ -3380,11 +3393,16 @@ async function renderWalletResources(account) {
     const into = pwCpu >= 100 ? 'CPU' : pwCpu <= 0 ? 'NET' : `${pwCpu}% CPU and ${100 - pwCpu}% NET`;
     const cpw = cheesePerWax();
     const cheese = pwTok === 'wax' ? (cpw ? amt * cpw : null) : amt;
+    const cp = $('#pwCpuPct'), np = $('#pwNetPct');
+    if (cp) cp.textContent = `${pwCpu}%`;
+    $('#pwSplit')?.style.setProperty('--v', String(pwCpu));
+    if (np) np.textContent = `${100 - pwCpu}%`;
     // Priced from what the service has actually done: 2,636 CHEESE bought
     // 4,778 WAX of powerup over its life. An observed rate, not a promise.
+    const get = $('#pwGet');
+    if (get) get.textContent = amt > 0 && cheese != null ? `${qty(cheese * 1.81)} WAX` : '—';
     if (pwNote) pwNote.innerHTML = !(amt > 0) ? 'Enter an amount.'
-      : `${pwTok === 'wax' ? `${qty(amt)} WAX buys about ${cheese != null ? qty(cheese) : '?'} CHEESE, which buys` : `${qty(amt)} CHEESE buys`} roughly
-        ${cheese != null ? qty(cheese * 1.81) : '?'} WAX of ${into} for a day, going by what this service has delivered. The CHEESE is burned.`;
+      : `of ${into} for 24 hours on ${esc(account)}${pwTok === 'wax' && cheese != null ? `, by way of about ${qty(cheese)} CHEESE` : ''} &middot; going by what the service has delivered`;
   };
   paintPw();
   readPwBalances();
@@ -3402,10 +3420,8 @@ async function renderWalletResources(account) {
   });
   // How the powerup is split. CPU is what runs out first for most people, but
   // an account that mints or transfers a lot burns NET instead.
-  out.querySelectorAll('[data-pwsplit]').forEach(b => b.onclick = () => {
-    out.querySelectorAll('[data-pwsplit]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    pwCpu = Number(b.dataset.pwsplit); paintPw();
-  });
+  const split = $('#pwSplit');
+  if (split) split.oninput = () => { pwCpu = Number(split.value); paintPw(); };
   $('#pwGo').onclick = async () => {
     const box = $('#pwOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } await readPwBalances(); }
@@ -3460,9 +3476,25 @@ async function renderWalletResources(account) {
   const ramInput = $('#ramAmt');
   function paintRamBal() {
     const el = $('#ramBal');
-    if (el) el.innerHTML = !wallet.account() ? '' : bal.cheese == null ? '' : `You hold <b>${qty(bal.cheese)}</b> CHEESE.`;
+    if (el) el.innerHTML = !wallet.account() ? 'Connect a wallet to pay from it.' : bal.cheese == null ? 'Reading your balance…' : `You hold <b>${qty(bal.cheese)}</b> CHEESE`;
   }
-  out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => { if (ramInput) ramInput.value = b2.dataset.ram; });
+  // What the CHEESE buys, from the chain's own RAM market: WAX per byte is the
+  // connector ratio, which is the price for a buy this small. One table read.
+  let waxPerByte = null;
+  const paintRamGet = () => {
+    const el = $('#ramGet');
+    const cpw = cheesePerWax();
+    const amt = Math.max(0, Number(ramInput?.value) || 0);
+    if (el) el.textContent = amt > 0 && waxPerByte > 0 && cpw ? bytes((amt / cpw) * 0.995 / waxPerByte) : '—';
+  };
+  getRows('eosio', 'eosio', 'rammarket', { limit: 1 }).then(d => {
+    const row = d.rows?.[0];
+    const b2 = parseFloat(row?.base?.balance), q = parseFloat(row?.quote?.balance);
+    if (b2 > 0 && q > 0) { waxPerByte = q / b2; paintRamGet(); }
+  }).catch(() => {});
+  ramInput?.addEventListener('input', paintRamGet);
+  paintRamBal();
+  out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => { if (ramInput) { ramInput.value = b2.dataset.ram; paintRamGet(); } });
   const ramBtn = $('#ramGo');
   if (ramBtn) ramBtn.onclick = async () => {
     const box = $('#ramOut');
@@ -4610,7 +4642,9 @@ const isMine = acct => (!!wallet.account() && wallet.account() === acct) || (acc
 // cannot give, and that is worse than a missing feature.
 function lockForeign(acct) {
   if (isMine(acct)) return;
-  document.querySelectorAll('.wpane button.btn, .wpane select, .wpane input').forEach(el => el.remove());
+  // Paying for someone else's CPU, NET or RAM is ordinary — powering up a friend
+  // is what the receiver in those memos is for — so those two cards stay.
+  document.querySelectorAll('.wpane button.btn, .wpane select, .wpane input').forEach(el => { if (!el.closest('.allow-foreign')) el.remove(); });
   const bar = $('#walletReadonly');
   if (bar) {
     bar.textContent = `Viewing ${acct}. Connect that account to act on it.`;
