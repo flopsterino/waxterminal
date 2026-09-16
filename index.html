@@ -155,23 +155,34 @@
     </div>
     <p class="vs" id="walletReadonly" hidden style="color:var(--muted)"></p>
     <div class="subtabs" id="walletTabs" role="tablist">
-      <button role="tab" data-wtab="balances" aria-selected="true">Balances</button>
+      <button role="tab" data-wtab="all" aria-selected="true">All</button>
+      <button role="tab" data-wtab="balances" aria-selected="false">Balances</button>
+      <button role="tab" data-wtab="lp" aria-selected="false">LP</button>
+      <button role="tab" data-wtab="staking" aria-selected="false">Staking</button>
       <button role="tab" data-wtab="resources" aria-selected="false">Resources</button>
       <button role="tab" data-wtab="claims" aria-selected="false">Claims</button>
       <button role="tab" data-wtab="earned" aria-selected="false">Earned</button>
     </div>
 
-    <div class="wpane" data-wpane="balances">
+    <div class="wpane" data-wpane="all">
+      <div id="walletAll"></div>
+    </div>
+    <div class="wpane" data-wpane="balances" hidden>
       <div id="walletBalances"></div>
       <div id="walletFlow"></div>
       <div id="walletOrders"></div>
+    </div>
+    <div class="wpane" data-wpane="lp" hidden>
       <div id="walletOut"></div>
       <div class="toolbar" style="margin:14px 0 0"><button class="btn ghost" id="walletNewPos">Open a new position</button></div>
       <div id="newPos"></div>
     </div>
+    <div class="wpane" data-wpane="staking" hidden>
+      <div id="walletStake"></div>
+      <div id="walletFarmStakes"></div>
+    </div>
     <div class="wpane" data-wpane="resources" hidden>
       <div id="walletRes"></div>
-      <div id="walletStake"></div>
     </div>
     <div class="wpane" data-wpane="claims" hidden>
       <div id="walletAccrual"></div>

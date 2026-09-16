@@ -2881,9 +2881,7 @@ function wireWallet() {
   // not about loading less.
   $('#walletTabs')?.addEventListener('click', e => {
     const b = e.target.closest('button[data-wtab]');
-    if (!b) return;
-    document.querySelectorAll('#walletTabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
-    document.querySelectorAll('.wpane').forEach(p2 => { p2.hidden = p2.dataset.wpane !== b.dataset.wtab; });
+    if (b) walletTab(b.dataset.wtab);
   });
 
   wallet.onSession(() => {
@@ -2928,8 +2926,12 @@ async function renderWalletResources(account) {
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your resources…</span></div>';
 
   let r;
-  try { r = await resourcesOf(account); } catch { out.innerHTML = ''; return; }
+  try { r = await resourcesOf(account); } catch { out.innerHTML = ''; aggSet(account, 'staked', { usd: 0, failed: true }); return; }
   if (!stillWallet(account)) return;
+  {
+    const wax = r.staked.cpu + r.staked.net + (r.refund?.total || 0);
+    aggSet(account, 'staked', { usd: wax * (state.waxUsd || 0), wax, refund: r.refund?.total || 0 });
+  }
 
   const cheese = state.tokens.get('CHEESE@cheeseburger') || { symbol: 'CHEESE', contract: 'cheeseburger', decimals: 4 };
   const meter = (label, frac, detail) => `
@@ -3225,7 +3227,10 @@ async function renderWalletStake(account, feeBps, feeAccount) {
   try { [info, history] = await Promise.all([stakeInfo(account), claimHistory(account)]); }
   catch { out.innerHTML = ''; return; }
 
-  if (!info.exists || !(info.staked > 0)) { out.innerHTML = ''; return; }
+  if (!info.exists || !(info.staked > 0)) {
+    out.innerHTML = '<div class="section"><h3>Staked WAX</h3><div class="card"><p class="sub" style="margin:0">No WAX staked on this account, so there is no vote reward to claim.</p></div></div>';
+    return;
+  }
 
   const apr = observedApr(history, info.staked);
   const last = history[0] || null;
@@ -3330,7 +3335,7 @@ async function renderFarmAccrual(account, positions, joined) {
 
   fillMarks(out);
   const ag = $('#accGo');
-  if (ag) ag.onclick = () => { document.querySelector('#walletTabs [data-wtab="balances"]')?.click(); $('#walletOut')?.scrollIntoView({ block: 'start' }); };
+  if (ag) ag.onclick = () => { walletTab('lp'); $('#walletOut')?.scrollIntoView({ block: 'start' }); };
 
   // The tick. Everything below is arithmetic on rows already in memory.
   const paint = () => {
@@ -3469,7 +3474,7 @@ async function renderPepperClaims(account) {
   const out = $('#walletClaims');
   if (!out) return;
   let stakes = [], pending = [];
-  try { [stakes, pending] = await Promise.all([pepperStakes(account), pepperUnstakes(account)]); }
+  try { [stakes, pending] = await Promise.all([myPepper(account), pepperUnstakes(account)]); }
   catch { out.innerHTML = ''; return; }
   if (!stakes.length && !pending.length) { out.innerHTML = ''; return; }
 
@@ -3560,7 +3565,7 @@ async function renderWalletFarms(account) {
   const out = $('#walletFarms');
   if (!out) return;
   let stakes = [];
-  try { stakes = await waxdaoStakes(account); } catch { out.innerHTML = ''; return; }
+  try { stakes = await myWaxdao(account); } catch { out.innerHTML = ''; return; }
   if (!stakes.length) { out.innerHTML = ''; return; }
   const rows = stakes.map(s => ({ s, now: claimableNow(s) }));
 
@@ -3636,10 +3641,201 @@ function positionSlices(account) {
       const px = id === pool.tokenA ? pool.priceUsdA : pool.priceUsdB;
       if (!(amt > 0) || px == null) continue;
       const sym = (state.tokens.get(id)?.symbol) || id.split('@')[0];
-      out.set(sym, (out.get(sym) || 0) + amt * px);
+      const cur = out.get(sym) || { id, value: 0 };
+      cur.value += amt * px;
+      out.set(sym, cur);
     }
   }
-  return [...out].map(([label, value]) => ({ label, value }));
+  return [...out].map(([label, x]) => ({ label, id: x.id, value: x.value }));
+}
+
+function walletTab(name) {
+  document.querySelectorAll('#walletTabs button').forEach(x => x.setAttribute('aria-selected', String(x.dataset.wtab === name)));
+  document.querySelectorAll('.wpane').forEach(p2 => { p2.hidden = p2.dataset.wpane !== name; });
+}
+
+// ---- all: the account as one number ----------------------------------------
+// Five places value sits on WAX — tokens, liquidity, staked WAX, farm stakes,
+// NFTs — used to be five tabs' worth of reading and a sum done by hand. Each
+// section reports its total here as it lands, so the headline fills in piece
+// by piece instead of waiting for the slowest read.
+let walletAgg = null;
+const acctCache = new Map();
+function cachedFor(key, account, fn) {
+  const k = `${key}:${account}`;
+  if (!acctCache.has(k)) acctCache.set(k, fn().catch(e => { acctCache.delete(k); throw e; }));
+  return acctCache.get(k);
+}
+// Read once per lookup, shared by the Staking and Claims tabs.
+const myPepper = a => cachedFor('pepper', a, () => pepperStakes(a));
+const myWaxdao = a => cachedFor('waxdao', a, () => waxdaoStakes(a));
+
+function aggSet(account, key, val) {
+  if (!walletAgg || walletAgg.account !== account) return;
+  walletAgg[key] = val;
+  paintWalletAll();
+}
+
+// AtomicHub's own valuation: the suggested median of every NFT the account
+// holds, summed by the market API in one request. NFTs staked in a farm belong
+// to the farm contract while they are there, so they are not in this.
+const ATOMIC_API = 'https://wax.api.atomicassets.io';
+async function nftValue(account) {
+  const get = path => fetch(ATOMIC_API + path, { signal: AbortSignal.timeout(20000) })
+    .then(r => (r.ok ? r.json() : null)).catch(() => null);
+  const acct = encodeURIComponent(account);
+  const [prices, info] = await Promise.all([
+    get(`/atomicmarket/v1/prices/assets?owner=${acct}&symbol=WAX`),
+    get(`/atomicassets/v1/accounts/${acct}`),
+  ]);
+  if (!prices && !info) throw new Error('AtomicAssets unreachable');
+  const row = (prices?.data || []).find(x => x.token_symbol === 'WAX');
+  const wax = row ? Number(row.suggested_median) / 10 ** (Number(row.token_precision) || 8) : 0;
+  const cols = info?.data?.collections || [];
+  const count = Number(info?.data?.assets) || cols.reduce((n, c) => n + (Number(c.assets) || 0), 0);
+  return { usd: wax * (state.waxUsd || 0), wax, count, collections: cols.length };
+}
+
+const WALLET_PARTS = [
+  { k: 'tokens', label: 'Tokens', tab: 'balances', color: 'var(--c1)' },
+  { k: 'lp', label: 'Liquidity', tab: 'lp', color: 'var(--c2)' },
+  { k: 'staked', label: 'Staked WAX', tab: 'staking', color: 'var(--c3)' },
+  { k: 'farms', label: 'In farms', tab: 'staking', color: 'var(--c4)' },
+  { k: 'nfts', label: 'NFTs', tab: null, color: 'var(--c5)' },
+];
+
+function renderWalletAll(account) {
+  const out = $('#walletAll');
+  if (!out) return;
+  out.innerHTML = `<div class="card acctval" id="acctVal"></div>
+    <div class="card" style="margin-top:12px"><h3>Largest holdings <span class="dim">&mdash; wallet, pools and stake together</span></h3><div id="acctTop"></div></div>`;
+  paintWalletAll();
+}
+
+function paintWalletAll() {
+  const a = walletAgg;
+  const box = $('#acctVal');
+  if (!a || !box) return;
+  const account = a.account;
+  const parts = WALLET_PARTS.map(p => ({ ...p, v: a[p.k] || null }));
+  const total = parts.reduce((s2, p) => s2 + (p.v?.usd || 0), 0);
+  const waiting = parts.filter(p => !p.v).length;
+  const note = p => {
+    const v = p.v;
+    if (!v) return 'reading…';
+    if (v.failed) return 'could not be read';
+    switch (p.k) {
+      case 'tokens': return `${v.count} priced${v.unpriced ? ` &middot; ${v.unpriced} without a price` : ''}`;
+      case 'lp': return v.count ? `${v.count} position${v.count === 1 ? '' : 's'}${v.fees > 0.005 ? ` &middot; ${usd(v.fees)} fees waiting` : ''}` : 'no positions';
+      case 'staked': return v.wax > 0 ? `${qty(v.wax)} WAX${v.refund > 0 ? ` &middot; ${qty(v.refund)} unstaking` : ''}` : 'nothing staked';
+      case 'farms': return v.farms ? `${v.farms} farm${v.farms === 1 ? '' : 's'}${v.nfts ? ` &middot; ${v.nfts.toLocaleString()} NFT${v.nfts === 1 ? '' : 's'}, not valued` : ''}` : 'nothing staked';
+      case 'nfts': return v.count ? `${v.count.toLocaleString()} held &middot; suggested median` : 'none held';
+    }
+    return '';
+  };
+  const tile = p => {
+    const inner = `<span class="sw" style="background:${p.color}"></span>
+      <span class="lb">${p.label}</span>
+      <span class="vl">${p.v ? (p.v.failed ? '—' : usd(p.v.usd)) : '<span class="spinner"></span>'}</span>
+      <span class="sh">${p.v && !p.v.failed && total > 0 ? (p.v.usd / total * 100).toFixed(1) + '%' : ''}</span>
+      <span class="nt">${note(p)}</span>`;
+    return p.tab
+      ? `<button class="avpart" data-gotab="${p.tab}">${inner}</button>`
+      : `<a class="avpart" href="https://wax.atomichub.io/explorer/account/wax-mainnet/${encodeURIComponent(account)}" target="_blank" rel="noopener">${inner}</a>`;
+  };
+  box.innerHTML = `<div class="avhead"><span class="k">Account value</span>
+      <span class="big">${usd(total)}</span>
+      <span class="sub">${waiting ? `still reading ${waiting} of ${parts.length}&hellip;` : 'at today&rsquo;s prices'}</span></div>
+    <div class="avbar">${parts.filter(p => p.v?.usd > 0).map(p =>
+      `<span style="flex-grow:${p.v.usd};background:${p.color}" title="${p.label}: ${usd(p.v.usd)}"></span>`).join('') || '<span class="empty"></span>'}</div>
+    <div class="avparts">${parts.map(tile).join('')}</div>`;
+  box.querySelectorAll('[data-gotab]').forEach(b => b.onclick = () => walletTab(b.dataset.gotab));
+
+  // One token held three ways is one holding.
+  const top = $('#acctTop');
+  if (!top) return;
+  const merged = new Map();
+  const add = (sym, id, usdV, where) => {
+    if (!(usdV > 0)) return;
+    const m = merged.get(sym) || { sym, id, usd: 0, where: new Set() };
+    m.usd += usdV; m.where.add(where); if (!m.id && id) m.id = id;
+    merged.set(sym, m);
+  };
+  for (const r of a.tokens?.rows || []) add(r.symbol, r.id, r.usd, 'wallet');
+  for (const x of positionSlices(account)) add(x.label, x.id, x.value, 'pools');
+  if (a.staked?.usd > 0) add('WAX', 'WAX@eosio.token', a.staked.usd, 'staked');
+  for (const x of a.farms?.tokens || []) add(x.sym, x.id, x.usd, 'farms');
+  const rows = [...merged.values()].sort((x, y) => y.usd - x.usd).slice(0, 10);
+  const sum = [...merged.values()].reduce((s2, m) => s2 + m.usd, 0);
+  top.innerHTML = rows.length ? `<table class="minitab"><thead><tr><th>Token</th><th>Held in</th><th class="r">Value</th><th class="r">Share</th></tr></thead><tbody>${
+    rows.map(m => `<tr${m.id ? ` class="clickable" data-tokid="${esc(m.id)}"` : ''}>
+      <td>${m.id ? `<span data-pm="${esc(m.id)}|${esc(m.sym)}"></span>` : ''}<span class="pairbig">${esc(m.sym)}</span></td>
+      <td>${[...m.where].map(w => `<span class="wherechip">${w}</span>`).join('')}</td>
+      <td class="r num">${usd(m.usd)}</td>
+      <td class="r num dim">${sum > 0 ? (m.usd / sum * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table>`
+    : `<div class="chart-empty">${waiting ? 'Reading…' : 'Nothing here can be priced.'}</div>`;
+  fillMarks(top);
+}
+
+// ---- staking: what is staked, where ----------------------------------------
+// Holdings, not actions: what sits in each farm and what it is worth. Claiming
+// and unstaking stay under Claims, one click away.
+async function renderWalletFarmStakes(account) {
+  const out = $('#walletFarmStakes');
+  if (!out) return;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your farm stakes…</span></div>';
+  const [pep, wd] = await Promise.all([myPepper(account).catch(() => []), myWaxdao(account).catch(() => [])]);
+  if (!stillWallet(account)) return;
+  const rows = [];
+  const tokens = [];
+  for (const s2 of pep) {
+    const p = s2.pool;
+    const nfts = s2.nfts?.length || 0;
+    if (!(s2.stakedTokens > 0 || nfts)) continue;
+    const px = s2.stakedTokens > 0 && p?.acceptSymbol ? priceOf(p.acceptSymbol, p.acceptContract) : null;
+    const v = px != null ? s2.stakedTokens * px : null;
+    if (v != null) tokens.push({ sym: p.acceptSymbol, id: `${p.acceptSymbol}@${p.acceptContract}`, usd: v });
+    rows.push({
+      key: `pepper:${s2.poolId}`, venue: 'PepperStake', name: p?.name || `Pool ${s2.poolId}`,
+      staked: s2.stakedTokens > 0 ? `${qty(s2.stakedTokens)} ${esc(p?.acceptSymbol || '')}` : `${nfts} NFT${nfts === 1 ? '' : 's'}`,
+      usd: v, nfts, ended: s2.ended,
+      waiting: s2.waiting > 0 && p?.reward ? `${qty(s2.waiting)} ${esc(p.reward.symbol)}` : '',
+    });
+  }
+  for (const s2 of wd) {
+    if (!(s2.assets > 0)) continue;
+    const now = claimableNow(s2);
+    rows.push({
+      key: `waxdao:${s2.farm}`, venue: 'WaxDAO', name: s2.farm,
+      staked: `${s2.assets} NFT${s2.assets === 1 ? '' : 's'}`, usd: null, nfts: s2.assets,
+      ended: !s2.perHour.length,
+      waiting: now.map(t => `${qty(t.amount)} ${esc(t.symbol)}`).join(' &middot; '),
+    });
+  }
+  aggSet(account, 'farms', {
+    usd: tokens.reduce((s3, t) => s3 + t.usd, 0),
+    farms: rows.length, nfts: rows.reduce((n, r) => n + r.nfts, 0), tokens,
+  });
+  if (!rows.length) {
+    out.innerHTML = `<div class="section"><h3>In farms</h3><div class="card"><p class="sub" style="margin:0">Nothing staked in PepperStake or WaxDAO farms.
+      <a href="${routePath('staking')}" data-go="staking">Browse farms &rarr;</a></p></div></div>`;
+    out.querySelector('[data-go]').onclick = e => { e.preventDefault(); show('staking'); };
+    return;
+  }
+  rows.sort((x, y) => (y.usd || 0) - (x.usd || 0) || y.nfts - x.nfts);
+  out.innerHTML = `<div class="section"><h3>In farms <span class="dim">&mdash; PepperStake and WaxDAO</span>
+      <span class="more" data-gotab="claims" style="margin-left:auto">Claim or unstake &rarr;</span></h3>
+    <div class="tablewrap"><table style="font-size:12.5px">
+      <thead><tr><th>Farm</th><th>Platform</th><th class="r">Staked</th><th class="r">Value</th><th>Waiting to claim</th><th>Status</th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="clickable" data-stakekey="${esc(r.key)}">
+        <td><b>${esc(r.name)}</b></td>
+        <td class="dim">${r.venue}</td>
+        <td class="r num">${r.staked}</td>
+        <td class="r num">${r.usd != null ? usd(r.usd) : '<span class="dim">—</span>'}</td>
+        <td class="num">${r.waiting || '<span class="dim">nothing yet</span>'}</td>
+        <td>${r.ended ? '<span class="dim">ended</span>' : '<span class="pos">live</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
+  out.querySelectorAll('[data-gotab]').forEach(b => b.onclick = () => walletTab(b.dataset.gotab));
+  out.querySelectorAll('[data-stakekey]').forEach(tr => tr.onclick = rowClick(() => openStake(tr.dataset.stakekey)));
 }
 
 async function renderWalletBalances(account) {
@@ -3652,6 +3848,7 @@ async function renderWalletBalances(account) {
   if (!stillWallet(account)) return;
   const v = valueBalances(info.balances, state.prices, state.depth);
   const priced = v.rows.filter(r => r.usd != null);
+  aggSet(account, 'tokens', { usd: v.priced, count: priced.length, rows: priced, unpriced: v.unpriced });
 
   // A pie of what the wallet is, before the list of what is in it. "82% WAX"
   // is a fact about a portfolio that a column of dollar figures makes you
@@ -3976,6 +4173,11 @@ async function lookupWallet(account) {
   // position sweep is the slowest of them and should not hold up a balance.
   const feeAccount = CFG?.commercial?.feeAccount || '';
   const feeBps = feeAccount ? Math.max(0, Math.min(100, CFG?.commercial?.compoundFeeBps ?? 0)) : 0;
+  acctCache.clear();
+  walletAgg = { account };
+  renderWalletAll(account);
+  renderWalletFarmStakes(account).catch(() => {});
+  nftValue(account).then(n => aggSet(account, 'nfts', n)).catch(() => aggSet(account, 'nfts', { usd: 0, failed: true }));
   renderWalletResources(account).catch(() => {});
   renderWalletStake(account, feeBps, feeAccount).catch(() => {});
   renderWalletFarms(account).catch(() => {});
@@ -3999,10 +4201,19 @@ async function lookupWallet(account) {
     redrawBalancePie();
   } catch {
     try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
-    catch (e) { out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`; return; }
+    catch (e) {
+      out.innerHTML = `<div class="err">Lookup failed: ${esc(e.message)}</div>`;
+      aggSet(account, 'lp', { usd: 0, failed: true });
+      return;
+    }
   }
 
   const all = [...res.alcor, ...res.taco];
+  aggSet(account, 'lp', {
+    usd: all.reduce((s2, p) => s2 + (p.valueUsd || 0), 0),
+    count: all.length,
+    fees: res.alcor.reduce((s2, p) => s2 + (p.feesUsd || 0), 0),
+  });
   if (!all.length) {
     out.innerHTML = `<div class="empty">No liquidity found for <span class="mono">${esc(account)}</span>.<br>
       <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} and its Taco LP.</span></div>`;

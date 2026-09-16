@@ -1599,3 +1599,31 @@ body:has(#view-overview.active) #cheeseBanner { display: none; }
   .sortblock .seg { width: 100%; justify-content: space-between; }
   .sortblock .seg button { padding: 6px 6px; }
 }
+
+/* --- wallet: the account as one number ----------------------------------- */
+.acctval { padding: 16px 18px; }
+.avhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.avhead .k { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.avhead .big { font-size: 30px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--ink); }
+.avbar { display: flex; gap: 2px; height: 10px; margin: 12px 0 14px; border-radius: 99px; overflow: hidden; background: var(--surface-2); }
+.avbar span { flex-basis: 0; min-width: 3px; }
+.avbar span.empty { flex: 1; background: none; }
+.avparts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.avpart { display: grid; grid-template-columns: 10px 1fr auto; grid-template-areas: "sw lb sh" "vl vl vl" "nt nt nt";
+  align-items: center; column-gap: 7px; row-gap: 3px; text-align: left; font: inherit; color: inherit; text-decoration: none;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); padding: 9px 11px; cursor: pointer; min-width: 0; }
+.avpart:hover { border-color: var(--line-2); text-decoration: none; }
+.avpart .sw { grid-area: sw; width: 10px; height: 10px; border-radius: 3px; }
+.avpart .lb { grid-area: lb; font-size: 12px; color: var(--ink-2); font-weight: 500; }
+.avpart .sh { grid-area: sh; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.avpart .vl { grid-area: vl; font-size: 17px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+.avpart .vl .spinner { width: 14px; height: 14px; }
+.avpart .nt { grid-area: nt; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wherechip { display: inline-block; font-size: 10.5px; color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 99px; padding: 0 7px; margin-right: 4px; line-height: 17px; }
+#acctTop .minitab td:first-child { max-width: none; }
+@media (max-width: 1000px) { .avparts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .avparts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .avhead .big { font-size: 26px; }
+}
