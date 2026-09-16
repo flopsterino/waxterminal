@@ -1510,3 +1510,28 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #stakeSort { margin: 0 0 10px; }
 @media (max-width: 460px) { .stakegrid { grid-template-columns: 1fr; } }
+
+/* --- wide screens: rows the eye can follow ------------------------------ */
+/* On a 1440px-plus screen a four-column table stretched to full width puts
+   the token name and its amount a hand's width apart, and with ten farms the
+   eye loses which number belongs to which row. So the few-column tables of
+   the wallet pack their columns against their content instead of the
+   screen, every table gets a faint alternate row, and the page itself stops
+   growing past a width a line can still be read across. */
+.wrap { max-width: min(1680px, 96vw); }
+.tablewrap tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.tablewrap tbody tr:hover td { background: var(--surface-3); }
+.tablewrap table th:nth-child(2), .tablewrap table td:nth-child(2) { background-clip: padding-box; }
+
+/* Accrual rows: token, then its figures right beside it, filler last. */
+.acc-row { grid-template-columns: 22px minmax(70px, 150px) minmax(120px, max-content) minmax(130px, max-content) minmax(70px, max-content) max-content 1fr; column-gap: 18px; }
+.acc-row:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.acc-row:hover { background: var(--surface-3); }
+
+/* Wallet tables with a handful of columns hug their content. */
+#view-wallet .wpane .tablewrap table { width: auto; min-width: min(100%, 760px); }
+#view-wallet .wpane .tablewrap table td, #view-wallet .wpane .tablewrap table th { padding-right: 22px; }
+@media (max-width: 700px) {
+  .acc-row { grid-template-columns: auto 1fr auto; column-gap: 9px; }
+  #view-wallet .wpane .tablewrap table { width: 100%; min-width: 0; }
+}

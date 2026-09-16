@@ -30,23 +30,50 @@ export const SERIES = i => `var(--c${(i % 8) + 1})`;
 
 // ------------------------------------------------------------- tooltip ------
 let tip;
+// Which chart the tooltip belongs to. A tooltip is hidden by that chart's own
+// mouseleave — and when the chart is re-rendered or removed while the pointer
+// is over it, that event never fires, so the tooltip stayed on screen for good,
+// following the reader from page to page ("WAX/VORA 501%" floating over the
+// Markets table). So the tooltip also watches the pointer itself and goes away
+// the moment it is not over the thing that raised it, or that thing is gone.
+let tipOwner = null;
+let pointerTarget = null;
 function tooltip() {
   if (tip) return tip;
   tip = document.createElement('div');
   tip.className = 'charttip';
   tip.hidden = true;
   document.body.appendChild(tip);
+  if (typeof window !== 'undefined') {
+    let frame = 0;
+    window.addEventListener('pointermove', e => {
+      pointerTarget = e.target;
+      if (tip.hidden || frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!tipOwner || !tipOwner.isConnected || !(pointerTarget instanceof Node) || !tipOwner.contains(pointerTarget)) hideTip();
+      });
+    }, { passive: true });
+    // A fixed-position tooltip points at nothing once the page moves under it.
+    window.addEventListener('scroll', () => hideTip(), { passive: true });
+    window.addEventListener('pointerdown', e => { if (tipOwner && !tipOwner.contains(e.target)) hideTip(); }, { passive: true });
+    document.addEventListener('visibilitychange', () => hideTip());
+    document.addEventListener('mouseleave', () => hideTip());
+  }
   return tip;
 }
 function showTip(html, x, y) {
   const t = tooltip();
+  // The chart under the pointer owns the tooltip until the pointer leaves it.
+  const under = typeof document !== 'undefined' && document.elementFromPoint ? document.elementFromPoint(x, y) : pointerTarget;
+  tipOwner = (under && under.closest && under.closest('.chart, .bubblemap, .bars, .donut, svg')) || under || null;
   t.innerHTML = html; t.hidden = false;
   const r = t.getBoundingClientRect();
   const left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 14));
   const top = Math.max(8, y - r.height - 12);
   t.style.transform = `translate(${left}px, ${top}px)`;
 }
-export const hideTip = () => { if (tip) tip.hidden = true; };
+export const hideTip = () => { if (tip) tip.hidden = true; tipOwner = null; };
 
 // -------------------------------------------------------------- line/area ---
 // points: [{x, y}] — x is usually a timestamp. One series: no legend, the title

@@ -398,7 +398,11 @@ async function loadSnapshot() {
 
   state.farms = (d.farms || []).map(f => ({
     dex: f.d, id: f.i, poolDex: f.pd, poolId: f.pi, pool: byId.get(`${f.pd}:${f.pi}`),
-    rewardToken: f.rt, rewardSymbol: f.rs, rewardPerDay: f.rp, rewardUsdDay: f.ru,
+    // "unpriceable" means the strict price model had nothing, so any dollar
+    // figure on the row came from a thin spot price — re-derived below with
+    // the farm's own pool first, rather than trusted from whichever rule
+    // wrote the file.
+    rewardToken: f.rt, rewardSymbol: f.rs, rewardPerDay: f.rp, rewardUsdDay: f.st === 'unpriceable' ? null : f.ru,
     periodFinish: f.pf, ended: false, totalWeight: f.tw, numStakes: f.ns,
     creator: f.cr, stakedUsd: f.su, apr: f.ap, aprStatus: f.st,
     stakedReal: f.sr ?? null, rewardRealDay: f.rr ?? 0, aprReal: f.ar ?? null, rewardSolid: !!f.so,
@@ -1193,6 +1197,24 @@ export function toCandles(rows, { bucketSec = 300 } = {}) {
 // token that does have one — marked thin, so the rate it produces is shown as
 // a face-value rate on a market you could not actually sell into. The
 // sellable figure (rewardRealDay) is left at nothing, which is the truth.
+// A farm's own pool is the one place its reward price means something: that
+// is where the people staking would sell it, and it is what the venue itself
+// uses. STAR only trades in STAR/WOMBAT; pricing it from a dust pool somewhere
+// else on the chain valued 60,000 STAR a day at $114 against $0.10 staked,
+// where TacoSwap quotes the farm at around 30%. Priced in its own pool, the
+// reward and the stake are measured in the same unit and the rate is right
+// whatever either token is worth in dollars.
+function ownPoolPrice(f) {
+  const p = f.pool;
+  if (!p || !(p.priceAB > 0)) return null;
+  const tok = f.rewardToken;
+  if (p.tokenA !== tok && p.tokenB !== tok) return null;
+  const other = p.tokenA === tok ? p.tokenB : p.tokenA;
+  const ou = state.prices.get(other)?.usd;
+  if (!(ou > 0)) return null;
+  return p.tokenA === tok ? p.priceAB * ou : ou / p.priceAB;
+}
+
 function thinPrice(tokenId) {
   let best = null, bestSide = 0;
   for (const p of state.pools) {
@@ -1202,7 +1224,10 @@ function thinPrice(tokenId) {
     const ou = state.prices.get(other)?.usd;
     if (!(ou > 0)) continue;
     const sideUsd = (isA ? p.reserveB : p.reserveA) * ou;
-    if (!(sideUsd >= 1) || sideUsd <= bestSide) continue;
+    // Twenty-five dollars on the priced side, not one: a pool holding a dollar
+    // of WAX sets whatever price its last trade left it at, and a reward priced
+    // off that is the number above.
+    if (!(sideUsd >= 25) || sideUsd <= bestSide) continue;
     bestSide = sideUsd;
     best = isA ? p.priceAB * ou : ou / p.priceAB;
   }
@@ -1212,8 +1237,11 @@ export function priceThinRewards() {
   const memo = new Map();
   for (const f of state.farms) {
     if (f.rewardUsdDay != null || !(f.rewardPerDay > 0) || !f.rewardToken) continue;
-    if (!memo.has(f.rewardToken)) memo.set(f.rewardToken, thinPrice(f.rewardToken));
-    const px = memo.get(f.rewardToken);
+    let px = ownPoolPrice(f);
+    if (!(px > 0)) {
+      if (!memo.has(f.rewardToken)) memo.set(f.rewardToken, thinPrice(f.rewardToken));
+      px = memo.get(f.rewardToken);
+    }
     if (!(px > 0)) continue;
     f.rewardUsdDay = f.rewardPerDay * px;
     f.rewardThin = true;
