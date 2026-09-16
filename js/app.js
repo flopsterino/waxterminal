@@ -3304,11 +3304,12 @@ async function renderWalletResources(account) {
         ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
           <p class="sub" style="margin:0 0 10px">Voting ${r.voter.proxy ? acctLink(r.voter.proxy) : `${r.voter.producers.length} producers`}${r.voter.weight > 0 ? '' : ' &mdash; weight decayed to nothing'}.</p>`
         : `<p class="sub" style="margin:0 0 10px"><b class="neg">Not voting</b> &mdash; this stake earns nothing.</p>`}
-        <div class="toolbar" style="margin:0">
-          <span class="sub">Proxy</span>
-          <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" style="max-width:200px" spellcheck="false">
+        <div class="proxypick">
+          <select id="voteProxySel" aria-label="Proxy"><option>Loading proxies…</option></select>
           <button class="btn" id="voteGo">Vote</button>
         </div>
+        <input class="search" id="voteProxy" value="${esc(r.voter?.proxy || CFG?.commercial?.stakeProxy || 'waxcommunity')}" placeholder="Proxy account name" spellcheck="false" hidden style="margin-top:8px;max-width:220px">
+        <p class="sub" id="voteProxyInfo" style="margin:6px 0 0"></p>
         <label class="pick" style="margin-top:10px"><input type="checkbox" id="voteAuto"${autoVoteOn() ? ' checked' : ''}>
           <span class="sub">Re-cast this vote on every claim, so the weight never decays</span></label>
         <div id="voteOut" style="margin-top:10px"></div>
@@ -3539,6 +3540,42 @@ async function renderWalletResources(account) {
   })();
 
   // ---- voting --------------------------------------------------------------
+  // A list, not a text box: nobody knows a proxy's account name by heart. Built
+  // nightly from the proxy registry, keeping only proxies that actually vote,
+  // most-followed first; the account's own proxy and the default are always in
+  // it, and "another account" is there for anyone who does know a name.
+  const sel = $('#voteProxySel'), typed = $('#voteProxy'), pInfo = $('#voteProxyInfo');
+  if (sel && typed) {
+    const current = r.voter?.proxy || '';
+    const fallback = CFG?.commercial?.stakeProxy || 'waxcommunity';
+    const describe = pr => {
+      if (!pInfo) return;
+      pInfo.innerHTML = !pr ? ''
+        : `${pr.slogan ? esc(pr.slogan) + ' &middot; ' : ''}votes for ${pr.producers} producer${pr.producers === 1 ? '' : 's'}${
+          pr.website ? ` &middot; <a href="${esc(pr.website)}" target="_blank" rel="noopener nofollow">site &nearr;</a>` : ''}`;
+    };
+    fetch(new URL('../data/proxies.json', import.meta.url)).then(x => (x.ok ? x.json() : null)).catch(() => null).then(d => {
+      const list = d?.proxies || [];
+      const byOwner = new Map(list.map(pr => [pr.owner, pr]));
+      const extra = [...new Set([current, fallback].filter(o => o && !byOwner.has(o)))];
+      const pick = current || fallback;
+      // Most followed first, numbered; anything not in the registry after them.
+      sel.innerHTML = [
+        ...list.map((pr, i) => `<option value="${esc(pr.owner)}">${i + 1}. ${esc(pr.name)}${pr.name !== pr.owner ? ` (${esc(pr.owner)})` : ''}${pr.owner === current ? ' — yours now' : ''}</option>`),
+        ...extra.map(o => `<option value="${esc(o)}">${esc(o)}${o === current ? ' — yours now' : ''}</option>`),
+        '<option value="__other">Another account…</option>',
+      ].join('');
+      sel.value = pick;
+      typed.value = pick;
+      describe(byOwner.get(pick));
+      sel.onchange = () => {
+        const other = sel.value === '__other';
+        typed.hidden = !other;
+        if (other) { typed.value = ''; typed.focus(); describe(null); }
+        else { typed.value = sel.value; describe(byOwner.get(sel.value)); }
+      };
+    });
+  }
   const va = $('#voteAuto');
   if (va) va.onchange = () => { try { localStorage.setItem('waxterminal.autovote', va.checked ? '1' : '0'); } catch {} };
   const vg = $('#voteGo');

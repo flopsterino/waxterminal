@@ -56,6 +56,14 @@ jobs:
         if: steps.kind.outputs.daily == 'true'
         continue-on-error: true
         run: node --max-old-space-size=2048 tools/leaders.mjs
+      # The proxies a voter can pick in the wallet: a couple of hundred table
+      # reads, once a day, instead of in every visitor's browser.
+      - name: List voting proxies
+        if: steps.kind.outputs.daily == 'true'
+        continue-on-error: true
+        env:
+          WAX_RPC_GAP_MS: '120'
+        run: node tools/proxies.mjs
       - name: Commit if anything changed
         run: |
           git config user.name  "wax-terminal-bot"
