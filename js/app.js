@@ -113,6 +113,8 @@ const usdExact = v => fixed(v, 2);
 // Four decimals, because two of them cannot show a number moving by a
 // thousandth of a cent a second — which is the whole point of showing it move.
 const usd4 = v => fixed(v, 4);
+// Cents where there are dollars; four places only where the amount is under one.
+const usdSmall = v => (Math.abs(v) >= 1 ? fixed(v, 2) : fixed(v, 4));
 // Six decimals is plenty for WAX and not nearly enough for WAXWBTC: it printed
 // 0.0000 beside $0.0162, which reads as owning nothing worth 1.6 cents. Below
 // what six decimals can show, precision takes over.
@@ -2229,6 +2231,51 @@ async function autoApr() {
 //
 // Round-tripping nets to roughly nothing, which is how an arbitrage bot reads
 // here, and that is correct: it is not accumulating anything.
+// One of this wallet's trades, laid out like a row on a market's tape: what
+// kind of trade, in which market, how much for how much, at what price. Named
+// the way the market is — the side nearer WAX or a dollar is the quote — so
+// selling CHEESE for WAX reads "Sell CHEESE/WAX", not "Got WAX".
+const DEX_OF_CONTRACT = { 'swap.alcor': 'Alcor', 'swap.taco': 'TacoSwap', 'swap.box': 'Defibox', 'swap.adex': 'A-DEX' };
+function walletTradeRow(t) {
+  const biggest = xs => [...xs].sort((a, b) => b.amount - a.amount);
+  const soldL = biggest(t.sold), gotL = biggest(t.bought);
+  const s0 = soldL[0], g0 = gotL[0];
+  const idOf = x => `${x.symbol}@${x.contract}`;
+  const pxOf = x => state.prices.get(idOf(x))?.usd ?? null;
+  // Out and back into the same token is an arbitrage cycle, not a buy or a
+  // sell — judged on the main legs, since a swap that returns a little change
+  // in the token it sold is still a sale.
+  const cycle = idOf(s0) === idOf(g0);
+  const gotIsBase = quoteRank(idOf(g0)) <= quoteRank(idOf(s0));
+  const [base, baseLegs, quote, quoteLegs] = cycle || gotIsBase ? [g0, gotL, s0, soldL] : [s0, soldL, g0, gotL];
+  const side = cycle ? 'cycle' : gotIsBase ? 'buy' : 'sell';
+  const val = [quote, base].map(x => (pxOf(x) != null ? x.amount * pxOf(x) : null)).find(v => v != null) ?? null;
+  const extra = xs => xs.length > 1
+    ? ` <span class="dim" title="${esc(xs.map(x => `${qty(x.amount)} ${x.symbol}`).join(' + '))}">+${xs.length - 1}</span>` : '';
+  const price = cycle
+    ? (s0.amount > 0 ? `<span class="${g0.amount >= s0.amount ? 'pos' : 'neg'}">${g0.amount >= s0.amount ? '+' : ''}${((g0.amount / s0.amount - 1) * 100).toFixed(2)}%</span>` : '—')
+    : val != null && base.amount > 0 ? px(val / base.amount)
+    : base.amount > 0 ? `${pxNum(quote.amount / base.amount)} <span class="dim">${esc(quote.symbol)}</span>` : '—';
+  const route = t.route?.length ? t.route : null;
+  const routeCell = route
+    ? (route.length === 1
+      ? `<span class="xlink" data-poolkey="alcor:${esc(route[0])}">${esc(poolPairName(route[0]))}</span>`
+      : `<span title="${esc(route.map(poolPairName).join(' \u2192 '))}">${route.length} pools</span>`)
+    : `<span class="dim">${esc(DEX_OF_CONTRACT[t.venue] || t.venue)}</span>`;
+  const find = [...t.sold, ...t.bought].map(x => x.symbol).join(' ') + ' ' + (route ? route.map(poolPairName).join(' ') : t.venue);
+  return `<tr data-find="${esc(find)}">
+    <td class="num dim" title="${new Date(t.ts).toISOString()}">${ago(new Date(t.ts).toISOString())}</td>
+    <td><span class="side ${side}">${side === 'cycle' ? 'Cycle' : side === 'buy' ? 'Buy' : 'Sell'}</span></td>
+    <td class="mkt"><span data-pm="${esc(idOf(base))}|${esc(base.symbol)}"></span><b>${esc(base.symbol)}</b><span class="dim">/${esc(quote.symbol)}</span></td>
+    <td class="r num ${side === 'buy' ? 'pos' : side === 'sell' ? 'neg' : ''}">${qty(base.amount)} <span class="dim">${esc(base.symbol)}</span>${extra(baseLegs)}</td>
+    <td class="r num">${qty(quote.amount)} <span class="dim">${esc(quote.symbol)}</span>${extra(quoteLegs)}</td>
+    <td class="r num">${price}</td>
+    <td class="r num">${val != null ? usd(val) : '<span class="dim">—</span>'}</td>
+    <td class="route-cell">${routeCell}</td>
+    <td class="r"><a class="dim" href="${trxUrl(t.trx)}" target="_blank" rel="noopener" title="Open the transaction">&nearr;</a></td>
+  </tr>`;
+}
+
 async function renderTradeFlow(account) {
   const box = $('#walletFlow');
   if (!box) return;
@@ -2270,36 +2317,10 @@ async function renderTradeFlow(account) {
         Both legs of each swap, so a token bought with another shows on both rows.</p>
     </div></div>
 
-    <div class="section"><h3>Recent trades <span class="dim">&mdash; newest first</span></h3>
-    <div class="card" id="tradeListCard"><div class="tablewrap" style="border:0"><table style="font-size:12.5px">
-      <thead><tr><th>When</th><th>Sold</th><th>Got</th><th class="r">Worth</th><th>Route</th></tr></thead>
-      <tbody>${trades.map(t => {
-        // The biggest leg is the trade; the rest are the change. Listing every
-        // leg made an arbitrage cycle unreadable, because it names the same
-        // tokens on both sides.
-        const leg = xs => {
-          const sorted = [...xs].sort((a, b) => b.amount - a.amount);
-          const head = `${qty(sorted[0].amount)} ${esc(sorted[0].symbol)}`;
-          return sorted.length > 1 ? `${head} <span class="dim">+${sorted.length - 1}</span>` : head;
-        };
-        const all = xs => xs.map(x => `${qty(x.amount)} ${x.symbol}`).join(' + ');
-        const sold = leg(t.sold), got = leg(t.bought);
-        // Priced off whichever side we can price. A trade is one value, and
-        // quoting both sides invites the reader to add them up.
-        const val = [...t.sold, ...t.bought]
-          .map(x => { const px = state.prices.get(`${x.symbol}@${x.contract}`)?.usd; return px != null ? x.amount * px : null; })
-          .find(v => v != null) ?? null;
-        return `<tr data-find="${esc([...t.sold, ...t.bought].map(x => x.symbol).join(' ') + ' ' + (t.route ? t.route.map(poolPairName).join(' ') : t.venue))}">
-          <td class="num dim"><a href="${trxUrl(t.trx)}" target="_blank" rel="noopener" title="${new Date(t.ts).toISOString()}">${ago(new Date(t.ts).toISOString())} &nearr;</a></td>
-          <td class="neg" title="${esc(all(t.sold))}">${sold}</td>
-          <td class="pos" title="${esc(all(t.bought))}">${got}</td>
-          <td class="r num ${val != null ? '' : 'dim'}">${val != null ? usd(val) : '—'}</td>
-          <td class="route-cell dim" title="${t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : ''}">${
-            t.route ? esc(t.route.map(poolPairName).join(' \u2192 ')) : `<span class="dim">${esc(t.venue)}</span>`}</td>
-        </tr>`;
-      }).join('')}</tbody></table></div>
-      <p class="sub" style="margin:9px 0 0">${trades.length} of ${swaps.length.toLocaleString()} legs, paired by transaction.
-        A leg with no counterpart is a deposit or a payout, not a trade.</p>
+    <div class="section"><h3>Recent trades <span class="dim">&mdash; the last ${trades.length}</span></h3>
+    <div class="card" id="tradeListCard"><div class="tablewrap livetape wtrades" style="max-height:520px;border:0"><table>
+      <thead><tr><th>Age</th><th>Type</th><th>Market</th><th class="r">Amount</th><th class="r">For</th><th class="r">Price</th><th class="r">USD</th><th>Route</th><th></th></tr></thead>
+      <tbody>${trades.map(walletTradeRow).join('')}</tbody></table></div>
       <div class="empty filternone" hidden>No trade in that token.</div>
     </div></div>`;
   fillMarks(box);
@@ -3289,19 +3310,79 @@ async function renderWalletStake(account, feeBps, feeAccount) {
 let accrualTimer = null;
 function stopAccrual() { if (accrualTimer) { clearInterval(accrualTimer); accrualTimer = null; } }
 
+// ---- rewards to be collected -------------------------------------------------
+// Fees alone were half the answer: on a farmed position the farm usually pays
+// more than the trading does. Fees come with the positions; farm rewards come
+// from the accrual reader, which keeps farmPendingUsd current every second, so
+// the card draws once with fees and again, sorted properly, when the farms are in.
+let farmPendingUsd = null;           // posId -> USD owed by farms; null until read
+let rewardsCtx = null;
+function rewardRows() {
+  const farm = farmPendingUsd;
+  return (rewardsCtx?.positions || [])
+    .map(p => {
+      const fees = p.feesUsd || 0;
+      const f = farm?.get(String(p.posId)) || 0;
+      return { p, fees, farm: f, total: fees + f };
+    })
+    .filter(r => r.total > 0);
+}
+function drawRewards() {
+  const box = $('#walRewards');
+  if (!box || !rewardsCtx || !stillWallet(rewardsCtx.account)) return;
+  rewardsCtx.drawnWithFarm = !!farmPendingUsd;
+  const rows = rewardRows().sort((a, b) => b.total - a.total).slice(0, 8);
+  if (!rows.length) {
+    box.innerHTML = `<div class="chart-empty">${farmPendingUsd ? 'Nothing waiting right now.' : 'Reading farm rewards…'}</div>`;
+    tickRewards();
+    return;
+  }
+  box.innerHTML = `<div class="rwhead"><span class="big" id="rwTotal">—</span><span class="sub" id="rwSplit"></span></div>
+    <div class="minitabwrap"><table class="minitab"><thead><tr><th>Position</th><th class="r">Fees</th><th class="r">Farm</th><th class="r">Total</th></tr></thead><tbody>${
+      rows.map(r => `<tr>
+        <td><span data-pm="${esc(r.p.pool.tokenA)}|${esc(r.p.pool.symA)}|${esc(r.p.pool.tokenB)}|${esc(r.p.pool.symB)}"></span><span class="pairbig">${esc(r.p.pool.symA)}/${esc(r.p.pool.symB)}</span> <span class="dim">#${esc(String(r.p.posId))}</span></td>
+        <td class="r num">${usdSmall(r.fees)}</td>
+        <td class="r num" data-rwfarm="${esc(String(r.p.posId))}">${farmPendingUsd ? usdSmall(r.farm) : '<span class="dim">…</span>'}</td>
+        <td class="r num strong" data-rwtotal="${esc(String(r.p.posId))}">${usdSmall(r.total)}</td></tr>`).join('')}</tbody></table></div>`;
+  fillMarks(box);
+  tickRewards();
+}
+function tickRewards() {
+  if (!rewardsCtx) return;
+  if (farmPendingUsd && !rewardsCtx.drawnWithFarm) { drawRewards(); return; }
+  const rows = rewardRows();
+  const fees = rows.reduce((a, r) => a + r.fees, 0);
+  const farm = rows.reduce((a, r) => a + r.farm, 0);
+  for (const r of rows) {
+    const id = String(r.p.posId);
+    const f = document.querySelector(`[data-rwfarm="${CSS.escape(id)}"]`);
+    if (f && farmPendingUsd) f.textContent = usdSmall(r.farm);
+    const t = document.querySelector(`[data-rwtotal="${CSS.escape(id)}"]`);
+    if (t) t.textContent = usdSmall(r.total);
+  }
+  const put = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
+  put('#rwTotal', usdSmall(fees + farm));
+  put('#rwStat', usdExact(fees + farm));
+  put('#rwCta', usd(fees + farm));
+  put('#rwSplit', farmPendingUsd ? `${usdSmall(fees)} in fees · ${usdSmall(farm)} from farms, still growing` : `${usdSmall(fees)} in fees · reading farms…`);
+  put('#rwStatSub', farmPendingUsd ? `${usd(fees)} fees · ${usd(farm)} farms` : 'fees, and farm rewards once read');
+}
+
 async function renderFarmAccrual(account, positions, joined) {
   const out = $('#walletAccrual');
   if (!out) return;
   stopAccrual();
 
+  farmPendingUsd = null;
+  const noFarms = () => { farmPendingUsd = new Map(); tickRewards(); };
   const staked = positions.filter(p => (joined.get(String(p.posId)) || []).length);
-  if (!staked.length) { out.innerHTML = ''; return; }
+  if (!staked.length) { out.innerHTML = ''; noFarms(); return; }
 
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading what your farms owe you…</span></div>';
   let rows;
   try { rows = await pendingFarms(staked, joined, { prices: state.prices }); }
-  catch { out.innerHTML = ''; return; }
-  if (!rows.length) { out.innerHTML = ''; return; }
+  catch { out.innerHTML = ''; noFarms(); return; }
+  if (!rows.length) { out.innerHTML = ''; noFarms(); return; }
 
   // Same token from two farms on the same pool is one thing you are owed, not
   // two — measured on chain, pool 4356 pays ASSETS from two separate incentives.
@@ -3387,6 +3468,8 @@ async function renderFarmAccrual(account, positions, joined) {
         : '';
     });
 
+    farmPendingUsd = perPos;
+    tickRewards();
     const tot = $('#accTotal'), rt = $('#accRate');
     if (tot) tot.textContent = anyPriced ? usd4(usd) : '—';
     if (rt) rt.textContent = perSec > 0
@@ -3738,15 +3821,31 @@ async function renderAcctHistory(account) {
     for (const p of pts) if (p.time <= t) best = p; else break;
     return best.value;
   };
+  // Only what the rebuild actually reaches; a tile that says "not that far
+  // back" is a tile with nothing in it.
   const stat = (d, label) => {
     const v = ago(d);
-    if (v == null) return `<div class="hs"><span class="k">${label}</span><span class="v dim">—</span><span class="c dim">not that far back</span></div>`;
+    if (v == null) return '';
     const ch = v > 0 ? (nowV - v) / v : null;
     return `<div class="hs"><span class="k">${label}</span><span class="v">${usd(v)}</span>
       <span class="c ${ch == null ? 'dim' : ch >= 0 ? 'pos' : 'neg'}">${ch == null ? '—' : `${ch >= 0 ? '+' : ''}${(ch * 100).toFixed(1)}% since`}</span></div>`;
   };
   const st = $('#acctHistStats');
-  if (st) st.innerHTML = stat(30, '1 month ago') + stat(90, '3 months ago') + stat(365, '1 year ago');
+  if (st) {
+    const tiles = [stat(30, '1 month ago'), stat(90, '3 months ago'), stat(365, '1 year ago')].filter(Boolean);
+    st.innerHTML = tiles.join('');
+    st.hidden = !tiles.length;
+    st.style.gridTemplateColumns = `repeat(${Math.max(1, tiles.length)}, minmax(0, 1fr))`;
+  }
+  // The same for the range buttons: a 1Y button over seven months of history
+  // shows the seven months again. What is covered, and "All" for the rest.
+  const coveredDays = (pts.at(-1).time - first) / 86400;
+  const ranges = [[30, '1M'], [90, '3M'], [365, '1Y']].filter(([d]) => coveredDays >= d - 2);
+  if (coveredDays < 363 && (!ranges.length || coveredDays > ranges.at(-1)[0] + 2)) ranges.push([Math.ceil(coveredDays) + 1, 'All']);
+  const rr = $('#acctRange');
+  if (rr) rr.innerHTML = ranges.length > 1
+    ? ranges.map(([d, l], i) => `<button class="chip" data-days="${d}" aria-pressed="${i === ranges.length - 1}">${l}</button>`).join('')
+    : '';
 
   const foot = $('#acctHistFoot');
   if (foot) {
@@ -3758,7 +3857,7 @@ async function renderAcctHistory(account) {
         ? ` It ends at ${usd(nowV)} where the headline says ${usd(sumParts(w))}: the line prices only the ${res.tokens} largest tokens, together, and leaves out NFTs and farm stakes.` : ''}${res.flat.length ? ` ${res.flat.length} token${res.flat.length === 1 ? ' has' : 's have'} no price history and ${res.flat.length === 1 ? 'is' : 'are'} held at today&rsquo;s price.` : ''}`;
   }
 
-  let range = 365;
+  let range = ranges.length ? ranges.at(-1)[0] : 365;
   const draw = () => {
     const target = $('#acctHist');
     if (!target) return;
@@ -4353,8 +4452,8 @@ async function lookupWallet(account) {
     for (const p of res.alcor) p.farm = farmGap(p, state.farms, joined.get(String(p.posId)) || []);
     // The staking map is already here, so the accrual costs one read per farm
     // rather than a second sweep.
-    renderFarmAccrual(account, res.alcor, joined).catch(() => {});
-  } catch { /* the cards render without it */ }
+    renderFarmAccrual(account, res.alcor, joined).catch(() => { farmPendingUsd = new Map(); tickRewards(); });
+  } catch { farmPendingUsd = new Map(); /* the cards render without it */ }
 
   const totalUsd = all.reduce((s, p) => s + (p.valueUsd || 0), 0);
   const feesUsd = res.alcor.reduce((s, p) => s + (p.feesUsd || 0), 0);
@@ -4380,7 +4479,7 @@ async function lookupWallet(account) {
 
   let html = `<div class="stats">
       <div class="stat"><span class="v">${usdExact(totalUsd)}</span><span class="k">liquidity value</span><span class="sub">${all.length} position${all.length === 1 ? '' : 's'} across ${new Set(all.map(p => p.pool.dex)).size} venue${new Set(all.map(p => p.pool.dex)).size === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${usdExact(feesUsd)}</span><span class="k">fees waiting</span><span class="sub">uncollected, earning nothing</span></div>
+      <div class="stat"><span class="v" id="rwStat">${usdExact(feesUsd)}</span><span class="k">rewards waiting</span><span class="sub" id="rwStatSub">fees, and farm rewards once read</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usdExact(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
       ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">${usd(alcorValue)} now against ${usd(deposited)} put in, on Alcor positions only${tacoCount > 0 ? ` &mdash; the ${tacoCount} TacoSwap position${tacoCount === 1 ? '' : 's'} above ${tacoCount === 1 ? 'is' : 'are'} not in this` : ''}</span></div>` : ''}
@@ -4392,18 +4491,18 @@ async function lookupWallet(account) {
 
   html += `<div class="grid g2" style="margin-bottom:16px">
       <div class="card"><h3>Where your money is</h3><div id="walDonut"></div></div>
-      <div class="card"><h3>Fees waiting to be collected</h3><div id="walFees"></div></div>
+      <div class="card"><h3>Rewards to be collected <span class="dim">&mdash; fees and farm rewards</span></h3><div id="walRewards"></div></div>
     </div>`;
 
   // Compounding is the thing this page exists to make easy, and it was a grey
   // button at the bottom of each card. Fees waiting is the honest hook: it is
   // money already earned and sitting where it earns nothing more.
   const waiting = res.alcor.reduce((a, p) => a + (p.feesUsd || 0), 0);
-  const withFees = res.alcor.filter(p => p.feesUsd > 0).length;
+  const withFees = res.alcor.filter(p => p.feesUsd > 0 || p.farm?.inFarm?.length).length;
   if (withFees) {
     html += `<div class="cta">
-      <div><b>${usd(waiting)} in fees is sitting uncollected</b> across ${withFees} position${withFees === 1 ? '' : 's'}
-        <span class="sub">Farm rewards are on top of this.</span></div>
+      <div><b><span id="rwCta">${usd(waiting)}</span> in rewards is waiting to be collected</b> across your positions
+        <span class="sub">Fees and farm rewards together.</span></div>
       ${isMine(account) ? '<button class="btn" id="goCompound">Compound them</button>' : ''}
     </div>`;
   }
@@ -4444,10 +4543,8 @@ async function lookupWallet(account) {
 
   // Charts after the markup exists.
   $('#walDonut')?.appendChild(donut(all.map(p => ({ label: `${p.pool.symA}/${p.pool.symB}`, value: p.valueUsd || 0 })), { fmt: usd, top: 6 }));
-  const feeRows = res.alcor.filter(p => p.feesUsd > 0).sort((a, b) => b.feesUsd - a.feesUsd).slice(0, 8);
-  $('#walFees')?.appendChild(feeRows.length
-    ? bars(feeRows.map(p => ({ label: `${p.pool.symA}/${p.pool.symB}`, value: p.feesUsd, note: `position #${p.posId}` })), { fmt: usd, color: 'var(--c3)' })
-    : Object.assign(document.createElement('div'), { className: 'chart-empty', textContent: 'Nothing uncollected right now.' }));
+  rewardsCtx = { account, positions: res.alcor, drawnWithFarm: false };
+  drawRewards();
 
   // Range bars are DOM, not markup: build them after the cards exist.
   out.querySelectorAll('.poscard[data-rb]').forEach(card => {
@@ -8267,6 +8364,20 @@ async function renderPoolLPs(p) {
       <td class="r num ${x.live ? '' : 'dim'}">${x.live} of ${x.n}</td>
     </tr>`).join('')}</tbody></table></div>
     <p class="sub" style="margin:9px 0 0">${list.length} wallet${list.length === 1 ? '' : 's'}, ${usd(total)} at face value.</p>`;
+}
+
+// A test hook for headless checks on this machine: rows and cards drawn from
+// synthetic data, so a layout check does not read a real account off public
+// nodes that share an IP with the owner's bots. Absent on the published site.
+if (typeof location !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
+  window.__wt = {
+    state, walletTradeRow, drawRewards, tickRewards,
+    setRewards(positions, farm) {
+      walletShown = '__test';
+      rewardsCtx = { account: '__test', positions, drawnWithFarm: false };
+      farmPendingUsd = farm;
+    },
+  };
 }
 
 document.addEventListener('DOMContentLoaded', () => {
