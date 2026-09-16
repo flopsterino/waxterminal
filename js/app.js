@@ -1019,6 +1019,7 @@ function renderOverview() {
             <span class="switchlabel">risky</span>
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
           </span></h3><div id="ovPay"></div></div>
+      <div class="ovbanner" data-banner-host hidden></div>
       <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
@@ -1153,6 +1154,7 @@ function renderOverview() {
   ], 'No farm pays a reward with real liquidity behind it.');
   const rt = $('#riskyToggle');
   if (rt) rt.onclick = () => { showRisky = !showRisky; rt.setAttribute('aria-checked', String(showRisky)); renderOverview(); };
+  paintBanners();
   box.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
   const wp = $('#ovWaxPx');
   if (wp && state.waxUsd) wp.textContent = px(state.waxUsd);
@@ -2722,24 +2724,42 @@ const forPeriod = sec => {
 //
 // It is labelled as paid placement, sits below the content, and touches
 // nothing that is ranked. An unsold slot advertises the slot itself.
+// The CheeseHub slot. Read once, painted into every host on the page: the
+// overview keeps one in its grid under the payouts (seen on the first screen,
+// never before the data), every other page one above the footer. Banners are
+// 580x150 and shown whole — stretched across the page and cropped to 140px, the
+// artwork lost its top and bottom.
+let bannerMarkup = null;   // null: not read yet; '': nothing to show
+function paintBanners() {
+  if (bannerMarkup == null) return;
+  document.querySelectorAll('[data-banner-host]').forEach(host => {
+    host.hidden = !bannerMarkup;
+    if (bannerMarkup && !host.firstElementChild) host.innerHTML = bannerMarkup;
+  });
+}
+
 async function renderBanner() {
-  const box = $('#cheeseBanner');
-  if (!box) return;
-  let got;
-  try { got = await currentBanners(); } catch { return; }
-  const b = got.banners[0];
-  if (!b && !got.free) { box.hidden = true; return; }
-  box.hidden = false;
-  box.innerHTML = b
-    ? `<a class="bannerad" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow">
-         <img src="${esc(ipfs(b.img))}" alt="" loading="lazy"
-           onerror="${esc(ipfsFallback(b.img, "this.closest('.bannerwrap').hidden = true"))}">
-         <span class="bannertag">Paid slot &middot; bought from CheeseHub by ${esc(b.user)}</span>
-       </a>`
-    : `<a class="bannerad empty" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">
-         <span>This banner slot is unsold today &mdash; it runs on CheeseHub and here.</span>
-         <span class="bannertag">Buy the slot &nearr;</span>
-       </a>`;
+  let got = null;
+  try { got = await currentBanners(); } catch {}
+  // A shared position alternates between its two buyers; a coin per page load
+  // is the same thing over enough visits.
+  const sold = (got?.banners || []).slice(0, 2)
+    .map(b => b.shared?.img && Math.random() < 0.5 ? { ...b, ...b.shared } : b);
+  const free = got?.free || 0;
+  if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
+  const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
+  const tiles = sold.map(b => `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
+      <img src="${esc(ipfs(b.img))}" alt="Banner by ${esc(b.user)}" width="580" height="150" onerror="${esc(ipfsFallback(b.img, giveUp))}"></a>`);
+  const openTile = tiles.length < 2 && free > 0;
+  if (openTile) tiles.push(`<a class="bannertile open" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">
+      <b>Your banner here</b><span>Rent this spot on CheeseHub &nearr;</span></a>`);
+  const users = [...new Set(sold.map(b => b.user))];
+  bannerMarkup = `<div class="card bannerslot">
+    <div class="bannerhead"><span class="sponsored">Sponsored</span>
+      <span class="dim">${users.length ? `bought on CheeseHub by ${users.map(esc).join(' &amp; ')}` : 'CheeseHub banner slots'}</span>
+      ${openTile ? '' : `<a class="more" href="${CHEESEHUB}/bannerads" target="_blank" rel="noopener">Advertise &rarr;</a>`}</div>
+    <div class="bannertiles">${tiles.join('')}</div></div>`;
+  paintBanners();
 }
 
 // ---------------------------------------------------------------- RATINGS ---

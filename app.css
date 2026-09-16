@@ -1341,15 +1341,6 @@ td.rangecell { padding-top: 4px; padding-bottom: 4px; }
 
 /* --- the shared CheeseHub banner slot ----------------------------------- */
 .bannerwrap { max-width: min(1900px, 96vw); margin: 18px auto 0; padding: 0 20px; }
-.bannerad { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-lg);
-  overflow: hidden; background: var(--surface); text-decoration: none; }
-.bannerad img { width: 100%; height: auto; display: block; max-height: 140px; object-fit: cover; }
-.bannerad .bannertag { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
-  padding: 6px 10px; }
-.bannerad.empty { flex-direction: row; align-items: center; justify-content: space-between; padding: 10px 14px;
-  color: var(--ink-2); font-size: 12.5px; }
-.bannerad.empty .bannertag { padding: 0; color: var(--accent-ink); }
-.bannerad:hover { border-color: var(--line-2); text-decoration: none; }
 @media (max-width: 700px) { .bannerwrap { padding: 0 10px; } }
 
 /* --- open a position ---------------------------------------------------- */
@@ -1556,3 +1547,29 @@ td.paycell .rew { padding: 0; margin-right: 7px; background: none; border: 0; }
 .bannerwrap { max-width: min(1680px, 96vw); }
 .minitab td > [data-pm] > .tokmark { margin-right: 6px; }
 @media (max-width: 700px) { .minitab th + th, .minitab td + td { padding-left: 10px; } }
+
+/* --- the CheeseHub slot: whole artwork, in the flow, labelled ------------- */
+.ovgrid { grid-auto-flow: row dense; }
+.ovgrid > .ovbanner { grid-column: 1 / -1; }
+body:has(#view-overview.active) #cheeseBanner { display: none; }
+.bannerslot { padding: 10px 14px 14px; }
+.bannerhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; min-width: 0; }
+.bannerhead .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bannerhead .sponsored { flex: none; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 600;
+  color: var(--accent-ink); border: 1px solid var(--accent); border-radius: 99px; padding: 1px 7px; }
+.bannerhead .more { margin-left: auto; flex: none; font-size: 11.5px; font-weight: 500; color: var(--accent-ink); text-decoration: none; }
+.bannerhead .more:hover { text-decoration: underline; }
+.bannertiles { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.bannertile { flex: 1 1 380px; max-width: 720px; aspect-ratio: 580 / 150; display: block; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); }
+.bannertile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.bannertile:hover { border-color: var(--line-2); }
+.bannertile.open { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border-style: dashed; text-decoration: none; color: var(--ink-2); font-size: 12px; }
+.bannertile.open b { font-size: 15px; color: var(--ink); }
+.bannertile.open span { color: var(--accent-ink); }
+.bannertile.open:hover { border-color: var(--accent); }
+@media (max-width: 700px) {
+  .bannertile.open { aspect-ratio: auto; flex-direction: row; gap: 8px; padding: 8px 10px; }
+  .bannertile.open b { font-size: 13px; }
+}
