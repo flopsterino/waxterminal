@@ -3299,10 +3299,15 @@ async function renderWalletResources(account) {
         <div class="buyhead"><span class="buyicon ram">${ICON.RAM}</span>
           <div><div class="buytitle">Buy RAM</div><div class="sub">Bought, not rented &middot; through ram.chz &middot; 0.5% standard spread each way</div></div></div>
         <div class="buyinput">
-          <input id="ramAmt" type="number" step="any" min="0" inputmode="decimal" value="5" aria-label="CHEESE to spend">
-          <span class="unit">CHEESE</span>
+          <input id="ramAmt" type="number" step="any" min="0" inputmode="decimal" value="5" aria-label="Amount to spend">
+          <div class="seg" role="radiogroup" id="ramPay">
+            <button role="radio" data-ramtok="cheese" aria-checked="true">CHEESE</button>
+            <button role="radio" data-ramtok="wax" aria-checked="false">WAX</button>
+          </div>
         </div>
-        <div class="buymeta"><span id="ramBal"></span><span class="quick">${[1, 5, 25, 100].map(a => `<button class="linkbtn" data-ram="${a}">${a}</button>`).join('')}</span></div>
+        <div class="buymeta"><span id="ramBal"></span><span class="quick">${[1, 5, 25, 100].map(a => `<button class="linkbtn" data-ram="${a}">${a}</button>`).join('')}<button class="linkbtn" id="ramMax">Max</button></span></div>
+        <label class="pwtop" id="ramTopWrap" hidden><input type="checkbox" id="ramTop" checked>
+          <span>Buy the missing <b id="ramShort"></b> CHEESE with WAX, in the same transaction</span></label>
         <div class="buyresult"><span class="k">You get about</span><b id="ramGet">—</b><span class="sub">of RAM on ${esc(account)}, yours until you sell it</span></div>
         <div id="ramOut"></div>
         <button class="btn big" id="ramGo">Buy RAM</button>
@@ -3367,6 +3372,38 @@ async function renderWalletResources(account) {
     const c = state.prices.get('CHEESE@cheeseburger')?.usd, w = state.waxUsd;
     return c > 0 && w > 0 ? w / c : null;
   };
+  // CHEESE to spend, however it is paid for: from the wallet; from the wallet
+  // with the shortfall bought with WAX; or all of it bought with WAX. The swap
+  // and the transfer that spends it go in one transaction, and the transfer is
+  // sized to the swap's guaranteed minimum, never its estimate. Power up and
+  // RAM both pay this way.
+  const cheesePayment = async ({ tok, amt, topUp, me, auth }) => {
+    const actions = [];
+    if (tok === 'wax') {
+      if (bal.wax != null && amt > bal.wax) throw new Error(`You hold ${qty(bal.wax)} WAX.`);
+      const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: amt, me, auth });
+      if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
+      actions.push(...leg.actions);
+      return { actions, sendCheese: leg.minOut, fromWallet: 0, bought: { wax: amt, cheese: leg.minOut } };
+    }
+    const have = bal.cheese ?? 0;
+    if (amt <= have) return { actions, sendCheese: amt, fromWallet: amt, bought: null };
+    if (!topUp) throw new Error(`You hold ${qty(have)} CHEESE. Lower the amount, or tick the box to buy the rest with WAX.`);
+    const cpw = cheesePerWax();
+    if (!cpw) throw new Error('No CHEESE price to size the top-up with.');
+    // A few per cent over the shortfall, so the swap's guaranteed minimum still
+    // covers it; whatever is over stays in the wallet.
+    const waxIn = Math.ceil(((amt - have) / cpw) * 1.04 * 1e4) / 1e4;
+    if (bal.wax != null && waxIn > bal.wax) throw new Error(`Buying the missing CHEESE takes about ${qty(waxIn)} WAX; you hold ${qty(bal.wax)}.`);
+    const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: waxIn, me, auth });
+    if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
+    actions.push(...leg.actions);
+    return { actions, sendCheese: Math.min(amt, have + leg.minOut), fromWallet: have, bought: { wax: waxIn, cheese: leg.minOut } };
+  };
+  const paidHow = (fromWallet, bought) => bought
+    ? `${fromWallet > 0 ? `${qty(fromWallet)} from your wallet, the rest ` : ''}bought with ${qty(bought.wax)} WAX`
+    : 'All of it from your wallet, nothing swapped';
+
   const readPwBalances = async () => {
     const me = wallet.account();
     if (!me) return;
@@ -3432,34 +3469,13 @@ async function renderWalletResources(account) {
     let actions = [], sendCheese = 0, fromWallet = 0, bought = null;
     box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Working out the transaction…</span></div>';
     try {
-      if (pwTok === 'wax') {
-        if (bal.wax != null && amt > bal.wax) throw new Error(`You hold ${qty(bal.wax)} WAX.`);
-        const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: amt, me, auth });
-        if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
-        actions.push(...leg.actions);
-        sendCheese = leg.minOut; bought = { wax: amt, cheese: leg.minOut };
-      } else {
-        const have = bal.cheese ?? 0;
-        if (amt <= have) { sendCheese = amt; fromWallet = amt; }
-        else if ($('#pwTop')?.checked) {
-          const cpw = cheesePerWax();
-          if (!cpw) throw new Error('No CHEESE price to size the top-up with.');
-          // A few per cent over the shortfall, so the swap's guaranteed minimum
-          // still covers it; whatever is over stays in the wallet.
-          const waxIn = Math.ceil(((amt - have) / cpw) * 1.04 * 1e4) / 1e4;
-          if (bal.wax != null && waxIn > bal.wax) throw new Error(`Buying the missing CHEESE takes about ${qty(waxIn)} WAX; you hold ${qty(bal.wax)}.`);
-          const leg = await swapLeg({ fromId: 'WAX@eosio.token', toId: 'CHEESE@cheeseburger', amountIn: waxIn, me, auth });
-          if (leg.skipped) throw new Error(`WAX cannot be swapped to CHEESE right now: ${leg.skipped}.`);
-          actions.push(...leg.actions);
-          sendCheese = Math.min(amt, have + leg.minOut); fromWallet = have; bought = { wax: waxIn, cheese: leg.minOut };
-        } else throw new Error(`You hold ${qty(have)} CHEESE. Lower the amount, or tick the box to buy the rest with WAX.`);
-      }
+      ({ actions, sendCheese, fromWallet, bought } = await cheesePayment({ tok: pwTok, amt, topUp: !!$('#pwTop')?.checked, me, auth }));
       actions.push(...buildCheesePowerup({ account: me, amount: sendCheese, receiver: account, cpuPct: pwCpu }));
     } catch (e) { box.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; return; }
     const into = pwCpu >= 100 ? 'CPU' : pwCpu <= 0 ? 'NET' : `${pwCpu}/${100 - pwCpu} CPU and NET`;
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
       Burn <b>${qty(sendCheese)} CHEESE</b> through <span class="mono">${POWERUP_ACCOUNT}</span> for ${into} on <span class="mono">${esc(account)}</span>.
-      <br><span class="dim">${bought ? `${fromWallet > 0 ? `${qty(fromWallet)} from your wallet, the rest ` : ''}bought with ${qty(bought.wax)} WAX` : 'All of it from your wallet, nothing swapped'} &mdash; one transaction.</span>
+      <br><span class="dim">${paidHow(fromWallet, bought)} &mdash; one transaction.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="pwSign">Sign and power up</button></div></div>`;
     $('#pwSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
@@ -3473,19 +3489,31 @@ async function renderWalletResources(account) {
   };
 
   // ---- RAM, bought with CHEESE through ram.chz -----------------------------
+  // Paid the same three ways as power up: CHEESE in the wallet, the missing
+  // part bought with WAX, or all of it with WAX (WAX -> CHEESE -> RAM).
   const ramInput = $('#ramAmt');
+  let ramTok = 'cheese';
+  const ramAmtNow = () => Math.max(0, Number(ramInput?.value) || 0);
   function paintRamBal() {
     const el = $('#ramBal');
-    if (el) el.innerHTML = !wallet.account() ? 'Connect a wallet to pay from it.' : bal.cheese == null ? 'Reading your balance…' : `You hold <b>${qty(bal.cheese)}</b> CHEESE`;
+    const have = ramTok === 'wax' ? bal.wax : bal.cheese;
+    if (el) el.innerHTML = !wallet.account() ? 'Connect a wallet to pay from it.'
+      : have == null ? 'Reading your balance…' : `You hold <b>${qty(have)}</b> ${ramTok === 'wax' ? 'WAX' : 'CHEESE'}`;
+    const short = ramTok === 'cheese' && bal.cheese != null ? Math.max(0, ramAmtNow() - bal.cheese) : 0;
+    const wrap = $('#ramTopWrap'); if (wrap) wrap.hidden = !(short > 0);
+    const sh = $('#ramShort'); if (sh) sh.textContent = qty(short);
   }
-  // What the CHEESE buys, from the chain's own RAM market: WAX per byte is the
+  // What it buys, from the chain's own RAM market: WAX per byte is the
   // connector ratio, which is the price for a buy this small. One table read.
   let waxPerByte = null;
   const paintRamGet = () => {
     const el = $('#ramGet');
     const cpw = cheesePerWax();
-    const amt = Math.max(0, Number(ramInput?.value) || 0);
-    if (el) el.textContent = amt > 0 && waxPerByte > 0 && cpw ? bytes((amt / cpw) * 0.995 / waxPerByte) : '—';
+    const amt = ramAmtNow();
+    // WAX goes through a CHEESE swap first; its fee is the 0.3% taken here.
+    const waxValue = ramTok === 'wax' ? amt * 0.997 : (cpw ? amt / cpw : null);
+    if (el) el.textContent = amt > 0 && waxPerByte > 0 && waxValue != null ? bytes(waxValue * 0.995 / waxPerByte) : '—';
+    paintRamBal();
   };
   getRows('eosio', 'eosio', 'rammarket', { limit: 1 }).then(d => {
     const row = d.rows?.[0];
@@ -3494,18 +3522,34 @@ async function renderWalletResources(account) {
   }).catch(() => {});
   ramInput?.addEventListener('input', paintRamGet);
   paintRamBal();
+  out.querySelectorAll('#ramPay [data-ramtok]').forEach(b2 => b2.onclick = () => {
+    out.querySelectorAll('#ramPay [data-ramtok]').forEach(x => x.setAttribute('aria-checked', String(x === b2)));
+    ramTok = b2.dataset.ramtok; paintRamGet();
+  });
   out.querySelectorAll('[data-ram]').forEach(b2 => b2.onclick = () => { if (ramInput) { ramInput.value = b2.dataset.ram; paintRamGet(); } });
+  const ramMax = $('#ramMax');
+  if (ramMax) ramMax.onclick = () => {
+    const have = ramTok === 'wax' ? bal.wax : bal.cheese;
+    if (have != null && ramInput) ramInput.value = String(ramTok === 'wax' ? Math.max(0, Math.floor((have - 1) * 1e4) / 1e4) : Math.floor(have * 1e4) / 1e4);
+    paintRamGet();
+  };
   const ramBtn = $('#ramGo');
   if (ramBtn) ramBtn.onclick = async () => {
     const box = $('#ramOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } await readPwBalances(); }
-    const ramAmt = Math.max(0, Number(ramInput?.value) || 0);
-    if (!(ramAmt > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
-    if (bal.cheese != null && ramAmt > bal.cheese) { box.innerHTML = `<div class="err">You hold ${qty(bal.cheese)} CHEESE.</div>`; return; }
-    const actions = buildCheeseRam({ account: wallet.account(), amount: ramAmt, receiver: account });
+    const me = wallet.account();
+    const amt = ramAmtNow();
+    if (!(amt > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    const auth = [{ actor: me, permission: 'active' }];
+    let actions, sendCheese, fromWallet, bought;
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Working out the transaction…</span></div>';
+    try {
+      ({ actions, sendCheese, fromWallet, bought } = await cheesePayment({ tok: ramTok, amt, topUp: !!$('#ramTop')?.checked, me, auth }));
+      actions.push(...buildCheeseRam({ account: me, amount: sendCheese, receiver: account }));
+    } catch (e) { box.innerHTML = `<div class="err">${esc(e?.message || e)}</div>`; return; }
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      Send <b>${qty(ramAmt)} CHEESE</b> to <span class="mono">${RAM_ACCOUNT}</span> and receive RAM on <span class="mono">${esc(account)}</span>.
-      <br><span class="dim">0.5% standard spread each way. RAM stays yours.</span>
+      Spend <b>${qty(sendCheese)} CHEESE</b> through <span class="mono">${RAM_ACCOUNT}</span> for RAM on <span class="mono">${esc(account)}</span>.
+      <br><span class="dim">${paidHow(fromWallet, bought)} &mdash; one transaction. 0.5% standard spread each way; the RAM stays yours.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="ramSign">Sign and buy</button></div></div>`;
     $('#ramSign').onclick = async () => {
       box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
