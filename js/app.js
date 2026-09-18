@@ -204,7 +204,7 @@ const swapUrl = p => p.dex === 'alcor'
   : venueUrl[p.dex]?.(p) || '#';
 const farmUrl = p => p.dex === 'alcor' ? 'https://wax.alcor.exchange/positions' : 'https://swap.tacocrypto.io/farms';
 
-const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX' };
+const venueName = { alcor: 'Alcor', taco: 'TacoSwap', defibox: 'Defibox', adex: 'A-DEX', nefty: 'NeftyBlocks' };
 
 // The sister site. WaxDAO's front end is gone and is not coming back, so every
 // "go and stake this" link points at CheeseHub, which runs the same contracts.
@@ -1988,15 +1988,10 @@ function wireFarms() {
 
   // One venue selector for the merged page, the way the pools table had it —
   // three states rather than two toggles that can both be off and show nothing.
-  const setDex = d => {
-    farmFilters.dex = d;
-    [['all', '#fDexAll2'], ['alcor', '#fFarmAlcor'], ['taco', '#fFarmTaco']]
-      .forEach(([v, id]) => $(id)?.setAttribute('aria-pressed', String(d === v)));
-    renderFarms();
-  };
-  $('#fDexAll2').onclick = () => setDex('all');
-  $('#fFarmAlcor').onclick = () => setDex('alcor');
-  $('#fFarmTaco').onclick = () => setDex('taco');
+  // One chip per venue that is actually in the data, with how many markets it
+  // has: Defibox, A-DEX and NeftyBlocks were loaded and priced but could not be
+  // filtered to, because the chips were written out by hand. Drawn by
+  // renderFarms, which runs once the pools are in.
 
   $('#fFarmedOnly').onclick = e => {
     farmFilters.farmed = farmFilters.farmed === 'yes' ? 'any' : 'yes';
@@ -2226,6 +2221,15 @@ function renderFarms() {
     renderFarms();
   });
 
+  const venueBar = $('#farmVenues');
+  if (venueBar) {
+    const counts = new Map();
+    for (const p of state.pools) if (p.tvl > 0 || p.vol24 > 0) counts.set(p.dex, (counts.get(p.dex) || 0) + 1);
+    const venues = [...counts].sort((a2, b2) => b2[1] - a2[1]);
+    venueBar.innerHTML = `<button class="chip" data-dex="all" aria-pressed="${farmFilters.dex === 'all'}">All venues</button>`
+      + venues.map(([d, n]) => `<button class="chip" data-dex="${esc(d)}" aria-pressed="${farmFilters.dex === d}" title="${n.toLocaleString()} markets with liquidity or volume">${esc(venueName[d] || d)}</button>`).join('');
+    venueBar.querySelectorAll('[data-dex]').forEach(b2 => b2.onclick = () => { farmFilters.dex = b2.dataset.dex; renderFarms(); });
+  }
   $('#farmCount').innerHTML = capNote(rows.length, cap('farms'), 'markets');
   $('#farmTable tbody').innerHTML = rows.slice(0, cap('farms')).map((g, i) => {
     const pool = g.pool

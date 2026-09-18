@@ -1877,3 +1877,4 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .unrows input:focus { outline: none; border-color: var(--accent); }
 .stakebox { border-radius: 14px; }
 @media (max-width: 900px) { .restiles { grid-template-columns: 1fr; } }
+.chiprow { display: contents; }

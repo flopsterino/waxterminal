@@ -12,7 +12,7 @@ import { computePrices, THIN_ROUTE_USD, STABLES } from './price.js';
 import { computeDepth, poolRealisable, counterparties } from './depth.js';
 import { tradeDepth } from './depthmath.js';
 
-const ALCOR = 'swap.alcor', TACO = 'swap.taco', BOX = 'swap.box', ADEX = 'swap.adex';
+const ALCOR = 'swap.alcor', TACO = 'swap.taco', BOX = 'swap.box', ADEX = 'swap.adex', NEFTY = 'swap.nefty';
 const CACHE_KEY = 'core-v2';
 // Below this staked value an APR is arithmetic noise, not information: $1.32 staked
 // against $230/day of rewards computes to 6,372,786% and means nothing.
@@ -109,6 +109,34 @@ function normaliseTaco(rows, tokens) {
       sqrtX64: null, tick: null,
       priceAB: a.amount > 0 ? b.amount / a.amount : null,
       active: a.amount > 0 && b.amount > 0, tvl: null,
+    });
+  }
+  return out;
+}
+
+// NeftyBlocks' swap: constant product, both reserves as extended assets, and
+// the pair's own LP symbol as its id. 0.30% a trade, of which 0.10% is the
+// protocol's (fee.trade 20 and fee.protocol 10 in its config), so 0.20% reaches
+// the provider. The row carries the pair's creation time, so these pools get an
+// age without a history read.
+function normaliseNefty(rows, tokens) {
+  const out = [];
+  for (const p of rows) {
+    const a = parseAsset(p.reserve0.quantity), b = parseAsset(p.reserve1.quantity);
+    const ta = tokenId(a.symbol, p.reserve0.contract), tb = tokenId(b.symbol, p.reserve1.contract);
+    if (!tokens.has(ta)) tokens.set(ta, { id: ta, symbol: a.symbol, contract: p.reserve0.contract, decimals: a.decimals });
+    if (!tokens.has(tb)) tokens.set(tb, { id: tb, symbol: b.symbol, contract: p.reserve1.contract, decimals: b.decimals });
+    const born = p.created_time ? Date.parse(p.created_time + (String(p.created_time).endsWith('Z') ? '' : 'Z')) : null;
+    out.push({
+      dex: 'nefty', id: String(p.code),
+      tokenA: ta, tokenB: tb, symA: a.symbol, symB: b.symbol, decA: a.decimals, decB: b.decimals,
+      feeBps: 30, lpFeeBps: 20,
+      reserveA: a.amount, reserveB: b.amount,
+      liquidity: Number(p.total_liquidity) || 0, lpSupply: Number(p.total_liquidity) || 0,
+      sqrtX64: null, tick: null,
+      priceAB: a.amount > 0 ? b.amount / a.amount : null,
+      bornAt: isFinite(born) ? born : null,
+      active: !!p.active && a.amount > 0 && b.amount > 0, tvl: null,
     });
   }
   return out;
@@ -536,7 +564,7 @@ export async function loadCore({ onProgress = () => {}, force = false, swr = fal
   const tokens = new Map();
 
   // Alcor ids are sequential, so shard the sweep and fetch ~12 pages at once.
-  const [alcorPools, incentives, stakingpos, tacoPairs, tacoRewards, boxPairs, adexPools] = await Promise.all([
+  const [alcorPools, incentives, stakingpos, tacoPairs, tacoRewards, boxPairs, adexPools, neftyPairs] = await Promise.all([
     getAllRowsSharded(ALCOR, ALCOR, 'pools', 13000, { onPage: (d, t) => onProgress({ phase: 'chain', msg: `Alcor pools ${d}/${t}` }) }),
     getAllRowsSharded(ALCOR, ALCOR, 'incentives', 5000),
     getAllRows(ALCOR, ALCOR, 'stakingpos'),
@@ -544,6 +572,7 @@ export async function loadCore({ onProgress = () => {}, force = false, swr = fal
     getAllRows(TACO, TACO, 'pairreward'),
     getAllRows(BOX, BOX, 'pairs', { onPage: n => onProgress({ phase: 'chain', msg: `Defibox pairs ${n}` }) }).catch(() => []),
     getAllRows(ADEX, ADEX, 'pools').catch(() => []),
+    getAllRows(NEFTY, NEFTY, 'pairs', { onPage: n => onProgress({ phase: 'chain', msg: `Nefty pairs ${n}` }) }).catch(() => []),
   ]);
 
   onProgress({ phase: 'derive', msg: 'Pricing tokens' });
@@ -553,6 +582,7 @@ export async function loadCore({ onProgress = () => {}, force = false, swr = fal
     ...normaliseTaco(tacoPairs, tokens),
     ...normaliseBox(boxPairs, tokens),
     ...normaliseAdex(adexPools, tokens),
+    ...normaliseNefty(neftyPairs, tokens),
   ];
   const prices = computePrices(pools);
   applyPrices(pools, prices);
@@ -892,6 +922,7 @@ const SWAP_LOGS = [
   { dex: 'taco', account: TACO, action: 'exchangelog', pool: x => x.id, who: x => x.maker, in: x => x.quantity_in, out: x => x.quantity_out },
   { dex: 'defibox', account: BOX, action: 'swaplog', pool: x => x.pair_id, who: x => x.owner, in: x => x.quantity_in, out: x => x.quantity_out },
   { dex: 'adex', account: ADEX, action: 'swaplog', pool: x => x.pool_id, who: x => x.owner, in: x => x.quantity_in?.quantity, out: x => x.quantity_out?.quantity },
+  { dex: 'nefty', account: NEFTY, action: 'logswap', pool: x => x.code, who: x => x.owner, in: x => x.quantity_in, out: x => x.quantity_out },
 ];
 
 async function otherVenueSwaps(after, byId) {
@@ -1013,6 +1044,7 @@ const DELTA_SOURCE = {
   taco:    { code: TACO,  table: 'pairs', key: p => symbolCodeKey(String(p.id)), a: r => r.pool1.quantity, b: r => r.pool2.quantity },
   defibox: { code: BOX,   table: 'pairs', key: p => String(p.id), a: r => r.reserve0, b: r => r.reserve1 },
   adex:    { code: ADEX,  table: 'pools', key: p => String(p.id), a: r => r.base_token.quantity, b: r => r.quote_token.quantity },
+  nefty:   { code: NEFTY, table: 'pairs', key: p => symbolCodeKey(String(p.id)), a: r => r.reserve0.quantity, b: r => r.reserve1.quantity },
 };
 
 // Alcor publishes its own candles, and they go back to the day the pool opened.
