@@ -1792,10 +1792,13 @@ function renderTokens() {
     poolsBehind++;
     vol += p.vol24 || 0;
   }
+  // Both sides of the same figure: what sits in pools, and what of it could be
+  // sold. They are counted per token side, so the face total is the market's.
   const tvl = rows.reduce((s, t) => s + t.tvl, 0);
+  const tvlFace = rows.reduce((s, t) => s + t.tvlNominal, 0);
   $('#tokStats').innerHTML = `
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
-    <div class="stat"><span class="v">${usd(tvl)}</span><span class="k">pooled behind them</span></div>
+    <div class="stat"><span class="v">${usd(tvlFace)}</span><span class="k">pooled behind them</span><span class="sub">${usd(tvl)} of it could be sold</span></div>
     <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">each trade counted once, across all four venues</span></div>
     <div class="stat"><span class="v">${poolsBehind.toLocaleString()}</span><span class="k">pools holding them</span></div>`;
 
@@ -1850,7 +1853,8 @@ function renderTokens() {
         ? 'No comparable price in the previous snapshot' : `${esc(t.symbol)} was ${px(t.priceWas)}`}">${chgTxt(t.change24)}</td>
       <td class="r num">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">—</span>'}</td>
       ${tokFilters.lens === 'trending' ? `<td class="r num" title="${usd(t.vol24)} today against ${usd((t.vol7d || 0) / 7)} a day over the week">${t.heat.toFixed(1)}&times;</td>` : ''}
-      <td class="r num">${usd(t.tvl)}</td>
+      <td class="r num" title="${usd(t.tvlNominal)} of ${esc(t.symbol)} sits in pools${t.tvlNominal > t.tvl * 1.05 ? `, with ${usd(t.exit)} of other tokens standing opposite it` : ''}">${usd(t.tvl)}${
+        t.tvlNominal > t.tvl * 1.05 ? `<span class="nominal">${usd(t.tvlNominal)} face</span>` : ''}</td>
       <td class="r num ${t.vol7d > 0 ? '' : 'dim'}">${t.vol7d > 0 ? usd(t.vol7d) : '—'}</td>
       <td class="r num ${t.vol30d > 0 ? '' : 'dim'}">${t.vol30d > 0 ? usd(t.vol30d) : '—'}</td>
       <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
@@ -6517,7 +6521,8 @@ async function openToken(id) {
       <div class="stat"><span class="v" id="tokCap">—</span><span class="k">market cap</span><span class="sub" id="tokCapSub">circulating &times; price</span></div>
       <div class="stat"><span class="v" id="tokCirc">—</span><span class="k">circulating</span><span class="sub" id="tokBurn">&nbsp;</span></div>
       <div class="stat"><span class="v" id="tokHolderN">—</span><span class="k">holders</span><span class="sub" id="tokHolderSub">accounts with a balance</span></div>
-      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${t.pools} pool${t.pools === 1 ? '' : 's'} on ${venues.length} venue${venues.length === 1 ? '' : 's'}</span></div>
+      <div class="stat"><span class="v">${usd(t.tvl)}</span><span class="k">pooled</span><span class="sub">${
+        t.tvlNominal > t.tvl * 1.05 ? `${usd(t.tvlNominal)} of ${esc(t.symbol)} at face value &middot; ` : ''}${t.pools} pool${t.pools === 1 ? '' : 's'} on ${venues.length} venue${venues.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v" id="tokVol">${t.vol24 > 0 ? usd(t.vol24) : '<span class="dim">measuring…</span>'}</span><span class="k">traded 24h</span><span class="sub" id="tokVolSub">${t.vol24 > 0 ? 'across every venue' : '&nbsp;'}</span></div>
     </div>
 
@@ -6570,7 +6575,7 @@ async function openToken(id) {
           <dt>Time-locked</dt><dd class="mono" id="fLocked">—</dd>
           <dt>Circulating</dt><dd class="mono" id="fCirc">—</dd>
           <dt>Holders</dt><dd class="mono" id="fHolders">—</dd>
-          <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}</dd>
+          <dt>Value in pools</dt><dd class="mono">${usd(t.tvl)}${t.tvlNominal > t.tvl * 1.05 ? ` <span class="dim">of ${usd(t.tvlNominal)} at face value</span>` : ''}</dd>
           <dt>Rated by Alcor</dt><dd class="mono">${meta?.score != null ? `${meta.score}/100` : '<span class="dim">not rated</span>'}</dd>
           <dt>Transfer tax</dt><dd class="mono" id="fTax"><span class="dim">reading…</span></dd>
         </dl>

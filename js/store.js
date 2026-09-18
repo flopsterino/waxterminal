@@ -1488,12 +1488,18 @@ export function tokenTable() {
 
   for (const p of state.pools) {
     if (!(p.tvl > 0) && !(p.vol24 > 0)) continue;
-    const half = (p.tvlReal || 0) / 2, halfNom = (p.tvl || 0) / 2;
+    // Each token is credited with ITS OWN side of the pool, not half of it. A
+    // pool is rarely worth the same on both sides once one of them is a token
+    // nothing will buy: LFGK/STAKE holds $28.6k at face value, and crediting
+    // LFGK with half of the discounted pool put $9.6k on the tokens page —
+    // a figure that matched neither the pool, nor the venue, nor the $25.9k of
+    // LFGK actually sitting in pools.
+    const half = (p.tvl || 0) / 2;
+    const sideVal = (res, px) => (px != null && res > 0 ? res * px : half);
+    const vals = { a: sideVal(p.reserveA, p.priceUsdA), b: sideVal(p.reserveB, p.priceUsdB) };
     for (const [id, side] of [[p.tokenA, 'a'], [p.tokenB, 'b']]) {
       const r = touch(id);
-      // Split the pool's value between its two sides rather than crediting each
-      // with the whole thing, or the totals add up to twice the market.
-      r.tvl += half; r.tvlNominal += halfNom;
+      r.tvlNominal += vals[side];
       // Volume is the trade, and a trade touches both tokens — so both are
       // credited in full. That is the convention every DEX tracker uses, and it
       // means token volumes deliberately do not sum to venue volume.
@@ -1517,6 +1523,9 @@ export function tokenTable() {
   for (const r of rows.values()) {
     const d = state.depth.get(r.id);
     if (d && !d.anchored && isFinite(d.exit)) r.depth1 = Math.min(r.depth1, d.exit);
+    // What that side could actually be sold for: its own value, capped by the
+    // value standing opposite it. Anchors (WAX, bridged dollars) are not capped.
+    r.tvl = d && !d.anchored && isFinite(d.exit) ? Math.min(r.tvlNominal, d.exit) : r.tvlNominal;
 
     // 24h change, from the price this token had in the previous snapshot. A
     // token that was not priced then has no change — which is not the same as
