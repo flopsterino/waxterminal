@@ -1878,3 +1878,11 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .stakebox { border-radius: 14px; }
 @media (max-width: 900px) { .restiles { grid-template-columns: 1fr; } }
 .chiprow { display: contents; }
+
+/* The two sides of a deposit: what the position holds, what the wallet holds. */
+.lpsides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.lpsides > div { display: flex; flex-direction: column; gap: 1px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 8px 10px; min-width: 0; }
+.lpsides .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lpsides b { font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.lpsides .s { font-size: 11px; color: var(--muted); }

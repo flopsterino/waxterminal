@@ -5940,7 +5940,16 @@ function renderAddLiquidity(box, pos, account) {
 
   box.innerHTML = `<div class="card" style="margin-top:11px;background:var(--surface-2)">
     <h3>Add to ${pairName(pool)} <span class="dim">&mdash; ticks ${pos.tickLower}…${pos.tickUpper}</span></h3>
-    <div class="filters" style="display:grid;gap:8px;margin:0">
+    <div class="lpsides">
+      <div><span class="k">In this position</span><b>${qty(pos.amountA)} ${esc(pool.symA)}</b><b>${qty(pos.amountB)} ${esc(pool.symB)}</b><span class="s">${usd(pos.valueUsd)}</span></div>
+      <div><span class="k">In your wallet</span><b id="addBalA">…</b><b id="addBalB">…</b><span class="s" id="addBalUsd"></span></div>
+    </div>
+    <div class="toolbar" style="margin:10px 0 0">
+      <span class="sub">Add</span>
+      ${[25, 50, 75, 100].map(p2 => `<button class="chip" data-addpct="${p2}">${p2}%</button>`).join('')}
+      <span class="dim" style="font-size:11.5px">of what your wallet can put in</span>
+    </div>
+    <div class="filters" style="display:grid;gap:8px;margin:10px 0 0">
       <label>${esc(pool.symA)}<input id="addA" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
       <label>${esc(pool.symB)}<input id="addB" type="number" step="any" min="0" placeholder="0" inputmode="decimal"></label>
     </div>
@@ -5963,6 +5972,38 @@ function renderAddLiquidity(box, pos, account) {
   A.oninput = () => mirror(A, B, pxA, pxB, ratio.shareA, ratio.shareB);
   B.oninput = () => mirror(B, A, pxB, pxA, ratio.shareB, ratio.shareA);
   box.querySelector('[data-close-lp]').onclick = () => { box.innerHTML = ''; };
+
+  // What the wallet holds of both sides, and therefore how much of it can go in
+  // at the ratio this band asks for: whichever side runs out first sets 100%.
+  const bal = { a: null, b: null };
+  const fmtBal = () => {
+    const ea = $('#addBalA'), eb = $('#addBalB'), eu = $('#addBalUsd');
+    if (ea) ea.textContent = bal.a == null ? '…' : `${qty(bal.a)} ${pool.symA}`;
+    if (eb) eb.textContent = bal.b == null ? '…' : `${qty(bal.b)} ${pool.symB}`;
+    if (eu) eu.textContent = bal.a != null && bal.b != null && (pxA > 0 || pxB > 0)
+      ? usd(bal.a * (pxA || 0) + bal.b * (pxB || 0)) : '';
+  };
+  fmtBal();
+  const tokA = state.tokens.get(pool.tokenA), tokB = state.tokens.get(pool.tokenB);
+  Promise.all([
+    balanceOf(account, tokA?.contract || pool.tokenA.split('@')[1], pool.symA).catch(() => null),
+    balanceOf(account, tokB?.contract || pool.tokenB.split('@')[1], pool.symB).catch(() => null),
+  ]).then(([x, y]) => { bal.a = x ?? 0; bal.b = y ?? 0; fmtBal(); });
+
+  box.querySelectorAll('[data-addpct]').forEach(btn => btn.onclick = () => {
+    const pct = Number(btn.dataset.addpct) / 100;
+    if (bal.a == null || bal.b == null) return;
+    // In value terms, so the two sides arrive in the band's ratio; the side
+    // that cannot cover its share is the one that caps the deposit.
+    const capA = ratio.shareA > 0 && pxA > 0 ? bal.a * pxA / ratio.shareA : Infinity;
+    const capB = ratio.shareB > 0 && pxB > 0 ? bal.b * pxB / ratio.shareB : Infinity;
+    const value = Math.min(capA, capB) * pct;
+    if (!(value > 0) || !isFinite(value)) return;
+    const wantA = ratio.shareA > 0 && pxA > 0 ? value * ratio.shareA / pxA : 0;
+    const wantB = ratio.shareB > 0 && pxB > 0 ? value * ratio.shareB / pxB : 0;
+    A.value = wantA > 0 ? Math.min(wantA, bal.a).toPrecision(8).replace(/0+$/, '') : '';
+    B.value = wantB > 0 ? Math.min(wantB, bal.b).toPrecision(8).replace(/0+$/, '') : '';
+  });
 
   $('#addGo').onclick = () => {
     const amountA = Number(A.value) || 0, amountB = Number(B.value) || 0;
@@ -8890,7 +8931,7 @@ async function renderPoolLPs(p) {
 // nodes that share an IP with the owner's bots. Absent on the published site.
 if (typeof location !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
   window.__wt = {
-    state, walletTradeRow, drawRewards, tickRewards, candleChart,
+    state, walletTradeRow, drawRewards, tickRewards, candleChart, renderAddLiquidity,
     seedAll(agg) {
       walletShown = '__test';
       walletAgg = { account: '__test', ...agg };
