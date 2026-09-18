@@ -28,6 +28,54 @@ export const WAXFUN_TOKENS = 'alpha.waxfun';
 export const WAXFUN_CURVE = 'main.waxfun';
 export const WAXDAO_MARKET = 'waxdaomarket';
 
+// ---------------------------------------------------------------- the curve --
+// Worked out from the chain, because wax.fun's front end is gone and its
+// contract ships no formula anyone can read. It is a constant product against
+// virtual reserves:
+//
+//   T  = 2^30 tokens (1,073,741,824) — the virtual token reserve
+//   W0 = the token's curve_config, in WAX — the virtual WAX reserve
+//   Y  = T - supply                    price p(S) = W0*T / (T - S)^2
+//
+// How that was established, since guessing here spends other people's money:
+//   - two tokens nobody has burned solve S*(1 + W0/R) to 1.07375e9 and
+//     1.07375e9, which is 2^30 to five digits;
+//   - the price it predicts matches the contract's own logged price on TENX
+//     (1.92607e-4 against 1.926e-4) and on WU (7.60566e-5 against 7.605e-5);
+//   - it reproduces a real 6,500 WAX buy: 35,597,000 tokens predicted against
+//     35,596,919 issued.
+// Fees: a buy is charged 1% of the WAX before it reaches the curve, a sell pays
+// out 1% less than the curve gives — both seen in the transfers of real trades.
+export const CURVE_T = 2 ** 30;
+export const CURVE_FEE = 0.01;
+export const DEX_GOAL_TOKENS = 8e8;             // supply at which it lists on Alcor
+
+export const curvePrice = (supply, curveConfig) => {
+  const y = CURVE_T - supply;
+  return y > 0 ? (curveConfig * CURVE_T) / (y * y) : null;
+};
+
+// Spending `wax` (gross, fee included) gets you this many tokens.
+export function curveBuy(wax, supply, curveConfig) {
+  const y = CURVE_T - supply;
+  const w = wax * (1 - CURVE_FEE);
+  if (!(w > 0) || !(y > 0)) return null;
+  const out = (w * y * y) / (curveConfig * CURVE_T + w * y);
+  return out > 0 && out < y ? out : null;
+}
+
+// Selling `tokens` back pays this much WAX, after the fee.
+export function curveSell(tokens, supply, curveConfig) {
+  const y = CURVE_T - supply;
+  if (!(tokens > 0) || !(y > 0) || tokens > supply) return null;
+  const gross = (curveConfig * CURVE_T * tokens) / (y * (y + tokens));
+  return gross > 0 ? gross * (1 - CURVE_FEE) : null;
+}
+
+// How far along the curve it is: the contract lists a token on Alcor once 800M
+// of it has been sold.
+export const curveProgress = supply => Math.max(0, Math.min(1, supply / DEX_GOAL_TOKENS));
+
 const parseAmount = q => parseFloat(String(q || '').split(' ')[0]) || 0;
 const decimalsOf = q => (String(q || '').split(' ')[0].split('.')[1] || '').length;
 

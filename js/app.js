@@ -19,7 +19,7 @@ import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topL
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
 import { accountValueHistory } from './acctvalue.js';
-import { waxfunTokens, waxfunSupply, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, WAXFUN_CURVE } from './legacy.js';
+import { waxfunTokens, waxfunSupply, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, WAXFUN_CURVE, curvePrice, curveBuy, curveSell, curveProgress, DEX_GOAL_TOKENS } from './legacy.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -3114,8 +3114,26 @@ async function renderLegacy(tab = 'waxfun') {
 
   // ---- wax.fun ------------------------------------------------------------
   let tokens = [];
+  const daily = fetch(new URL('../data/waxfun.json', import.meta.url))
+    .then(r => (r.ok ? r.json() : null)).catch(() => null);
   try { tokens = await waxfunTokens(); } catch { tokens = []; }
   if (stale()) return;
+  // Supplies come from the daily read, so a price and a place on the curve can
+  // be drawn for 255 tokens without 255 table reads per visitor.
+  const snap = await daily;
+  if (stale()) return;
+  if (snap?.tokens) {
+    const by = new Map(snap.tokens.map(t => [`${t.sym}@${t.contract}`, t]));
+    for (const t of tokens) {
+      const d = by.get(t.id);
+      if (!d || d.supply == null) continue;
+      t.supply = d.supply; t.decimals = d.decimals;
+      t.price = curvePrice(d.supply, t.curveConfig);
+      t.progress = curveProgress(d.supply);
+      t.capWax = t.price != null ? t.price * d.supply : null;
+    }
+    tokens.sort((a2, b2) => (b2.capWax ?? -1) - (a2.capWax ?? -1) || b2.reservedWax - a2.reservedWax);
+  }
   let q = '', funAll = false;
   const marketFor = t => state.pools.find(p => p.dex === 'alcor' && (p.tokenA === t.id || p.tokenB === t.id) && p.tvlReal > 0);
   const paintFun = () => {
@@ -3134,9 +3152,14 @@ async function renderLegacy(tab = 'waxfun') {
           <div class="fnname"><b>${esc(t.name)}</b><span class="sub">${esc(t.symbol)} &middot; ${esc(t.contract)}</span></div>
           <span class="pill ${listed ? 'good' : ''}">${listed ? 'On Alcor' : 'On the curve'}</span></header>
         <div class="funfigs">
-          <div><span class="k">In the curve</span><span class="v">${qty(t.reservedWax)} WAX</span></div>
-          <div><span class="k">Made by</span><span class="v">${acctLink(t.creator || '—')}</span></div>
+          <div><span class="k">Price</span><span class="v">${t.price != null ? `${pxNum(t.price)} WAX` : '—'}</span>${
+            t.price != null && state.waxUsd ? `<span class="s">${px(t.price * state.waxUsd)}</span>` : ''}</div>
+          <div><span class="k">Market cap</span><span class="v">${t.capWax != null ? `${qty(t.capWax)} WAX` : `${qty(t.reservedWax)} WAX in`}</span>${
+            t.capWax != null && state.waxUsd ? `<span class="s">${usd(t.capWax * state.waxUsd)}</span>` : ''}</div>
         </div>
+        ${t.progress != null ? `<div class="funbar" title="${qty(t.supply)} of ${qty(DEX_GOAL_TOKENS)} ${esc(t.symbol)} sold; at the goal it lists on Alcor">
+          <span style="width:${(t.progress * 100).toFixed(1)}%"></span></div>
+          <div class="funbarnote"><span>${(t.progress * 100).toFixed(1)}% to Alcor</span><span class="dim">${qty(t.reservedWax)} WAX in the curve &middot; by ${esc(t.creator || '—')}</span></div>` : ''}
         ${t.description ? `<p class="sub fundesc">${esc(t.description.slice(0, 160))}</p>` : ''}
         <footer>${listed && pool ? `<button class="btn ghost" data-poolkey="${esc(pool.dex)}:${esc(String(pool.id))}">Open its market</button>`
           : `<button class="btn" data-funtrade="${esc(t.id)}">Buy or sell</button>`}</footer>
@@ -3208,7 +3231,8 @@ async function openFunTrade(card, token) {
     me ? balanceOf(me, token.contract, token.symbol).catch(() => null) : null,
   ]);
   const dec = stat?.decimals ?? 8;
-  const avg = stat?.supply > 0 ? token.reservedWax / stat.supply : null;
+  const supply = stat?.supply ?? null;
+  const price = supply != null ? curvePrice(supply, token.curveConfig) : null;
   panel.innerHTML = `
     <div class="funtrade">
       <div class="seg" role="radiogroup" id="funSide">
@@ -3223,22 +3247,39 @@ async function openFunTrade(card, token) {
         <span class="quick"><button class="linkbtn" id="funMax">Max</button></span></div>
       <label class="pwtop"><span>Refuse if the price moves more than</span>
         <input id="funSlip" type="number" min="0.1" max="50" step="0.5" value="5" style="width:64px"><span>%</span></label>
-      <p class="sub">${stat ? `${qty(stat.supply)} of ${qty(stat.maxSupply)} ${esc(token.symbol)} issued${avg ? ` &middot; ${pxNum(avg)} WAX average so far` : ''}. ` : ''}The curve prices the trade and takes 1%.</p>
+      <div class="buyresult"><span class="k">You get about</span><b id="funGet">—</b><span class="sub" id="funGetSub">${
+        price != null ? `at ${pxNum(price)} WAX each &middot; the curve charges 1%` : 'the curve prices the trade and charges 1%'}</span></div>
+      <p class="sub">${stat ? `${qty(supply)} of ${qty(stat.maxSupply)} ${esc(token.symbol)} issued &middot; ${(curveProgress(supply) * 100).toFixed(1)}% of the way to Alcor. ` : ''}Quoted from the curve; the contract computes the exact amount.</p>
       <div id="funOut"></div>
       <button class="btn" id="funGo">Review</button>
     </div>`;
   let side = 'buy';
   const amt = () => Math.max(0, Number($('#funAmt')?.value) || 0);
+  // What the curve would give, from the formula in legacy.js — the same shape
+  // the contract uses, checked against its own logged trades.
+  const quote = () => {
+    const el = $('#funGet');
+    if (!el) return;
+    const v = amt();
+    if (!(v > 0) || supply == null) { el.textContent = '—'; return; }
+    const got = side === 'buy' ? curveBuy(v, supply, token.curveConfig) : curveSell(v, supply, token.curveConfig);
+    el.textContent = got == null ? '—'
+      : side === 'buy' ? `${qty(got)} ${token.symbol}`
+      : `${qty(got)} WAX${state.waxUsd ? ` (${usd(got * state.waxUsd)})` : ''}`;
+  };
+  $('#funAmt')?.addEventListener('input', quote);
   panel.querySelectorAll('#funSide [data-side]').forEach(b => b.onclick = () => {
     panel.querySelectorAll('#funSide [data-side]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
     side = b.dataset.side;
     const u = $('#funUnit'); if (u) u.textContent = side === 'buy' ? 'WAX' : token.symbol;
+    quote();
   });
   const max = $('#funMax');
   if (max) max.onclick = () => {
     const have = side === 'buy' ? waxBal : tokBal;
     const el = $('#funAmt');
     if (el && have != null) el.value = String(side === 'buy' ? Math.max(0, Math.floor((have - 1) * 1e4) / 1e4) : Math.floor(have * 10 ** dec) / 10 ** dec);
+    quote();
   };
   const go = $('#funGo');
   if (go) go.onclick = async () => {

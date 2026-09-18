@@ -1908,3 +1908,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .funtrade { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
 .funtrade .btn { width: 100%; justify-content: center; }
 .funtrade .pwtop { align-items: center; }
+.funbar { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.funbar span { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--good)); }
+.funbarnote { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ink-2); margin-top: -4px; }
+.funbarnote .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
