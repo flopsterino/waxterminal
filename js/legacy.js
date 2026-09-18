@@ -16,10 +16,11 @@
 //               WAX to main.waxfun with a JSON memo naming the token and the
 //               slippage; a sell is the token itself with the same memo shape.
 //               Verified on 27ffeab8… (buy) and 06a42f9b… (sell).
-//   WaxDAO      drops mint from waxdaomarket::claimdrop, which is what its
-//               1,340 claims used. Paid drops take payment somewhere this has
-//               not seen used since 2025, so those are listed and not claimed:
-//               guessing a payment memo with someone's tokens is not on.
+//   WaxDAO      a drop sells an NFT for whatever token its creator chose. Paid
+//               ones assert the amount and then pay it in one transaction,
+//               memo |purchase_drop|<drop>|<nonce>|; free ones call claimdrop.
+//               Verified on c0ff0eb0… (57 NFTs for 427,443 OWLZ) and against
+//               the 1,340 free claims.
 // =============================================================================
 
 import { getRows, getAllRows } from './chain.js';
@@ -154,28 +155,123 @@ export function buildWaxfunSell({ account, token, amount, decimals, slippagePct 
 }
 
 // ---------------------------------------------------------------- WaxDAO ----
-export async function waxdaoDrops({ now = Date.now() } = {}) {
+// A drop sells one NFT for whatever token its creator felt like charging in:
+// WAX, or SHIT, or OWLZ, or any of the thirty others open right now. That is
+// the thing nowhere else will sell you, and the reason this tab exists.
+//
+// Two shapes of claim, both taken from what the contract's own history did
+// rather than from its ABI:
+//
+//   paid   assertdrop, saying how many you are taking, and then the payment as
+//          an ordinary transfer to waxdaomarket with the memo
+//          |purchase_drop|<drop>|<nonce>|. The contract mints on the transfer
+//          and forwards the payment to the drop's receiver, keeping 2%.
+//          Checked on c0ff0eb0…: drop 2599 at 7,499 OWLZ each, asserted 57,
+//          paid 427,443 OWLZ, 57 assets minted. Over ten thousand of these.
+//   free   claimdrop, 1,340 of them, the last in October 2025.
+//
+// A drop can outlive its own collection's permission to mint, so what is left
+// and whether waxdaomarket may still mint it are read before anyone signs:
+// paying for an NFT the contract can no longer issue is the one mistake here
+// that costs money.
+export const WAXDAO_CUT = 0.02;              // what waxdaomarket keeps of a sale
+const nonce = () => Math.floor(Math.random() * 2 ** 31);
+
+// "7499.00000000 OWLZ" — kept in integer units so a quantity of 57 is the
+// contract's own arithmetic and not a float's idea of it.
+function assetParts(q) {
+  const [amtStr = '0', symbol = ''] = String(q || '').trim().split(' ');
+  const [whole = '0', frac = ''] = amtStr.split('.');
+  return {
+    units: BigInt((whole.replace(/[^0-9]/g, '') || '0') + frac),
+    decimals: frac.length, symbol, amount: parseFloat(amtStr) || 0,
+  };
+}
+
+const unitsToAsset = (units, decimals, symbol) => {
+  const s = units.toString().padStart(decimals + 1, '0');
+  return `${decimals ? `${s.slice(0, -decimals)}.${s.slice(-decimals)}` : s} ${symbol}`;
+};
+
+// What n of a drop costs, exactly as the contract will count it.
+export function dropCost(drop, count = 1) {
+  const n = Math.max(1, Math.floor(Number(count) || 1));
+  return { count: n, quantity: unitsToAsset(drop.priceUnits * BigInt(n), drop.priceDecimals, drop.priceSymbol), amount: drop.price * n };
+}
+
+export async function waxdaoDrops({ now = Date.now(), openOnly = true } = {}) {
   let rows = [];
   try { rows = await getAllRows(WAXDAO_MARKET, WAXDAO_MARKET, 'drops'); } catch { return []; }
   const sec = now / 1000;
   return rows
-    .map(d => ({
-      id: Number(d.ID),
-      creator: d.user,
-      price: parseAmount(d.price),
-      priceSymbol: String(d.price || '').split(' ')[1] || '',
-      priceContract: d.contract,
-      collection: d.collection, schema: d.schema, templateId: Number(d.template_id),
-      left: Number(d.total_left), total: Number(d.total_available),
-      perUser: Number(d.limit_per_user), cooldown: Number(d.cooldown),
-      whitelist: d.whitelist_type, farm: d.farmname, minStake: Number(d.minimum_to_stake),
-      startsAt: Number(d.start_time) * 1000, endsAt: Number(d.end_time) * 1000,
-      description: d.drop_description || '', logo: d.drop_logo || '',
-      type: d.drop_type || '',
-    }))
-    // Still open: started, not ended, and either unlimited or with some left.
-    .filter(d => d.startsAt / 1000 <= sec && d.endsAt / 1000 > sec && (d.total === 0 || d.left > 0))
-    .sort((a, b) => a.price - b.price || b.id - a.id);
+    .map(d => {
+      const price = assetParts(d.price);
+      return {
+        id: Number(d.ID),
+        creator: d.user,
+        price: price.amount, priceSymbol: price.symbol, priceContract: d.contract,
+        priceUnits: price.units, priceDecimals: price.decimals,
+        free: !(price.amount > 0),
+        collection: d.collection, schema: d.schema, templateId: Number(d.template_id),
+        // total_available 0 means unlimited, and the counter then wraps below
+        // zero — 4,294,966,109 left is not a number to put on a screen.
+        total: Number(d.total_available), left: Number(d.total_available) ? Number(d.total_left) : null,
+        perUser: Number(d.limit_per_user), cooldown: Number(d.cooldown),
+        whitelist: d.whitelist_type, allowedUsers: (d.allowed_users || []).filter(Boolean),
+        farm: d.farmname && d.farmname !== 'na' ? d.farmname : '', minStake: Number(d.minimum_to_stake),
+        startsAt: Number(d.start_time) * 1000, endsAt: Number(d.end_time) * 1000,
+        description: d.drop_description || '', logo: d.drop_logo || '',
+        type: d.drop_type || '', receiver: d.receiver && d.receiver !== 'na' ? d.receiver : '',
+        // A preminted pack hands over an asset somebody put in a pool instead
+        // of minting a template, so its stock is that pool's, not a template's.
+        premintPool: d.drop_type === 'premint.pack' ? Number((d.other || [])[0]) || null : null,
+        toPool: Number(d.percent_to_pool) || 0, poolKind: d.pool_or_farm, poolName: d.pool_or_farm_name,
+      };
+    })
+    .filter(d => !openOnly || (d.startsAt / 1000 <= sec && d.endsAt / 1000 > sec && (d.left == null || d.left > 0)))
+    .sort((a, b) => b.id - a.id);
+}
+
+// Can this drop still hand over what it promises? Three things can be false
+// while the drop itself looks open: the collection has since dropped
+// waxdaomarket as a minter, the template has hit its own maximum, or the
+// preminted pool behind a pack is empty. Read before signing, not after.
+export async function dropReadiness(drop) {
+  const out = { minter: null, template: null, premint: null };
+  const jobs = [
+    getRows('atomicassets', 'atomicassets', 'collections', { lower: drop.collection, limit: 1 })
+      .then(d => {
+        const r = d.rows?.[0];
+        if (r?.collection_name === drop.collection) out.minter = (r.authorized_accounts || []).includes(WAXDAO_MARKET);
+      }).catch(() => {}),
+  ];
+  if (drop.templateId > 0) {
+    jobs.push(getRows('atomicassets', drop.collection, 'templates', { lower: String(drop.templateId), limit: 1 })
+      .then(d => {
+        const r = d.rows?.[0];
+        if (Number(r?.template_id) === drop.templateId) {
+          out.template = { issued: Number(r.issued_supply) || 0, max: Number(r.max_supply) || 0, schema: r.schema_name };
+        }
+      }).catch(() => {}));
+  }
+  if (drop.premintPool) {
+    jobs.push(getRows(WAXDAO_MARKET, WAXDAO_MARKET, 'premintpools', { lower: String(drop.premintPool), limit: 1 })
+      .then(d => {
+        const r = d.rows?.[0];
+        if (Number(r?.ID) === drop.premintPool) out.premint = { left: Number(r.amount_of_assets) || 0, name: r.display_name || '' };
+      }).catch(() => {}));
+  }
+  await Promise.all(jobs);
+  return out;
+}
+
+// What stock is actually left, whichever thing holds it.
+export function dropStock(drop, ready) {
+  if (drop.premintPool) return ready?.premint ? ready.premint.left : null;
+  if (drop.left != null) return drop.left;
+  const t = ready?.template;
+  if (t && t.max > 0) return Math.max(0, t.max - t.issued);
+  return null;                                   // unlimited, as far as anything here knows
 }
 
 // The claim the contract's own history used 1,340 times. `unique_id` is the
@@ -186,7 +282,26 @@ export function buildDropClaim({ account, dropId, count = 1 }) {
     authorization: [{ actor: account, permission: 'active' }],
     data: {
       drop_ID: Number(dropId), user: account, quantity_to_mint: Math.max(1, Math.round(count)),
-      unique_id: Math.floor(Math.random() * 2 ** 31),
+      unique_id: nonce(),
     },
   }];
+}
+
+// A paid claim: say what you are taking, then pay for it. Both actions carry
+// the buyer's own authority and both are in the same transaction — the
+// contract reads the assertion when the transfer arrives, so one without the
+// other is either a refused transfer or a payment for nothing.
+export function buildDropPurchase({ account, drop, count = 1 }) {
+  const cost = dropCost(drop, count);
+  const auth = [{ actor: account, permission: 'active' }];
+  return [
+    {
+      account: WAXDAO_MARKET, name: 'assertdrop', authorization: auth,
+      data: { drop_ID: Number(drop.id), user: account, quantity_to_assert: cost.count },
+    },
+    {
+      account: drop.priceContract, name: 'transfer', authorization: auth,
+      data: { from: account, to: WAXDAO_MARKET, quantity: cost.quantity, memo: `|purchase_drop|${drop.id}|${nonce()}|` },
+    },
+  ];
 }

@@ -1889,7 +1889,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 
 /* --- old projects ------------------------------------------------------------- */
 .fungrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
-.funcard { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--line);
+.funcard { display: flex; flex-direction: column; gap: 10px; align-self: start; background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--r-lg); padding: 13px 14px; min-width: 0; }
 .funcard header { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .funimg { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; background: var(--surface-3); flex: none; }
@@ -1902,7 +1902,14 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   border-radius: var(--r); padding: 7px 9px; min-width: 0; }
 .funfigs .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .funfigs .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fundesc { margin: 0; max-height: 3.2em; overflow: hidden; }
+.fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.funfigs .s { font-size: 11px; color: var(--muted); }
+.dropprice { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: -2px; }
+.dropprice b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.dropprice .sub { font-size: 11.5px; }
+.funfigs.three { grid-template-columns: repeat(3, 1fr); }
+.funfigs.three .v { font-size: 12px; }
+.dropneeds { margin: -2px 0 0; }
 .funcard footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: auto; }
 .funcard footer .btn { flex: 1; justify-content: center; }
 .funtrade { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }

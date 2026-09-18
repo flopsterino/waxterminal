@@ -19,7 +19,8 @@ import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topL
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
 import { accountValueHistory } from './acctvalue.js';
-import { waxfunTokens, waxfunSupply, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, WAXFUN_CURVE, curvePrice, curveBuy, curveSell, curveProgress, DEX_GOAL_TOKENS } from './legacy.js';
+import { waxfunTokens, waxfunSupply, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, buildDropPurchase,
+  dropCost, dropReadiness, dropStock, WAXDAO_MARKET, WAXDAO_CUT, WAXFUN_CURVE, curvePrice, curveBuy, curveSell, curveProgress, DEX_GOAL_TOKENS } from './legacy.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -177,6 +178,12 @@ const ago = t => {
 };
 // How long from now, in the unit that reads: hours today, days this month,
 // months beyond that.
+// A token amount written out in full, for the moments where an abbreviation
+// would be hiding what somebody is about to pay: 33.55M NONWAX is a price tag,
+// 33,550,000 NONWAX is the thing the wallet will ask them to sign.
+const plain = (v, decimals = 0) => (v == null || !isFinite(v) ? '—'
+  : v.toLocaleString('en-US', { maximumFractionDigits: Math.min(8, decimals) }));
+
 const forDays = d => d == null ? '—'
   : d < 1 ? `${Math.max(1, Math.round(d * 24))}h`
   : d < 60 ? `${Math.round(d)} days`
@@ -3095,14 +3102,28 @@ async function renderLegacy(tab = 'waxfun') {
     </div>
     <div class="lpane" data-lpane="waxfun">
       <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
-        <div class="toolbar"><input class="search" id="funSearch" placeholder="Search a wax.fun token…" autocomplete="off">
+        <div class="toolbar"><input class="search" id="funSearch" type="search" placeholder="Search a wax.fun token by name, symbol or creator…" autocomplete="off" spellcheck="false">
           <span class="dim" id="funCount" style="font-size:12px"></span></div>
         <div id="funGrid"><div class="loading"><span class="spinner"></span><span>Reading the curves…</span></div></div>
       </div>
     </div>
     <div class="lpane" data-lpane="waxdao" hidden>
-      <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; open drops on <span class="mono">waxdaomarket</span>, minted straight to your wallet</span></h3>
-        <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops…</span></div></div>
+      <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; NFTs on <span class="mono">waxdaomarket</span>, priced in whatever token their creator picked</span></h3>
+        <div class="toolbar">
+          <input class="search" id="dropSearch" type="search" placeholder="Search a collection, token, creator or drop number&hellip;" autocomplete="off" spellcheck="false">
+          <div class="seg" id="dropWhich" role="radiogroup" aria-label="Which drops">
+            <button role="radio" data-dwhich="paid" aria-checked="true">Paid</button>
+            <button role="radio" data-dwhich="free" aria-checked="false">Free</button>
+            <button role="radio" data-dwhich="all" aria-checked="false">All</button>
+          </div>
+          <div class="seg" id="dropSort" role="radiogroup" aria-label="Order">
+            <button role="radio" data-dsort="new" aria-checked="true">Newest</button>
+            <button role="radio" data-dsort="cheap" aria-checked="false">Cheapest</button>
+          </div>
+          <button class="chip" id="dropMine" aria-pressed="false">In tokens you hold</button>
+          <span class="dim" id="dropCount" style="font-size:12px"></span>
+        </div>
+        <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops&hellip;</span></div></div>
       </div>
     </div>`;
   let dropsLoaded = false;
@@ -3176,40 +3197,105 @@ async function renderLegacy(tab = 'waxfun') {
   if (fs) fs.oninput = debounce(() => { q = fs.value.trim().toLowerCase(); paintFun(); }, 120);
 
   // ---- WaxDAO drops -------------------------------------------------------
-  async function loadDrops() {
-  let drops = [];
-  try { drops = await waxdaoDrops(); } catch { drops = []; }
-  if (stale()) return;
-  const dg = $('#dropGrid');
-  if (dg) {
-    dg.innerHTML = drops.length ? `<div class="fungrid">${drops.slice(0, 60).map(d => {
-      const free = !(d.price > 0);
-      return `<article class="funcard" data-drop="${d.id}">
-        <header>${d.logo ? `<img class="funimg" src="${esc(ipfs(d.logo))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(d.logo, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:'NFT'}))"))}">`
-          : '<span class="funimg gen">NFT</span>'}
-          <div class="fnname"><b>${esc(d.collection)}</b><span class="sub">drop #${d.id} &middot; template ${d.templateId}</span></div>
-          <span class="pill ${free ? 'good' : ''}">${free ? 'Free' : `${qty(d.price)} ${esc(d.priceSymbol)}`}</span></header>
-        <div class="funfigs">
-          <div><span class="k">Left</span><span class="v">${d.total === 0 ? 'unlimited' : `${d.left.toLocaleString()} of ${d.total.toLocaleString()}`}</span></div>
-          <div><span class="k">Ends</span><span class="v">${d.endsAt > Date.now() + 3650 * 86400e3 ? 'open-ended' : forDays((d.endsAt - Date.now()) / 86400e3)}</span></div>
-        </div>
-        ${d.description ? `<p class="sub fundesc">${esc(d.description.replace(/[*_#]/g, '').slice(0, 160))}</p>` : ''}
-        <footer>
-          ${free ? `<button class="btn" data-dropclaim="${d.id}">Claim</button>` : '<span class="sub">Paid drops still take the old payment flow, which this has not seen used since 2025 &mdash; not wired here.</span>'}
-          <a class="plink" href="https://wax.atomichub.io/explorer/template/wax-mainnet/${encodeURIComponent(d.collection)}/${d.templateId}" target="_blank" rel="noopener">Template &nearr;</a>
-        </footer>
-        <div class="funpanel" hidden></div>
-      </article>`;
-    }).join('')}</div>` : '<div class="empty">No open drop on the contract right now.</div>';
-    dg.querySelectorAll('[data-dropclaim]').forEach(b => b.onclick = async () => {
-      const card = b.closest('.funcard');
-      const panel = card.querySelector('.funpanel');
-      panel.hidden = false;
-      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-      runStakeTx(panel, buildDropClaim({ account: wallet.account(), dropId: Number(b.dataset.dropclaim) }),
-        'Claimed. The NFT is minted straight to your wallet.');
+  // The thing no other site will sell you: an NFT priced in the creator's own
+  // token. Paying is two actions in one transaction (see js/legacy.js), so the
+  // card does the arithmetic and the checks and the wallet does the rest.
+  let drops = [], dq = '', dwhich = 'paid', dsort = 'new', myTokens = null, affordOnly = false;
+  const dropUsd = d => {
+    const p = priceOf(d.priceSymbol, d.priceContract);
+    return p != null && d.price > 0 ? p * d.price : null;
+  };
+  // Most of these ask for a token nobody has. One read of every balance the
+  // wallet holds turns a hundred drops into the few that are actually yours to
+  // buy — which is the question anyone browsing this has.
+  const canAfford = d => d.free || (myTokens ? (myTokens.get(`${d.priceSymbol}@${d.priceContract}`) || 0) >= d.price : true);
+  const dropNeeds = d => {
+    const out = [];
+    if (d.farm) out.push(`${d.minStake || 1} NFT${d.minStake === 1 ? '' : 's'} staked in the ${d.farm} farm`);
+    if (d.whitelist === 'usernames') out.push('an invited wallet');
+    if (d.perUser) out.push(`${d.perUser} per wallet`);
+    if (d.cooldown) out.push(`${forDays(d.cooldown / 86400)} between claims`);
+    return out;
+  };
+  const dropCard = d => {
+    const u = dropUsd(d);
+    const needs = dropNeeds(d);
+    const open = d.endsAt > Date.now() + 3650 * 86400e3;
+    return `<article class="funcard" data-drop="${d.id}">
+      <header>${d.logo ? `<img class="funimg" src="${esc(ipfs(d.logo))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(d.logo, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:'NFT'}))"))}">`
+        : '<span class="funimg gen">NFT</span>'}
+        <div class="fnname"><b>${esc(d.collection)}</b><span class="sub">drop #${d.id} &middot; ${esc(d.type === 'premint.pack' ? 'preminted pack' : `template ${d.templateId}`)}</span></div>
+        ${d.left != null && d.total && d.left / d.total < 0.1 ? '<span class="pill">Nearly gone</span>' : ''}</header>
+      <div class="dropprice">
+        <b title="${d.free ? 'Nothing but the network fee' : `${d.price.toLocaleString('en-US')} ${esc(d.priceSymbol)}`}">${d.free ? 'Free' : `${qty(d.price)} ${esc(d.priceSymbol)}`}</b>
+        <span class="sub">${d.free ? 'you pay the network, nothing else'
+          : `${u != null ? `${usd(u)} &middot; ` : ''}<span class="mono">${esc(d.priceContract)}</span>`}</span>
+      </div>
+      <div class="funfigs">
+        <div><span class="k">Left</span><span class="v">${d.left == null ? 'unlimited' : d.left.toLocaleString('en-US')}</span>${
+          d.left != null && d.total ? `<span class="s">of ${d.total.toLocaleString('en-US')}</span>` : ''}</div>
+        <div><span class="k">Ends</span><span class="v">${open ? 'open-ended' : forDays((d.endsAt - Date.now()) / 86400e3)}</span>${
+          d.creator ? `<span class="s">by ${esc(d.creator)}</span>` : ''}</div>
+      </div>
+      ${needs.length ? `<p class="sub dropneeds">Takes ${needs.join(' &middot; ')}</p>` : ''}
+      ${d.description ? `<p class="sub fundesc">${esc(d.description.replace(/[*_#]/g, '').slice(0, 160))}</p>` : ''}
+      <footer>
+        <button class="btn" data-dropbuy="${d.id}">${d.free ? 'Claim' : 'Buy'}</button>
+        <a class="plink" href="https://wax.atomichub.io/explorer/${d.templateId > 0 ? `template/wax-mainnet/${encodeURIComponent(d.collection)}/${d.templateId}` : `collection/wax-mainnet/${encodeURIComponent(d.collection)}`}" target="_blank" rel="noopener">${d.templateId > 0 ? 'Template' : 'Collection'} &nearr;</a>
+      </footer>
+      <div class="funpanel" hidden></div>
+    </article>`;
+  };
+  const paintDrops = () => {
+    const dg = $('#dropGrid');
+    if (!dg) return;
+    const rows = drops
+      .filter(d => dwhich === 'all' || (dwhich === 'free' ? d.free : !d.free))
+      .filter(d => !affordOnly || canAfford(d))
+      .filter(d => !dq || `#${d.id} ${d.collection} ${d.schema} ${d.priceSymbol} ${d.priceContract} ${d.creator} ${d.description}`.toLowerCase().includes(dq));
+    if (dsort === 'cheap') rows.sort((a2, b2) => (dropUsd(a2) ?? Infinity) - (dropUsd(b2) ?? Infinity) || a2.price - b2.price);
+    else rows.sort((a2, b2) => b2.id - a2.id);
+    const count = $('#dropCount');
+    if (count) count.textContent = `${rows.length} drop${rows.length === 1 ? '' : 's'}${affordOnly ? ' you can pay for' : ''}`;
+    dg.innerHTML = rows.length
+      ? `<div class="fungrid">${rows.slice(0, 60).map(dropCard).join('')}</div>${
+        rows.length > 60 ? `<p class="sub" style="margin:10px 0 0">Showing the first 60 of ${rows.length}. Search to narrow it.</p>` : ''}`
+      : '<div class="empty">No open drop matches.</div>';
+    dg.querySelectorAll('[data-dropbuy]').forEach(b => b.onclick = () => {
+      const d = drops.find(x => x.id === Number(b.dataset.dropbuy));
+      if (d) openDropPanel(b.closest('.funcard'), d);
     });
-  }
+  };
+
+  async function loadDrops() {
+    try { drops = await waxdaoDrops(); } catch { drops = []; }
+    if (stale()) return;
+    paintDrops();
+    const ds = $('#dropSearch');
+    if (ds) ds.oninput = debounce(() => { dq = ds.value.trim().toLowerCase(); paintDrops(); }, 120);
+    document.querySelectorAll('#dropWhich [data-dwhich]').forEach(b => b.onclick = () => {
+      document.querySelectorAll('#dropWhich [data-dwhich]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+      dwhich = b.dataset.dwhich; paintDrops();
+    });
+    document.querySelectorAll('#dropSort [data-dsort]').forEach(b => b.onclick = () => {
+      document.querySelectorAll('#dropSort [data-dsort]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+      dsort = b.dataset.dsort; paintDrops();
+    });
+    const mineBtn = $('#dropMine');
+    if (mineBtn) mineBtn.onclick = async () => {
+      if (affordOnly) { affordOnly = false; mineBtn.setAttribute('aria-pressed', 'false'); paintDrops(); return; }
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      if (!myTokens) {
+        mineBtn.disabled = true; mineBtn.textContent = 'Reading your balances…';
+        try {
+          const info = await accountInfo(wallet.account());
+          myTokens = new Map(info.balances.map(b => [b.id, b.amount]));
+        } catch { myTokens = null; }
+        mineBtn.disabled = false; mineBtn.textContent = 'In tokens you hold';
+        if (!myTokens) { mineBtn.textContent = 'Balances did not load'; return; }
+      }
+      affordOnly = true; mineBtn.setAttribute('aria-pressed', 'true'); paintDrops();
+    };
   }
   if (tab === 'waxdao') { dropsLoaded = true; loadDrops(); }
 }
@@ -3297,6 +3383,106 @@ async function openFunTrade(card, token) {
       <br><span class="dim">The curve sets the amount and keeps 1%.</span>
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="funSign">Sign and trade</button></div></div>`;
     $('#funSign').onclick = () => runStakeTx(box, actions, side === 'buy' ? 'Bought.' : 'Sold.');
+  };
+}
+
+// One drop, opened in its own card. Everything that could make the transaction
+// fail is read first — what is left, whether waxdaomarket may still mint into
+// the collection, what the buyer holds — because the mistake this page must not
+// make is charging somebody for an NFT the contract can no longer issue.
+async function openDropPanel(card, d) {
+  if (!card || !d) return;
+  const panel = card.querySelector('.funpanel');
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span><span>Checking the drop…</span></div>';
+  const me = wallet.account();
+  const [ready, bal, stakes] = await Promise.all([
+    dropReadiness(d).catch(() => ({})),
+    me && !d.free ? balanceOf(me, d.priceContract, d.priceSymbol).catch(() => null) : Promise.resolve(null),
+    me && d.farm ? waxdaoStakes(me).catch(() => []) : Promise.resolve(null),
+  ]);
+  if (panel.hidden) return;
+  const stock = dropStock(d, ready);
+  const staked = stakes ? (stakes.find(s2 => s2.farm === d.farm)?.assets || 0) : null;
+  const usdEach = priceOf(d.priceSymbol, d.priceContract);
+  const stop = [];
+  if (ready.minter === false) stop.push(`<b>${esc(d.collection)}</b> no longer lets <span class="mono">waxdaomarket</span> mint for it, so this drop has nothing to hand over.`);
+  if (stock === 0) stop.push(d.premintPool ? 'The pool behind this pack is empty.' : 'Nothing left to mint.');
+  if (d.whitelist === 'usernames' && d.allowedUsers.length && me && !d.allowedUsers.includes(me)) {
+    stop.push('Its creator limited this drop to wallets on a list, and yours is not on it.');
+  }
+  if (d.farm && staked != null && staked < (d.minStake || 1)) {
+    stop.push(`It takes ${d.minStake || 1} NFT${d.minStake === 1 ? '' : 's'} staked in the <span class="mono">${esc(d.farm)}</span> farm; you have ${staked}.`);
+  }
+  const affordable = !d.free && bal != null && d.price > 0 ? Math.floor(bal / d.price) : Infinity;
+  if (!d.free && bal != null && affordable < 1) {
+    stop.push(`One costs ${d.price.toLocaleString('en-US')} ${esc(d.priceSymbol)} and you hold ${qty(bal)}.`);
+  }
+  let cap = Math.min(stock ?? Infinity, d.perUser || Infinity, affordable);
+  if (!isFinite(cap)) cap = 25;                       // nothing caps it; a sane number to offer
+  cap = Math.max(1, Math.floor(cap));
+  const note = [];
+  if (ready.template && ready.template.max > 0) note.push(`${ready.template.issued.toLocaleString('en-US')} of ${ready.template.max.toLocaleString('en-US')} minted`);
+  else if (ready.template) note.push(`${ready.template.issued.toLocaleString('en-US')} minted so far`);
+  if (ready.premint) note.push(`${ready.premint.left.toLocaleString('en-US')} left in the pool`);
+  if (d.cooldown) note.push(`${forDays(d.cooldown / 86400)} before you can claim again`);
+  if (!d.free && d.receiver) note.push(`${((1 - WAXDAO_CUT) * 100).toFixed(0)}% goes to ${d.receiver}, ${(WAXDAO_CUT * 100).toFixed(0)}% to waxdaomarket`);
+  panel.innerHTML = `
+    <div class="funtrade">
+      ${stop.length ? `<div class="err">${stop.join('<br>')}</div>` : ''}
+      <div class="buyinput">
+        <input id="dropQty" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="How many">
+        <span class="unit">NFT${cap === 1 ? '' : 's'}</span>
+      </div>
+      <div class="buymeta"><span>${me
+        ? (d.free ? `Claiming to ${esc(me)}` : `You hold ${plain(bal ?? 0, d.priceDecimals)} ${esc(d.priceSymbol)}`)
+        : `Connect a wallet to ${d.free ? 'claim' : 'buy'}.`}</span>
+        <span class="quick"><button class="linkbtn" id="dropMax">Max ${cap.toLocaleString('en-US')}</button></span></div>
+      <div class="buyresult"><span class="k">${d.free ? 'You pay' : 'It costs'}</span><b id="dropTotal" title="${esc(dropCost(d, 1).quantity)}">${
+        d.free ? 'nothing but the network fee' : `${plain(d.price, d.priceDecimals)} ${esc(d.priceSymbol)}`}</b>
+        <span class="sub" id="dropTotalSub">${d.free ? 'the network fee is all this costs'
+          : usdEach != null ? usd(usdEach * d.price) : 'no market price for this token here'}</span></div>
+      ${note.length ? `<p class="sub">${esc(note.join(' · '))}</p>` : ''}
+      <div id="dropOut"></div>
+      <button class="btn" id="dropGo"${stop.length ? ' disabled' : ''}>Review</button>
+    </div>`;
+  const qtyEl = panel.querySelector('#dropQty');
+  const count = () => Math.max(1, Math.min(cap, Math.floor(Number(qtyEl?.value) || 1)));
+  const retotal = () => {
+    const n = count();
+    const tot = panel.querySelector('#dropTotal'), sub = panel.querySelector('#dropTotalSub');
+    if (!tot) return;
+    const cost = dropCost(d, n);
+    tot.textContent = d.free ? 'nothing but the network fee' : `${plain(cost.amount, d.priceDecimals)} ${d.priceSymbol}`;
+    tot.title = cost.quantity;
+    if (sub) sub.textContent = d.free ? 'the network fee is all this costs'
+      : usdEach != null ? usd(usdEach * d.price * n) : 'no market price for this token here';
+  };
+  qtyEl?.addEventListener('input', retotal);
+  qtyEl?.addEventListener('change', () => { qtyEl.value = String(count()); retotal(); });
+  const maxBtn = panel.querySelector('#dropMax');
+  if (maxBtn) maxBtn.onclick = () => { qtyEl.value = String(cap); retotal(); };
+  const go = panel.querySelector('#dropGo');
+  if (go) go.onclick = async () => {
+    const box = panel.querySelector('#dropOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const account = wallet.account();
+    const n = count();
+    const cost = dropCost(d, n);
+    const actions = d.free
+      ? buildDropClaim({ account, dropId: d.id, count: n })
+      : buildDropPurchase({ account, drop: d, count: n });
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      ${d.free ? `Mint <b>${n}</b> from drop #${d.id} to <span class="mono">${esc(account)}</span>.`
+        : `Pay <b>${esc(cost.quantity)}</b> to <span class="mono">${WAXDAO_MARKET}</span> for <b>${n}</b> NFT${n === 1 ? '' : 's'} from drop #${d.id}${
+          usdEach != null ? ` (about ${usd(usdEach * cost.amount)})` : ''}.`}
+      <br><span class="dim">${d.free ? 'The contract mints straight to your wallet.'
+        : 'Two actions in one transaction: the amount is asserted, then paid. The contract mints on the payment, or the whole thing fails.'}</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="dropSign">Sign and ${d.free ? 'claim' : 'buy'}</button></div></div>`;
+    panel.querySelector('#dropSign').onclick = () => runStakeTx(box, actions,
+      `${n === 1 ? 'The NFT is' : `All ${n} are`} in your wallet.`);
   };
 }
 
