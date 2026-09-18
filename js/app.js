@@ -1023,7 +1023,7 @@ function routeFromHash() {
   if (view === 'staking') { show('staking'); renderStaking(); return true; }
   if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
   if (view === 'ads') { show('ads'); renderAds(); return true; }
-  if (view === 'legacy') { show('legacy'); renderLegacy(); return true; }
+  if (view === 'legacy') { show('legacy', arg || null); renderLegacy(arg || 'waxfun'); return true; }
   if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'staking'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
@@ -3071,20 +3071,46 @@ async function renderAds() {
 // Contracts whose front ends are gone. See js/legacy.js for what each flow was
 // checked against; nothing here is wired from an ABI alone.
 let legacyGen = 0;
-async function renderLegacy() {
+// One project per tab: they share nothing but a reason for being here, and
+// reading WaxDAO's drops table is work nobody asked for while they are looking
+// at wax.fun. The tab is in the path, so either is a link.
+function legacyTab(name) {
+  document.querySelectorAll('#legacyTabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.ltab === name)));
+  document.querySelectorAll('.lpane').forEach(p2 => { p2.hidden = p2.dataset.lpane !== name; });
+  const url = routePath('legacy', name === 'waxfun' ? null : name);
+  if (location.pathname + location.search !== url) {
+    try { history.replaceState({ v: 'legacy', arg: name }, '', url); } catch { /* nothing to do */ }
+  }
+}
+
+async function renderLegacy(tab = 'waxfun') {
   const out = $('#legacyOut');
   if (!out) return;
   const gen = ++legacyGen;
   const stale = () => gen !== legacyGen;
   out.innerHTML = `<p class="vs">A WAX contract keeps running after the website in front of it stops paying for itself. These still work; their own sites do not.</p>
-    <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
-      <div class="toolbar"><input class="search" id="funSearch" placeholder="Search a wax.fun token…" autocomplete="off">
-        <span class="dim" id="funCount" style="font-size:12px"></span></div>
-      <div id="funGrid"><div class="loading"><span class="spinner"></span><span>Reading the curves…</span></div></div>
+    <div class="subtabs" id="legacyTabs" role="tablist">
+      <button role="tab" data-ltab="waxfun" aria-selected="true">wax.fun</button>
+      <button role="tab" data-ltab="waxdao" aria-selected="false">WaxDAO drops</button>
     </div>
-    <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; open drops on <span class="mono">waxdaomarket</span></span></h3>
-      <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops…</span></div></div>
+    <div class="lpane" data-lpane="waxfun">
+      <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
+        <div class="toolbar"><input class="search" id="funSearch" placeholder="Search a wax.fun token…" autocomplete="off">
+          <span class="dim" id="funCount" style="font-size:12px"></span></div>
+        <div id="funGrid"><div class="loading"><span class="spinner"></span><span>Reading the curves…</span></div></div>
+      </div>
+    </div>
+    <div class="lpane" data-lpane="waxdao" hidden>
+      <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; open drops on <span class="mono">waxdaomarket</span>, minted straight to your wallet</span></h3>
+        <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops…</span></div></div>
+      </div>
     </div>`;
+  let dropsLoaded = false;
+  document.querySelectorAll('#legacyTabs button').forEach(b => b.onclick = () => {
+    legacyTab(b.dataset.ltab);
+    if (b.dataset.ltab === 'waxdao' && !dropsLoaded) { dropsLoaded = true; loadDrops(); }
+  });
+  legacyTab(tab === 'waxdao' ? 'waxdao' : 'waxfun');
 
   // ---- wax.fun ------------------------------------------------------------
   let tokens = [];
@@ -3127,6 +3153,7 @@ async function renderLegacy() {
   if (fs) fs.oninput = debounce(() => { q = fs.value.trim().toLowerCase(); paintFun(); }, 120);
 
   // ---- WaxDAO drops -------------------------------------------------------
+  async function loadDrops() {
   let drops = [];
   try { drops = await waxdaoDrops(); } catch { drops = []; }
   if (stale()) return;
@@ -3160,6 +3187,8 @@ async function renderLegacy() {
         'Claimed. The NFT is minted straight to your wallet.');
     });
   }
+  }
+  if (tab === 'waxdao') { dropsLoaded = true; loadDrops(); }
 }
 
 // Buy and sell on a curve, in the card itself. The contract prices the trade —
