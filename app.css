@@ -1886,3 +1886,25 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .lpsides .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .lpsides b { font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .lpsides .s { font-size: 11px; color: var(--muted); }
+
+/* --- old projects ------------------------------------------------------------- */
+.fungrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+.funcard { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 13px 14px; min-width: 0; }
+.funcard header { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.funimg { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; background: var(--surface-3); flex: none; }
+.funimg.gen { display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); }
+.funcard .fnname { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.funcard .fnname b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funcard .fnname .sub { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funfigs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.funfigs > div { display: flex; flex-direction: column; gap: 1px; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 7px 9px; min-width: 0; }
+.funfigs .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.funfigs .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fundesc { margin: 0; max-height: 3.2em; overflow: hidden; }
+.funcard footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+.funcard footer .btn { flex: 1; justify-content: center; }
+.funtrade { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.funtrade .btn { width: 100%; justify-content: center; }
+.funtrade .pwtop { align-items: center; }

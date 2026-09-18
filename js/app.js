@@ -19,6 +19,7 @@ import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topL
 import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
 import { accountValueHistory } from './acctvalue.js';
+import { waxfunTokens, waxfunSupply, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, WAXFUN_CURVE } from './legacy.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
@@ -551,6 +552,7 @@ async function boot() {
     // One extra table read, and only for someone who opened the tokens page.
     if (b.dataset.view === 'tokens') renderUnlocks().catch(() => {});
     if (b.dataset.view === 'staking') renderStaking().catch(() => {});
+    if (b.dataset.view === 'legacy') renderLegacy().catch(() => {});
   });
   const paintUnit = () => {
     const b = $('#unitToggle');
@@ -978,10 +980,10 @@ function keepScroll(fn) {
 const BASE = new URL(import.meta.url).pathname.replace(/js\/app\.js$/, '');
 const VIEW_PATHS = { overview: '', farms: 'markets', pools: 'markets', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', pool: 'market', farm: 'market', token: 'token',
-  stake: 'farm', account: 'wallet', ads: 'advertise' };
+  stake: 'farm', account: 'wallet', ads: 'advertise', legacy: 'old' };
 const PATH_VIEWS = { '': 'overview', markets: 'farms', pools: 'farms', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', market: 'pool', token: 'token', farm: 'stake',
-  account: 'wallet', overview: 'overview', farms: 'farms', advertise: 'ads' };
+  account: 'wallet', overview: 'overview', farms: 'farms', advertise: 'ads', old: 'legacy' };
 // @ and : are legal in a path and are half of what a WAX id looks like:
 // /token/CHEESE@cheeseburger reads, /token/CHEESE%40cheeseburger does not.
 const encPath = v => encodeURIComponent(v).replace(/%40/g, '@').replace(/%3A/gi, ':');
@@ -1021,6 +1023,7 @@ function routeFromHash() {
   if (view === 'staking') { show('staking'); renderStaking(); return true; }
   if (view === 'leaders') { show('leaders'); renderLeaders(); return true; }
   if (view === 'ads') { show('ads'); renderAds(); return true; }
+  if (view === 'legacy') { show('legacy'); renderLegacy(); return true; }
   if (['overview', 'pools', 'tokens', 'farms', 'wallet', 'activity', 'staking'].includes(view)) {
     show(view);
     if (view === 'activity' && !activityLoaded) renderActivity();
@@ -3061,6 +3064,169 @@ async function renderAds() {
     if (!slots.length) { box.innerHTML = '<div class="err" style="margin-top:10px">Tick at least one of your spots.</div>'; return; }
     const ok = await runStakeTx(box, buildBannerEdit({ account: wallet.account() || me, slots, ipfs: c, url: u }), `Banner set on ${slots.length} spot${slots.length === 1 ? '' : 's'}.`);
     if (ok) setTimeout(() => { if ($('#adsOut')) renderAds(); }, 3000);
+  };
+}
+
+// ------------------------------------------------------------ OLD PROJECTS ---
+// Contracts whose front ends are gone. See js/legacy.js for what each flow was
+// checked against; nothing here is wired from an ABI alone.
+let legacyGen = 0;
+async function renderLegacy() {
+  const out = $('#legacyOut');
+  if (!out) return;
+  const gen = ++legacyGen;
+  const stale = () => gen !== legacyGen;
+  out.innerHTML = `<p class="vs">A WAX contract keeps running after the website in front of it stops paying for itself. These still work; their own sites do not.</p>
+    <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
+      <div class="toolbar"><input class="search" id="funSearch" placeholder="Search a wax.fun token…" autocomplete="off">
+        <span class="dim" id="funCount" style="font-size:12px"></span></div>
+      <div id="funGrid"><div class="loading"><span class="spinner"></span><span>Reading the curves…</span></div></div>
+    </div>
+    <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; open drops on <span class="mono">waxdaomarket</span></span></h3>
+      <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops…</span></div></div>
+    </div>`;
+
+  // ---- wax.fun ------------------------------------------------------------
+  let tokens = [];
+  try { tokens = await waxfunTokens(); } catch { tokens = []; }
+  if (stale()) return;
+  let q = '', funAll = false;
+  const marketFor = t => state.pools.find(p => p.dex === 'alcor' && (p.tokenA === t.id || p.tokenB === t.id) && p.tvlReal > 0);
+  const paintFun = () => {
+    const grid = $('#funGrid');
+    if (!grid) return;
+    const rows = tokens.filter(t => !q || `${t.symbol} ${t.name} ${t.creator}`.toLowerCase().includes(q));
+    const count = $('#funCount');
+    if (count) count.textContent = `${rows.length} token${rows.length === 1 ? '' : 's'}`;
+    const shown = q || funAll ? rows.slice(0, 200) : rows.slice(0, 24);
+    grid.innerHTML = rows.length ? `<div class="fungrid">${shown.map(t => {
+      const pool = marketFor(t);
+      const listed = t.state === 'LISTED' || !!pool;
+      return `<article class="funcard" data-fun="${esc(t.id)}">
+        <header>${t.image ? `<img class="funimg" src="${esc(ipfs(t.image))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(t.image, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:this.alt||''}))"))}">`
+          : `<span class="funimg gen">${esc(t.symbol.slice(0, 3))}</span>`}
+          <div class="fnname"><b>${esc(t.name)}</b><span class="sub">${esc(t.symbol)} &middot; ${esc(t.contract)}</span></div>
+          <span class="pill ${listed ? 'good' : ''}">${listed ? 'On Alcor' : 'On the curve'}</span></header>
+        <div class="funfigs">
+          <div><span class="k">In the curve</span><span class="v">${qty(t.reservedWax)} WAX</span></div>
+          <div><span class="k">Made by</span><span class="v">${acctLink(t.creator || '—')}</span></div>
+        </div>
+        ${t.description ? `<p class="sub fundesc">${esc(t.description.slice(0, 160))}</p>` : ''}
+        <footer>${listed && pool ? `<button class="btn ghost" data-poolkey="${esc(pool.dex)}:${esc(String(pool.id))}">Open its market</button>`
+          : `<button class="btn" data-funtrade="${esc(t.id)}">Buy or sell</button>`}</footer>
+        <div class="funpanel" hidden></div>
+      </article>`;
+    }).join('')}</div>${rows.length > shown.length || (funAll && !q) ? `<div class="toolbar" style="margin:10px 0 0"><button class="chip" id="funMore">${
+      funAll ? 'Show the biggest 24' : `Show all ${rows.length}`}</button></div>` : ''}` : '<div class="empty">No wax.fun token matches.</div>';
+    const more = $('#funMore');
+    if (more) more.onclick = () => { funAll = !funAll; paintFun(); };
+    grid.querySelectorAll('[data-funtrade]').forEach(b => b.onclick = () => openFunTrade(b.closest('.funcard'), tokens.find(t => t.id === b.dataset.funtrade)));
+  };
+  paintFun();
+  const fs = $('#funSearch');
+  if (fs) fs.oninput = debounce(() => { q = fs.value.trim().toLowerCase(); paintFun(); }, 120);
+
+  // ---- WaxDAO drops -------------------------------------------------------
+  let drops = [];
+  try { drops = await waxdaoDrops(); } catch { drops = []; }
+  if (stale()) return;
+  const dg = $('#dropGrid');
+  if (dg) {
+    dg.innerHTML = drops.length ? `<div class="fungrid">${drops.slice(0, 60).map(d => {
+      const free = !(d.price > 0);
+      return `<article class="funcard" data-drop="${d.id}">
+        <header>${d.logo ? `<img class="funimg" src="${esc(ipfs(d.logo))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(d.logo, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:'NFT'}))"))}">`
+          : '<span class="funimg gen">NFT</span>'}
+          <div class="fnname"><b>${esc(d.collection)}</b><span class="sub">drop #${d.id} &middot; template ${d.templateId}</span></div>
+          <span class="pill ${free ? 'good' : ''}">${free ? 'Free' : `${qty(d.price)} ${esc(d.priceSymbol)}`}</span></header>
+        <div class="funfigs">
+          <div><span class="k">Left</span><span class="v">${d.total === 0 ? 'unlimited' : `${d.left.toLocaleString()} of ${d.total.toLocaleString()}`}</span></div>
+          <div><span class="k">Ends</span><span class="v">${d.endsAt > Date.now() + 3650 * 86400e3 ? 'open-ended' : forDays((d.endsAt - Date.now()) / 86400e3)}</span></div>
+        </div>
+        ${d.description ? `<p class="sub fundesc">${esc(d.description.replace(/[*_#]/g, '').slice(0, 160))}</p>` : ''}
+        <footer>
+          ${free ? `<button class="btn" data-dropclaim="${d.id}">Claim</button>` : '<span class="sub">Paid drops still take the old payment flow, which this has not seen used since 2025 &mdash; not wired here.</span>'}
+          <a class="plink" href="https://wax.atomichub.io/explorer/template/wax-mainnet/${encodeURIComponent(d.collection)}/${d.templateId}" target="_blank" rel="noopener">Template &nearr;</a>
+        </footer>
+        <div class="funpanel" hidden></div>
+      </article>`;
+    }).join('')}</div>` : '<div class="empty">No open drop on the contract right now.</div>';
+    dg.querySelectorAll('[data-dropclaim]').forEach(b => b.onclick = async () => {
+      const card = b.closest('.funcard');
+      const panel = card.querySelector('.funpanel');
+      panel.hidden = false;
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      runStakeTx(panel, buildDropClaim({ account: wallet.account(), dropId: Number(b.dataset.dropclaim) }),
+        'Claimed. The NFT is minted straight to your wallet.');
+    });
+  }
+}
+
+// Buy and sell on a curve, in the card itself. The contract prices the trade —
+// this does not pretend to quote it — and refuses if the price moved further
+// than the slippage allows.
+async function openFunTrade(card, token) {
+  if (!card || !token) return;
+  const panel = card.querySelector('.funpanel');
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the token…</span></div>';
+  const stat = await waxfunSupply(token);
+  const me = wallet.account();
+  const [waxBal, tokBal] = await Promise.all([
+    me ? balanceOf(me, 'eosio.token', 'WAX').catch(() => null) : null,
+    me ? balanceOf(me, token.contract, token.symbol).catch(() => null) : null,
+  ]);
+  const dec = stat?.decimals ?? 8;
+  const avg = stat?.supply > 0 ? token.reservedWax / stat.supply : null;
+  panel.innerHTML = `
+    <div class="funtrade">
+      <div class="seg" role="radiogroup" id="funSide">
+        <button role="radio" data-side="buy" aria-checked="true">Buy</button>
+        <button role="radio" data-side="sell" aria-checked="false">Sell</button>
+      </div>
+      <div class="buyinput">
+        <input id="funAmt" type="number" step="any" min="0" inputmode="decimal" placeholder="0" aria-label="Amount">
+        <span class="unit" id="funUnit">WAX</span>
+      </div>
+      <div class="buymeta"><span id="funBal">${me ? `You hold ${qty(waxBal ?? 0)} WAX and ${qty(tokBal ?? 0)} ${esc(token.symbol)}` : 'Connect a wallet to trade.'}</span>
+        <span class="quick"><button class="linkbtn" id="funMax">Max</button></span></div>
+      <label class="pwtop"><span>Refuse if the price moves more than</span>
+        <input id="funSlip" type="number" min="0.1" max="50" step="0.5" value="5" style="width:64px"><span>%</span></label>
+      <p class="sub">${stat ? `${qty(stat.supply)} of ${qty(stat.maxSupply)} ${esc(token.symbol)} issued${avg ? ` &middot; ${pxNum(avg)} WAX average so far` : ''}. ` : ''}The curve prices the trade and takes 1%.</p>
+      <div id="funOut"></div>
+      <button class="btn" id="funGo">Review</button>
+    </div>`;
+  let side = 'buy';
+  const amt = () => Math.max(0, Number($('#funAmt')?.value) || 0);
+  panel.querySelectorAll('#funSide [data-side]').forEach(b => b.onclick = () => {
+    panel.querySelectorAll('#funSide [data-side]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+    side = b.dataset.side;
+    const u = $('#funUnit'); if (u) u.textContent = side === 'buy' ? 'WAX' : token.symbol;
+  });
+  const max = $('#funMax');
+  if (max) max.onclick = () => {
+    const have = side === 'buy' ? waxBal : tokBal;
+    const el = $('#funAmt');
+    if (el && have != null) el.value = String(side === 'buy' ? Math.max(0, Math.floor((have - 1) * 1e4) / 1e4) : Math.floor(have * 10 ** dec) / 10 ** dec);
+  };
+  const go = $('#funGo');
+  if (go) go.onclick = async () => {
+    const box = $('#funOut');
+    const v = amt();
+    if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const slip = Math.min(50, Math.max(0.1, Number($('#funSlip')?.value) || 5));
+    const actions = side === 'buy'
+      ? buildWaxfunBuy({ account: wallet.account(), token, wax: v, slippagePct: slip })
+      : buildWaxfunSell({ account: wallet.account(), token, amount: v, decimals: dec, slippagePct: slip });
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      ${side === 'buy' ? `Send <b>${qty(v)} WAX</b> to <span class="mono">${WAXFUN_CURVE}</span> for ${esc(token.symbol)}`
+        : `Send <b>${qty(v)} ${esc(token.symbol)}</b> back to the curve for WAX`}, refusing past ${slip}% of price movement.
+      <br><span class="dim">The curve sets the amount and keeps 1%.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="funSign">Sign and trade</button></div></div>`;
+    $('#funSign').onclick = () => runStakeTx(box, actions, side === 'buy' ? 'Bought.' : 'Sold.');
   };
 }
 
