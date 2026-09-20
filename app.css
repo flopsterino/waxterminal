@@ -1851,7 +1851,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; padding: 4px 0; }
 .buyinput .unit { font-size: 13px; font-weight: 600; color: var(--ink-2); padding: 0 10px; }
 .buyinput .seg { flex: none; }
-.buymeta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--muted); margin-top: -4px; }
+.buymeta { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-top: -4px; }
 .buymeta b { color: var(--ink-2); }
 .buymeta .quick { display: flex; gap: 4px; }
 .linkbtn { font: inherit; font-size: 12px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 0; border-radius: 99px; padding: 3px 10px; cursor: pointer; }
@@ -1917,5 +1917,52 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .funtrade .pwtop { align-items: center; }
 .funbar { height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
 .funbar span { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--good)); }
-.funbarnote { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ink-2); margin-top: -4px; }
+.funbarnote { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--ink-2); margin-top: -4px; }
+
+/* ---- wax.fun token page ------------------------------------------------ */
+/* Two columns: the desk you trade at, and everything you would want to know
+   before you do. One column on a phone, with the desk first. */
+.funpage { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.funcol { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.funpage > .funcol:first-child { position: sticky; top: 64px; }
+.fundesk { display: flex; flex-direction: column; gap: 9px; }
+.fundesk .seg { width: 100%; }
+.fundesk .seg button { flex: 1; }
+.fundesk .btn { width: 100%; justify-content: center; }
+.fundesk .pwtop { align-items: center; }
+.fundesk .sub { margin: 0; }
+.ftrows { display: flex; flex-direction: column; gap: 0; margin: 0; }
+.ftrows > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+.ftrows > div:last-child { border-bottom: 0; }
+.ftrows dt { color: var(--muted); margin: 0; }
+.ftrows dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.ftrows.wide dd { font-weight: 500; }
+.memoline { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 7px 10px; font-size: 11px; min-width: 0; }
+.memoline code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono, ui-monospace, monospace); color: var(--ink-2); }
+/* The curve itself. Stretched to the card's width on purpose — the shape is
+   the point, not the aspect ratio. */
+.fcurve { width: 100%; height: 168px; display: block; overflow: visible; }
+.fcline { fill: none; stroke: var(--accent); stroke-width: 2; }
+.fcarea { fill: var(--accent-soft); stroke: none; }
+.fcaxis { stroke: var(--line); stroke-width: 1; }
+.fcmark { stroke-width: 1.5; stroke-dasharray: 3 3; }
+.fcmark.now { stroke: var(--good); stroke-dasharray: none; }
+.fcmark.koth { stroke: var(--muted); }
+.fcmark.goal { stroke: var(--c4, var(--muted)); }
+.fcmark.after { stroke: var(--warn, var(--c2)); }
+.fclabel { font-size: 10px; fill: var(--muted); font-weight: 600; }
+.fclabel.now { fill: var(--good); }
+.fclabel.after { fill: var(--warn, var(--c2)); }
+.fcfoot { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+.sharebar { display: inline-block; position: relative; padding: 1px 6px; border-radius: 5px;
+  font-variant-numeric: tabular-nums; background: linear-gradient(90deg, var(--accent-soft) var(--w), transparent var(--w)); }
+.fundesc.full { max-height: none; display: block; -webkit-line-clamp: none; line-clamp: none; }
+.tokhead .funimg { width: 34px; height: 34px; }
+@media (max-width: 860px) {
+  .funpage { grid-template-columns: minmax(0, 1fr); }
+  .funpage > .funcol:first-child { position: static; }
+}
 .funbarnote .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

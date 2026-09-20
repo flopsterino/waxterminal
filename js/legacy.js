@@ -23,7 +23,7 @@
 //               the 1,340 free claims.
 // =============================================================================
 
-import { getRows, getAllRows } from './chain.js';
+import { getRows, getAllRows, hyperion } from './chain.js';
 
 export const WAXFUN_TOKENS = 'alpha.waxfun';
 export const WAXFUN_CURVE = 'main.waxfun';
@@ -72,6 +72,22 @@ export function curveSell(tokens, supply, curveConfig) {
   const gross = (curveConfig * CURVE_T * tokens) / (y * (y + tokens));
   return gross > 0 ? gross * (1 - CURVE_FEE) : null;
 }
+
+// WAX the curve takes to move the supply from one point to the next, before
+// the fee — the integral of the price between them. Which is how far off the
+// listing a token really is: a progress bar says 53%, this says what the rest
+// costs.
+export function curveWax(supplyFrom, supplyTo, curveConfig) {
+  const y0 = CURVE_T - supplyFrom, y1 = CURVE_T - supplyTo;
+  if (!(y0 > 0) || !(y1 > 0) || !(supplyTo > supplyFrom)) return null;
+  return curveConfig * CURVE_T * (1 / y1 - 1 / y0);
+}
+// The same, as the amount a buyer has to send: the contract keeps 1% before
+// the rest reaches the curve.
+export const curveWaxToSend = (from, to, cfg) => {
+  const net = curveWax(from, to, cfg);
+  return net == null ? null : net / (1 - CURVE_FEE);
+};
 
 // How far along the curve it is: the contract lists a token on Alcor once 800M
 // of it has been sold.
@@ -131,13 +147,76 @@ export async function waxfunSupply(token) {
   } catch { return null; }
 }
 
+// One token, read on its own. Both tables are keyed by the symbol, so a token
+// page costs three single-row reads rather than a walk of all 263 curves.
+export async function waxfunToken(symbol, contract = WAXFUN_TOKENS) {
+  const sym = String(symbol || '').toUpperCase();
+  if (!/^[A-Z]{1,7}$/.test(sym)) return null;
+  const [curve, meta, stat] = await Promise.all([
+    getRows(WAXFUN_CURVE, contract, 'tkncrv', { lower: sym, limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
+    getRows(WAXFUN_TOKENS, contract, 'tokenmdata', { lower: sym, limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
+    getRows(contract, sym, 'stat', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
+  ]);
+  if (!curve || curve.sym_code !== sym) return null;
+  const m = meta?.sym_code === sym ? meta : {};
+  return {
+    symbol: sym, contract, id: `${sym}@${contract}`,
+    state: String(curve.state || '').toUpperCase(),
+    reservedWax: parseAmount(curve.reserved_wax),
+    dexGoal: parseAmount(curve.dex_goal),
+    kothGoal: parseAmount(curve.king_of_the_hill_goal),
+    curveConfig: Number(curve.curve_config) || 0,
+    name: m.token_name || sym,
+    image: m.image || '', description: m.description || '', creator: m.creator || '',
+    createdAt: m.creation_time ? Date.parse(m.creation_time + 'Z') : null,
+    website: m.website || '', telegram: m.telegram || '', x: m.x || '',
+    supply: stat ? parseAmount(stat.supply) : null,
+    maxSupply: stat ? parseAmount(stat.max_supply) : null,
+    decimals: stat ? decimalsOf(stat.supply) : 8,
+    issuer: stat?.issuer || '',
+  };
+}
+
+// Every trade the curve has made, from its own log. `logbsl` carries both
+// sides and the price it ended at, so a tape and a price line come out of one
+// read — and one read covers every token, because the whole contract is quiet
+// enough that a few hundred rows reaches back a year. How far back depends on
+// which history node answers: they keep different amounts.
+let tradeCache = null;
+export async function waxfunTrades({ limit = 250, force = false } = {}) {
+  if (tradeCache && !force && Date.now() - tradeCache.at < 120000) return tradeCache.rows;
+  const d = await hyperion(`/v2/history/get_actions?account=${WAXFUN_CURVE}&act.name=logbsl&limit=${limit}&sort=desc`);
+  const rows = (d.actions || []).map(a => {
+    const x = a.act?.data || {};
+    const [tokAmt, sym] = String(x.bi?.amount || '').split(' ');
+    const [waxAmt] = String(x.si?.amount || '').split(' ');
+    // The curve is always one side of its own trade: when it is the buyer,
+    // somebody sold into it.
+    const side = x.bi?.buyer === WAXFUN_CURVE ? 'sell' : 'buy';
+    return {
+      at: Date.parse(a.timestamp + (String(a.timestamp).endsWith('Z') ? '' : 'Z')),
+      trx: a.trx_id, side, symbol: sym || '',
+      account: side === 'buy' ? x.bi?.buyer : x.si?.seller,
+      tokens: parseFloat(tokAmt) || 0,
+      wax: parseFloat(waxAmt) || 0,
+      price: parseFloat(String(x.current_price || '').split(' ')[0]) || null,
+      contract: x.token_contract || WAXFUN_TOKENS,
+    };
+  }).filter(t => t.symbol);
+  tradeCache = { at: Date.now(), rows };
+  return rows;
+}
+
 const fmt = (n, d) => (Math.floor(Number(n) * 10 ** d + 1e-9) / 10 ** d).toFixed(d);
 const memoFor = (action, token, slippagePct) =>
   JSON.stringify({ action, token: token.symbol, contract: token.contract, max_slippage: Number(slippagePct) });
 
 // Buying is WAX to the curve; the curve issues the tokens and refuses if the
-// price moved past the slippage. The 1% fee comes off what is sent.
-export function buildWaxfunBuy({ account, token, wax, slippagePct = 5 }) {
+// price moved past the slippage. The 1% fee comes off what is sent. The
+// default is the one a real buyer used on chain — 100, which is the curve
+// filling whatever it comes to; how much movement to accept is the trader's
+// choice to make, not this module's.
+export function buildWaxfunBuy({ account, token, wax, slippagePct = 100 }) {
   return [{
     account: 'eosio.token', name: 'transfer',
     authorization: [{ actor: account, permission: 'active' }],
@@ -146,7 +225,7 @@ export function buildWaxfunBuy({ account, token, wax, slippagePct = 5 }) {
 }
 
 // Selling sends the token back; the curve retires it and pays WAX, less 1%.
-export function buildWaxfunSell({ account, token, amount, decimals, slippagePct = 5 }) {
+export function buildWaxfunSell({ account, token, amount, decimals, slippagePct = 100 }) {
   return [{
     account: token.contract, name: 'transfer',
     authorization: [{ actor: account, permission: 'active' }],
