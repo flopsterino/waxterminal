@@ -3444,10 +3444,6 @@ async function renderFunToken(symbol) {
             <div><dt>Curve progress</dt><dd id="ftProg">${progress != null ? `${(progress * 100).toFixed(2)}%` : '—'}</dd></div>
             <div><dt>Curve fee</dt><dd id="ftFee">1% of what you send</dd></div>
           </dl>
-          <label class="pwtop"><span>Price movement you accept</span>
-            <input id="ftSlip" type="number" min="0.1" max="100" step="1" value="100" style="width:64px"><span>%</span></label>
-          <p class="sub" style="margin:-4px 0 0">Goes straight into the memo as <span class="mono">max_slippage</span>. At 100 the curve
-            fills whatever it comes to; lower it and the contract refuses if the price moved further than that while you were signing. Your call.</p>
           <div class="memoline"><span class="dim">Memo</span><code id="ftMemo"></code>
             <button class="linkbtn" id="ftCopy" title="Copy the memo">Copy</button></div>
           <div id="ftOut"></div>
@@ -3548,7 +3544,11 @@ function wireFunTrade(t) {
   const decimals = t.decimals ?? 8;
   let side = 'buy', waxBal = null, tokBal = null;
   const amt = () => Math.max(0, Number($('#ftAmt')?.value) || 0);
-  const slip = () => Math.min(100, Math.max(0.1, Number($('#ftSlip')?.value) || 100));
+  // The curve's own slippage guard, at the setting that fills whatever the
+  // trade comes to. It is in the memo on screen and in the wallet's own
+  // confirmation, so it needs no dial here: the number that matters is what
+  // you get, and that is quoted above it.
+  const slip = () => 100;
   const priceNow = t.supply != null ? curvePrice(t.supply, t.curveConfig) : null;
 
   const memo = () => JSON.stringify({ action: side, token: t.symbol, contract: t.contract, max_slippage: slip() });
@@ -3636,7 +3636,6 @@ function wireFunTrade(t) {
   };
   panel.querySelectorAll('#ftSide [data-side]').forEach(b => b.onclick = () => setSide(b.dataset.side));
   $('#ftAmt')?.addEventListener('input', quote);
-  $('#ftSlip')?.addEventListener('input', quote);
   $('#ftCopy') && ($('#ftCopy').onclick = async () => {
     try { await navigator.clipboard.writeText(memo()); $('#ftCopy').textContent = 'Copied'; setTimeout(() => { const c = $('#ftCopy'); if (c) c.textContent = 'Copy'; }, 1500); } catch {}
   });
