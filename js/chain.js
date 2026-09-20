@@ -195,6 +195,32 @@ export async function getAllRowsSharded(code, scope, table, maxId, { shard = 100
   return all;
 }
 
+// The same rotation is wrong for a question where an empty answer is
+// indistinguishable from "this node does not remember that far back". Asked
+// for the same account's actions, one node answered with 436 rows, one with
+// 153 and one with 6 — and a map drawn from the third is not a quieter token,
+// it is a lie about one. So: deepest first, and an empty answer is worth one
+// more node before it is believed.
+const DEEP_ORDER = ['https://wax.cryptolions.io', 'https://wax.eosusa.io', 'https://api.waxsweden.org']
+  .filter(h => HYPERION_HOSTS.includes(h)).concat(HYPERION_HOSTS.filter(h => !['https://wax.cryptolions.io', 'https://wax.eosusa.io', 'https://api.waxsweden.org'].includes(h)));
+export async function hyperionDeep(path) {
+  let last = null, empty = 0;
+  for (const host of DEEP_ORDER) {
+    try {
+      const res = await fetch(`${host}${path}`, { signal: AbortSignal.timeout(20000) });
+      if (!res.ok) { bench(host, 15000); last = new Error(`HTTP ${res.status}`); continue; }
+      const d = await res.json();
+      if (d.actions?.length) return d;
+      // Nothing at this node. One more, then take it as the truth rather than
+      // spending a third request on every quiet wallet.
+      last = d;
+      if (++empty >= 2) return d;
+    } catch (e) { bench(host, 8000); last = e; }
+  }
+  if (last && !(last instanceof Error)) return last;
+  throw last || new Error('no history node answered');
+}
+
 export async function hyperion(path, tries = 4) {
   let last;
   for (let a = 0; a < tries; a++) {

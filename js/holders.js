@@ -10,7 +10,7 @@
 // same kind of fact as a bubble map edge: worth seeing, yours to interpret.
 // =============================================================================
 
-import { hyperion, rpc, dropEchoes } from './chain.js';
+import { hyperion, hyperionDeep, rpc, dropEchoes } from './chain.js';
 
 const LIGHT = 'https://wax.light-api.net/api';
 
@@ -459,7 +459,9 @@ export async function transferGraph(contract, symbol, holders, { supply = 0, see
         account: h.account, 'act.account': contract, 'act.name': 'transfer',
         limit: '250', sort: 'desc',
       });
-      const d = await hyperion(`/v2/history/get_actions?${q}`);
+      // Deepest node first: a map is only as good as the history behind it,
+      // and the nodes do not keep the same amount.
+      const d = await hyperionDeep(`/v2/history/get_actions?${q}`);
       for (const a of (d.actions || [])) {
         const x = a.act?.data;
         if (!x || x.from === x.to) continue;

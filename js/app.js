@@ -3453,6 +3453,11 @@ async function renderFunToken(symbol) {
       </div>
 
       <div class="funcol">
+        <div class="card" id="ftPriceCard" hidden>
+          <h3>Price <span class="dim">&mdash; every price the curve itself logged</span></h3>
+          <div id="ftPrice"></div>
+        </div>
+
         <div class="card">
           <h3>Where it is on the curve</h3>
           <div id="ftCurve"></div>
@@ -3473,6 +3478,11 @@ async function renderFunToken(symbol) {
         <div class="card">
           <h3>Who holds it <span class="dim">&mdash; of what has been sold</span></h3>
           <div id="ftHold"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div>
+        </div>
+
+        <div class="card">
+          <h3>How it moves between them <span class="dim">&mdash; wallets sized by holding, lines are transfers</span></h3>
+          <div id="ftMap"><div class="loading"><span class="spinner"></span><span>Following the transfers…</span></div></div>
         </div>
 
         <div class="card">
@@ -3727,6 +3737,63 @@ async function loadFunHolders(t, stale) {
           <td class="r">${price != null && waxUsd ? usd(r.balance * price * waxUsd) : price != null ? `${qty(r.balance * price)} WAX` : '—'}</td></tr>`;
       }).join('')}</tbody></table></div>
     ${held > 0 && sold > held * 1.02 ? `<p class="sub">The ${rows.length} listed hold ${share(held).toFixed(1)}% of what has been sold; the rest is spread across smaller wallets.</p>` : ''}`;
+
+  // The same map the token pages draw, on the same reasoning: who holds it
+  // says less than who moved it to whom. Twelve histories rather than sixteen,
+  // four at a time — these wallets are few and the nodes are shared.
+  const map = $('#ftMap');
+  if (!map) return;
+  let g;
+  try { g = await transferGraph(t.contract, t.symbol, rows, { supply: sold, seeds: 12, minShare: 0.0002 }); }
+  catch { map.innerHTML = '<div class="chart-empty">Could not read the transfer history.</div>'; return; }
+  if (stale()) return;
+  if (!g.nodes.length) { map.innerHTML = '<div class="chart-empty">No transfer between these wallets big enough to draw.</div>'; return; }
+  // The curve belongs in the map. On a bonding-curve token almost nobody
+  // transfers to anybody: they trade with main.waxfun, so every line found
+  // ends there — and leaving it out drew twelve bubbles with nothing between
+  // them. It is sized by what it still has to sell, which is the one number
+  // that makes it comparable to a holder.
+  const nodes = g.nodes.some(n => n.id === WAXFUN_CURVE)
+    ? g.nodes
+    : [...g.nodes, { id: WAXFUN_CURVE, value: Math.max(1, DEX_GOAL_TOKENS - sold), contract: true, share: null }];
+  map.innerHTML = `<p class="sub" style="margin:0 0 8px">${g.nodes.length} wallets and the curve &middot; ${g.links.length} line${g.links.length === 1 ? '' : 's'}, each one tokens moved${
+    g.read < g.seeds ? ` &middot; <span class="warnish">${g.seeds - g.read} of ${g.seeds} histories did not load, so lines are missing</span>` : ''}</p>`;
+  const holder = document.createElement('div');
+  map.appendChild(holder);
+  holder.appendChild(bubbleMap(nodes, g.links, {
+    cap: 40, fmt: v => `${qty(v)} ${t.symbol}`,
+    onPick: acct => { show('wallet', acct); $('#walletInput').value = acct; lookupWallet(acct); },
+  }));
+  map.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">The big one is <span class="mono">${WAXFUN_CURVE}</span> itself,
+    holding the ${qty(Math.max(0, DEX_GOAL_TOKENS - sold))} ${esc(t.symbol)} it has left to sell. Everyone else is sized by what they hold.</p>`);
+}
+
+// A price line for something that has no market. The curve logs the price it
+// ended at on every trade, so the line is exact where it exists and flat
+// between trades — which is the truth about a bonding curve: nothing but a
+// trade can move it. The last point is today at today's price, so a token
+// nobody has touched since February does not look like it stopped existing.
+async function drawFunPrice(t, rows) {
+  const card = $('#ftPriceCard'), box = $('#ftPrice');
+  if (!card || !box) return;
+  const pts = rows.filter(r => r.price > 0).map(r => ({ at: r.at, price: r.price })).sort((a, b) => a.at - b.at);
+  if (pts.length < 2) return;                      // one dot is not a chart
+  const now = t.supply != null ? curvePrice(t.supply, t.curveConfig) : null;
+  if (now != null && Date.now() - pts.at(-1).at > 36e5) pts.push({ at: Date.now(), price: now });
+  card.hidden = false;
+  const fmt = v => `${pxNum(v)} WAX`;
+  const sec = ms => Math.floor(ms / 1000);
+  const first = pts[0], last = pts.at(-1);
+  const move = first.price > 0 ? (last.price / first.price - 1) * 100 : null;
+  box.innerHTML = '';
+  const holder = document.createElement('div');
+  box.appendChild(holder);
+  await lineSeriesChart(holder, pts.map(p => ({ time: sec(p.at), value: p.price })), { height: 210, color: 'var(--accent)', precision: 8, fmt })
+    .catch(() => holder.appendChild(areaChart(pts.map(p => ({ x: p.at, y: p.price })), {
+      fmtY: fmt, fmtX: ts => new Date(ts).toISOString().slice(0, 10), color: 'var(--accent)', label: 'price on the curve' })));
+  box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">${pts.length - 1} trade${pts.length === 2 ? '' : 's'} since ${
+    new Date(first.at).toISOString().slice(0, 10)}${move == null ? '' : `, and the price is ${move >= 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(0)}% across them`}.
+    A curve only moves when somebody trades it, so the flat stretches are real.</p>`);
 }
 
 // The contract's own trade log, which is the only record of what happened on a
@@ -3755,10 +3822,11 @@ async function loadFunTrades(t, stale) {
       The curve is still live &mdash; it simply has not been traded lately.</div>`;
     return;
   }
+  drawFunPrice(t, rows).catch(() => {});
   box.innerHTML = `<div class="tablewrap" style="max-height:420px"><table style="font-size:12.5px">
     <thead><tr><th>When</th><th></th><th>Wallet</th><th class="r">${esc(t.symbol)}</th><th class="r">WAX</th><th class="r">Price</th></tr></thead>
     <tbody>${rows.map(r => `<tr>
-      <td class="dim"><a class="plink" href="${trxUrl(r.trx)}" target="_blank" rel="noopener" title="${new Date(r.at).toLocaleString()}">${ago(r.at)}</a></td>
+      <td class="dim"><a class="plink" href="${trxUrl(r.trx)}" target="_blank" rel="noopener" title="${new Date(r.at).toLocaleString()}">${ago(new Date(r.at).toISOString())}</a></td>
       <td><span class="badge ${r.side === 'buy' ? 'good' : 'bad'}">${r.side}</span></td>
       <td>${acctLink(r.account || '—')}</td>
       <td class="r mono">${qty(r.tokens)}</td>

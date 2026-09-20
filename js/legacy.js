@@ -23,7 +23,7 @@
 //               the 1,340 free claims.
 // =============================================================================
 
-import { getRows, getAllRows, hyperion } from './chain.js';
+import { getRows, getAllRows, HYPERION_HOSTS } from './chain.js';
 
 export const WAXFUN_TOKENS = 'alpha.waxfun';
 export const WAXFUN_CURVE = 'main.waxfun';
@@ -180,29 +180,48 @@ export async function waxfunToken(symbol, contract = WAXFUN_TOKENS) {
 // Every trade the curve has made, from its own log. `logbsl` carries both
 // sides and the price it ended at, so a tape and a price line come out of one
 // read — and one read covers every token, because the whole contract is quiet
-// enough that a few hundred rows reaches back a year. How far back depends on
-// which history node answers: they keep different amounts.
+// enough that a few hundred rows reach back a year.
+//
+// Asked of every history node rather than one of them, and merged. The same
+// query returned 436 rows from one node, 153 from another and 6 from a third
+// on the same afternoon: whichever the rotation happened to pick decided
+// whether a token had 71 trades or none, which is not a thing a page may say
+// by accident.
 let tradeCache = null;
 export async function waxfunTrades({ limit = 250, force = false } = {}) {
   if (tradeCache && !force && Date.now() - tradeCache.at < 120000) return tradeCache.rows;
-  const d = await hyperion(`/v2/history/get_actions?account=${WAXFUN_CURVE}&act.name=logbsl&limit=${limit}&sort=desc`);
-  const rows = (d.actions || []).map(a => {
+  const q = `/v2/history/get_actions?account=${WAXFUN_CURVE}&act.name=logbsl&limit=${limit}&sort=desc`;
+  const answers = await Promise.allSettled(HYPERION_HOSTS.map(async host => {
+    const r = await fetch(`${host}${q}`, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()).actions || [];
+  }));
+  const got = answers.filter(a => a.status === 'fulfilled').flatMap(a => a.value);
+  if (!got.length && answers.every(a => a.status === 'rejected')) throw new Error('no history node answered');
+  const seen = new Set();
+  const rows = [];
+  for (const a of got) {
+    const key = `${a.trx_id}:${a.global_sequence ?? a.action_ordinal}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const x = a.act?.data || {};
     const [tokAmt, sym] = String(x.bi?.amount || '').split(' ');
     const [waxAmt] = String(x.si?.amount || '').split(' ');
     // The curve is always one side of its own trade: when it is the buyer,
     // somebody sold into it.
     const side = x.bi?.buyer === WAXFUN_CURVE ? 'sell' : 'buy';
-    return {
+    if (!sym) continue;
+    rows.push({
       at: Date.parse(a.timestamp + (String(a.timestamp).endsWith('Z') ? '' : 'Z')),
-      trx: a.trx_id, side, symbol: sym || '',
+      trx: a.trx_id, side, symbol: sym,
       account: side === 'buy' ? x.bi?.buyer : x.si?.seller,
       tokens: parseFloat(tokAmt) || 0,
       wax: parseFloat(waxAmt) || 0,
       price: parseFloat(String(x.current_price || '').split(' ')[0]) || null,
       contract: x.token_contract || WAXFUN_TOKENS,
-    };
-  }).filter(t => t.symbol);
+    });
+  }
+  rows.sort((a, b) => b.at - a.at);
   tradeCache = { at: Date.now(), rows };
   return rows;
 }
