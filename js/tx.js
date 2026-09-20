@@ -24,77 +24,50 @@ const dec = (v, d) => {
 };
 export const asset = (amount, symbol, decimals) => `${dec(amount, decimals)} ${symbol}`;
 
-// A minimum output protects against the price moving while the transaction
-// waits to be included. That is worth having on real money and is theatre on
-// dust, because pool math rounds every tick crossing down: on a 33-unit output
-// a couple of units of rounding is 6%, more than any tolerance, while the leg
-// itself is worth a tenth of a cent.
+// A minimum output protects against the pool moving between the quote and the
+// block. It is not protection from anyone: WAX has no public mempool to be
+// sandwiched in. And on a small output it protects nothing at all, because
+// pool math rounds every tick crossing down, so a unit or two of rounding is a
+// large share of what comes back.
 //
-// Which is how compounding CHEESE/WAXWETH failed every time with "Received
-// lower than minTokenOut: 30, poolId: 7801". The band needed $0.0009 of
-// WAXWETH to balance; 30 units is 0.0000003 of an ether. The first attempt at
-// this gave small outputs a three-unit margin — exactly the 30 in that error —
-// and it was still not enough, because a leg that small is usually quoted by
-// our own graph from two USD prices rather than by Alcor walking the ticks,
-// and that estimate is percent-level wrong before rounding even starts.
+// Which is how compounding CHEESE/WAXWETH reverted every time with "Received
+// lower than minTokenOut: 30, poolId: 7801". The band was nine hundredths of a
+// cent out of balance; 30 units is 0.0000003 of an ether. An earlier attempt
+// gave small outputs a three-unit margin — exactly the 30 in that error — and
+// then a rule that refused to swap sub-cent legs at all. Both were wrong in
+// the same way: nothing here gets to decide that an amount is too small to
+// bother with. Someone compounding pennies is compounding.
 //
-// So the rule takes both: how much rounding can take, which is a question of
-// units, and whether protecting the leg is worth anything, which is a question
-// of money. Past a thousand units rounding is noise and nothing changes — a
-// third of a cent of CHEESE is three thousand units and swaps exactly as it
-// always did. Below that:
-//   worth under a cent    not swapped at all; the deposit goes in a hair
-//                         unbalanced and the pool hands the surplus back
-//   worth under a dollar  asks only for a non-zero amount, because nothing a
-//                         sandwich could take out of it is worth the
-//                         transaction it would cost
-//   worth more            the percentage, with an absolute floor for rounding
-const DUST_UNITS = 10;
+// So the only thing this does is stop asking for a precision the pool cannot
+// deliver:
+//   under two units      a swap has to ask for at least one unit back, and
+//                        rounding takes about that much, so there is nothing
+//                        left to ask for. The deposit goes in a hair
+//                        unbalanced instead and the pool returns the surplus.
+//   under 1,000 units    asks only for a non-zero amount
+//   1,000 units or more  the ordinary tolerance, because a quote can go stale
+//                        while the transaction waits for a block
 const ROUNDING_SAFE_UNITS = 1000;
-const NOT_WORTH_SWAPPING_USD = 0.01;
-const PROTECTION_POINTLESS_USD = 1;
-const worthOf = (expect, toId) => {
-  const px = priceOf(toId);
-  return px != null ? expect * px : null;
-};
-function tooSmallToSwap(expect, toId, decimals) {
-  const units = expect * 10 ** decimals;
-  if (!(expect > 0) || units < DUST_UNITS) return true;
-  if (units >= ROUNDING_SAFE_UNITS) return false;
-  const worth = worthOf(expect, toId);
-  return worth != null && worth < NOT_WORTH_SWAPPING_USD;
-}
-function roundingSafeMin(minOut, expect, toId, decimals) {
+const SWAPPABLE_UNITS = 2;
+const unitsOf = (amount, decimals) => amount * 10 ** decimals;
+const tooSmallToSwap = (expect, decimals) => !(unitsOf(expect, decimals) >= SWAPPABLE_UNITS);
+function roundingSafeMin(minOut, expect, decimals) {
   const unit = 10 ** -decimals;
   const units = expect / unit;
   if (!(units > 0)) return minOut;
-  // Past a thousand units a unit of rounding is noise, so the ordinary
-  // tolerance stands whatever the leg is worth.
   if (units >= ROUNDING_SAFE_UNITS) return minOut;
-  const worth = worthOf(expect, toId);
-  // No price to judge it by: fall back to the size, where a unit or two of
-  // rounding is a large share of the whole.
-  if (worth != null ? worth < PROTECTION_POINTLESS_USD : units < 200) return unit;
-  const margin = Math.max(3, Math.ceil(units * 0.05)) * unit;
-  return Math.max(unit, Math.min(minOut, expect - margin));
+  return unit;
 }
-// Said in money where there is a price for it, because "too small" invites the
-// question "smaller than what".
-function skipReason(expect, toId, to) {
-  const worth = worthOf(expect, toId);
-  return worth != null
-    ? `only ${worth < 0.01 ? 'a fraction of a cent' : `$${worth.toFixed(2)}`} of ${to.symbol} — too little to be worth a swap`
-    : `too small to swap — rounding would take most of it`;
-}
+const skipReason = to => `less than one ${to.symbol} unit would survive the pool's rounding`;
 // The rule is arithmetic on numbers a wallet is about to sign, so it is
 // exposed for tools/verify/minout.mjs to walk the case that reverted and the
 // sizes either side of it. Nothing in the app imports this.
-export const __minout = { tooSmallToSwap, roundingSafeMin, skipReason, loosenMemo: (send, to, toId) => loosenMemo(send, to, toId) };
+export const __minout = { tooSmallToSwap, roundingSafeMin, skipReason, loosenMemo: (send, to) => loosenMemo(send, to) };
 
 // The same rule written into a memo Alcor's router built: only the minimum
 // asset changes, and only ever downward.
-function loosenMemo(send, to, toId) {
-  const safe = roundingSafeMin(send.min, send.expect, toId, to.decimals);
+function loosenMemo(send, to) {
+  const safe = roundingSafeMin(send.min, send.expect, to.decimals);
   if (!(safe < send.min)) return send;
   const parts = String(send.memo).split('#');
   if (parts.length < 5 || parts[0] !== 'swapexactin') return send;
@@ -241,9 +214,8 @@ export async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
 
   const q = await routeQuote({ from, to, amount: send, slippagePct: SLIPPAGE * 100, receiver: me });
   if (q) {
-    if (!(q.min > 0)) return { skipped: `would return less than one ${to.symbol} unit` };
-    if (tooSmallToSwap(q.expect, toId, to.decimals)) return { skipped: skipReason(q.expect, toId, to) };
-    const sends = q.sends.map(x => loosenMemo(x, to, toId));
+    if (tooSmallToSwap(q.expect, to.decimals)) return { skipped: skipReason(to) };
+    const sends = q.sends.map(x => loosenMemo(x, to));
     return {
       actions: sends.map(x => ({
         account: from.contract, name: 'transfer', authorization: auth,
@@ -260,8 +232,8 @@ export async function swapLeg({ fromId, toId, amountIn, usd = 0, me, auth }) {
   if (!path || !path.length) return { skipped: 'no route' };
   const expect = send * pFrom / pTo;
   const impact = path.impact || 0;
-  if (tooSmallToSwap(expect, toId, to.decimals)) return { skipped: skipReason(expect, toId, to) };
-  const minOut = roundingSafeMin(expect * (1 - SLIPPAGE - impact), expect, toId, to.decimals);
+  if (tooSmallToSwap(expect, to.decimals)) return { skipped: skipReason(to) };
+  const minOut = roundingSafeMin(expect * (1 - SLIPPAGE - impact), expect, to.decimals);
   if (parseFloat(dec(minOut, to.decimals)) <= 0) return { skipped: `would return less than one ${to.symbol} unit` };
   return {
     actions: [{
@@ -401,15 +373,15 @@ export async function buildRedeposit({ pool, position, feeBps = 0, feeAccount = 
 
   // A band that straddles the price needs both tokens: addliquid sizes the
   // liquidity from whichever side binds, so a zero side is zero liquidity and
-  // an assertion nobody can read. This is only reachable when a conversion was
-  // too small to be worth making, which means the harvest itself is worth
-  // pennies — so say that, and leave it in the wallet to build up.
+  // an assertion nobody can read. Reachable when a conversion would have
+  // returned less than one unit of the other token — the pool's limit, not
+  // ours — so say which side is missing rather than letting the chain say it.
   const straddles = pool.tick != null && position.tickLower <= pool.tick && pool.tick < position.tickUpper;
   const zeroSide = Number(dec(depA, ta.decimals)) <= 0 ? ta : Number(dec(depB, tb.decimals)) <= 0 ? tb : null;
   if (straddles && zeroSide) {
-    throw new Error(`This harvest came back as ${zeroSide === ta ? tb.symbol : ta.symbol} only, and converting `
-      + `enough of it to pair with is worth less than a cent — too small for the pool to price. `
-      + `It is in your wallet; let the fees build up and compound again later.`);
+    throw new Error(`This range needs both tokens and there is no ${zeroSide.symbol} to put in: the harvest came `
+      + `back as ${zeroSide === ta ? tb.symbol : ta.symbol} only, and converting some of it would return less than `
+      + `one ${zeroSide.symbol} unit. It is all in your wallet; compound again once the fees have built up.`);
   }
 
   // addliquid spends from the internal balance, so it must ask for what ARRIVES
@@ -1017,7 +989,7 @@ export async function buildZapSwap({ pool, plan, feeAccount = '', me = account()
       // One transfer per part. Alcor splits an order across routes when that
       // gets more out, and each part carries its own memo and its own share.
       // The amount is Alcor's own string: it is what the quote was for.
-      for (const s of q.sends.map(x => loosenMemo(x, to, leg.token))) {
+      for (const s of q.sends.map(x => loosenMemo(x, to))) {
         actions.push({
           account: from.contract, name: 'transfer', authorization: auth,
           data: { from: me, to: ALCOR, quantity: s.inputAsset, memo: s.memo },
@@ -1037,7 +1009,7 @@ export async function buildZapSwap({ pool, plan, feeAccount = '', me = account()
         + `the best route holds ${'$' + (path.bottleneck || 0).toFixed(2)} of depth. Zap a smaller amount, or a different pair.`);
     }
     if (!(leg.expect > 0)) throw new Error(`No quote for ${from.symbol} into ${leg.sym}.`);
-    const minOut = roundingSafeMin(leg.expect * (1 - SLIPPAGE - impact), leg.expect, leg.token, to.decimals);
+    const minOut = roundingSafeMin(leg.expect * (1 - SLIPPAGE - impact), leg.expect, to.decimals);
     if (parseFloat(dec(minOut, to.decimals)) <= 0) throw new Error(`Would return less than one ${leg.sym} unit.`);
     actions.push({
       account: from.contract, name: 'transfer', authorization: auth,
