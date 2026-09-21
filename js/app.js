@@ -6084,7 +6084,9 @@ async function showCompound(btn, pos, resume = null) {
       <div class="planline">
         <span class="k">Signs</span>
         <span><span class="mono">${b.actions.map(a => esc(a.name)).join(' &middot; ')}</span>
-          <span class="dim">&mdash; ${b.noSwap ? 'one transaction' : 'two'}</span></span>
+          <span class="dim">&mdash; ${oneTxPossible(b, pos.pool) ? 'one transaction'
+            : b.noSwap ? 'two &mdash; none of this harvest is booked on chain yet, so it is claimed first and measured'
+            : 'two'}</span></span>
       </div>
 
       <button class="btn" id="wrun-${pos.posId}"${b.viable ? '' : ' disabled'}>Compound now</button>
@@ -6231,9 +6233,30 @@ const saveResume = v => {
 // "Compound now" IS the gesture for signature 1: nothing is awaited between the
 // two. Signatures 2 and 3 still ask, because they genuinely cannot be reached
 // without first measuring what the previous one produced.
+// Whether the claim and the deposit can share one signature.
+//
+// They can only when the chain has already RECORDED what is being claimed:
+// addliquid names its amounts, and the claim that funds it has not run yet, so
+// a forecast is not something that may be written into the same transaction.
+// Pool fees are recorded — they sit in the position. A farm reward is recorded
+// only up to the incentive's last update, and a farm whose row has not been
+// written since this position last claimed has booked nothing at all. The
+// reward is real; none of it is provable yet. That compound reverted with
+// "Nothing large enough to deposit", which is true of the floor and false of
+// the harvest, so it now claims first, measures what arrived, and deposits
+// that. Two signatures, and the panel says two before anyone presses.
+const oneTxPossible = (plan, pool) => {
+  if (!plan?.noSwap || !pool) return false;
+  // Nine tenths, because the builder takes a margin off the floor before it
+  // rounds to the token's precision, and a deposit that rounds away is the
+  // failure this test exists to predict.
+  const booked = (v, decimals) => Math.floor((v || 0) * 0.9 * 10 ** (decimals ?? 8)) >= 1;
+  return booked(plan.depositFloorA, pool.decA) || booked(plan.depositFloorB, pool.decB);
+};
+
 async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances = null) {
   const { pos, harvest, plan } = entry;
-  const oneShot = !!plan.noSwap && !resume;
+  const oneShot = oneTxPossible(plan, pos.pool) && !resume;
 
   // Without swapping there is nothing to wait for: every amount in the
   // transaction is known before it is signed, so claim and deposit go together.
@@ -6242,7 +6265,9 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
   const steps = oneShot
     ? [{ t: 'Claim and compound', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s) and add them straight back into your range — one transaction, nothing sold.` }]
     : [
-      { t: 'Claim', d: `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), and convert what the band needs — one transaction. Only the harvest is spent.` },
+      { t: 'Claim', d: plan.noSwap
+          ? `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s) — one transaction, nothing sold. None of this harvest is booked on chain yet, so it is claimed first and measured.`
+          : `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), and convert what the band needs — one transaction. Only the harvest is spent.` },
       { t: 'Compound', d: 'Add exactly what arrived back into your range.'
           + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on the harvest goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
     ];

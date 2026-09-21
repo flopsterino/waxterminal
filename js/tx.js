@@ -809,7 +809,9 @@ export function buildOneShot({ pool, position, basket, plan, feeBps = 0, feeAcco
   const net = (amt, id) => amt * (1 - (venueTaxOf(id) / 10000));
   const askA = net(depA, pool.tokenA), askB = net(depB, pool.tokenB);
   if (parseFloat(dec(askA, pool.decA)) <= 0 && parseFloat(dec(askB, pool.decB)) <= 0) {
-    throw new Error('Nothing large enough to deposit — the harvest rounds to zero in both tokens.');
+    throw new Error('None of this harvest is recorded on chain yet, so there is no amount this transaction may '
+      + 'name: a farm books its rewards when its incentive row is next written. Compound it in two steps instead — '
+      + 'claim, then deposit what actually arrived.');
   }
 
   const ta = tokenMeta(pool.tokenA), tb = tokenMeta(pool.tokenB);
