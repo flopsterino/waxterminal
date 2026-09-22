@@ -858,9 +858,20 @@ export async function buildClaimAndSwap({ pool, position, basket, plan, harveste
   const { actions } = buildHarvest({ pool, position, basket, plan, me, auth });
   if (!actions.length) throw new Error('Nothing claimable to harvest.');
 
-  // The claim has not run yet, so there is nothing measured to size against —
-  // the plan's own figures are all there is, shaded by the same margin.
-  const scaled = { ...plan, swaps: plan.swaps.map(x => ({ ...x, usd: x.usd * CLAIM_MARGIN })) };
+  // The claim has not run yet, so there is nothing measured to size against.
+  // The plan's figures are all there is — and only the booked part of them may
+  // be spent here. A farm reward that is entirely forecast books nothing, so
+  // its swap is left out of this transaction rather than sized from a guess:
+  // when the guess is high the swap takes the whole of one side and the
+  // deposit that follows has none of it, which strands the harvest in the
+  // wallet with the position empty of it. What is left over is swapped after
+  // the claim, against what actually arrived.
+  const scaled = {
+    ...plan,
+    swaps: plan.swaps
+      .map(x => ({ ...x, usd: Math.min(x.usd * CLAIM_MARGIN, plan.floorUsd?.get?.(x.fromToken) ?? x.usd * CLAIM_MARGIN) }))
+      .filter(x => x.usd > 0),
+  };
   const sw = await buildSwaps({ pool, plan: scaled, harvested, me, auth });
   return { actions: [...actions, ...sw.actions], swaps: sw.swaps };
 }

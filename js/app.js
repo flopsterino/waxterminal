@@ -7,7 +7,7 @@ import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, 
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
-import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
+import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
@@ -6894,6 +6894,45 @@ const oneTxPossible = (plan, pool) => {
   return booked(plan.depositFloorA, pool.decA) || booked(plan.depositFloorB, pool.decB);
 };
 
+// Buy back the side the claim's swap swallowed.
+//
+// Only runs when the band straddles the price — a range that wants one token
+// is perfectly happy with one token — and only when the side it is missing
+// rounds to nothing, which is the case a deposit cannot survive.
+async function rebalanceHarvest({ pos, plan, before, basketIds, me, press, render }) {
+  const pool = pos.pool;
+  const straddles = pool.tick != null && pos.tickLower <= pool.tick && pool.tick < pos.tickUpper;
+  if (!straddles || !before) return false;
+  const after = await readBalances(pool, basketIds, me);
+  const got = harvestedFrom(before, after);
+  const a = got.get(pool.tokenA) || 0, b = got.get(pool.tokenB) || 0;
+  const pxA = pool.priceUsdA || 0, pxB = pool.priceUsdB || 0;
+  const usdA = a * pxA, usdB = b * pxB;
+  if (!(usdA + usdB > 0)) return false;
+  const shareA = plan.ratio?.shareA ?? 0.5, shareB = plan.ratio?.shareB ?? 0.5;
+  const nothing = (amt, decimals) => Math.floor(amt * 10 ** decimals) < 1;
+  const missingA = shareA > 0.02 && nothing(a, pool.decA);
+  const missingB = shareB > 0.02 && nothing(b, pool.decB);
+  if (missingA === missingB) return false;                 // both there, or both empty
+  const total = usdA + usdB;
+  const needUsd = missingA ? total * shareA - usdA : total * shareB - usdB;
+  const fromId = missingA ? pool.tokenB : pool.tokenA;
+  const toId = missingA ? pool.tokenA : pool.tokenB;
+  const fromSym = missingA ? pool.symB : pool.symA;
+  const toSym = missingA ? pool.symA : pool.symB;
+  const fromPx = missingA ? pxB : pxA;
+  const have = missingA ? b : a;
+  if (!(needUsd > 0) || !(fromPx > 0) || !(have > 0)) return false;
+  const amountIn = Math.min(needUsd / fromPx, have);
+  const leg = await swapLeg({ fromId, toId, amountIn, usd: needUsd, me, auth: [{ actor: me, permission: 'active' }] });
+  if (leg.skipped || !leg.actions?.length) return false;
+  await press(1, 'Balance it', `The claim came back as ${esc(fromSym)} only. Sell ${qty(leg.amountIn)} ${esc(fromSym)} for ${esc(toSym)} so both sides can go back in.`);
+  render(1, 'Waiting for your wallet…');
+  await wallet.transact(leg.actions, { verify: true });
+  await new Promise(r => setTimeout(r, 2500));
+  return true;
+}
+
 async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances = null) {
   const { pos, harvest, plan } = entry;
   const oneShot = oneTxPossible(plan, pos.pool) && !resume;
@@ -6907,7 +6946,7 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
     : [
       { t: 'Claim', d: plan.noSwap
           ? `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s) — one transaction, nothing sold. None of this harvest is booked on chain yet, so it is claimed first and measured.`
-          : `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), and convert what the band needs — one transaction. Only the harvest is spent.` },
+          : `Collect your fees and ${plan.actions.filter(a => a.name === 'getreward').length} farm reward(s), and convert what is already booked — one transaction. Whatever the forecast cannot promise is converted afterwards, against what actually arrived.` },
       { t: 'Compound', d: 'Add exactly what arrived back into your range.'
           + (feeBps > 0 && feeAccount ? ` A ${(feeBps / 100).toFixed(2)}% fee on the harvest goes to ${feeAccount}; nothing else leaves your wallet.` : '') },
     ];
@@ -6970,9 +7009,21 @@ async function runOne(box, entry, feeBps, feeAccount, resume = null, preBalances
       saveResume({ account: pos.owner, poolId: pos.pool.id, posId: pos.posId, before, claimTx: r1id, at: Date.now() });
     }
 
-    // ---- 2. compound ----------------------------------------------------
+    // ---- 1.5 put right what the forecast got wrong -----------------------
+    // The swap inside the claim transaction is sized from a forecast, because
+    // the claim that funds it has not run yet. When the forecast was high, the
+    // swap takes the whole of one side and the band — which needs both — has
+    // none of it left to put back. That was a revert, then a readable refusal,
+    // and both left the harvest stranded in the wallet with the position empty
+    // of it. So: measure what actually arrived, and if a side is missing, buy
+    // it back out of the side that is there. One more signature, and only when
+    // it is needed.
     render(1, 'Measuring what arrived…');
     await new Promise(r => setTimeout(r, 2500));
+    await rebalanceHarvest({ pos, plan, before, basketIds, me, press, render }).catch(() => false);
+
+    // ---- 2. compound ----------------------------------------------------
+    render(1, 'Measuring what arrived…');
     const pxA = pos.pool.priceUsdA, pxB = pos.pool.priceUsdB;
     const expected = {
       a: pxA > 0 ? plan.depositA / pxA : 0,

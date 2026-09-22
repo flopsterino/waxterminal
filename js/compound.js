@@ -253,8 +253,20 @@ export function planCompound({ pool, position, basket, feeBps = 0, sqrtP, noSwap
     ...(feeUsd > 0 ? [{ name: 'transfer', contract: 'fee', note: `${(feeBps / 100).toFixed(2)}% service fee` }] : []),
   ];
 
+  // What each token's harvest is worth in the part the chain has ALREADY
+  // booked. A swap that runs in the same transaction as the claim can only
+  // safely spend this: the rest is a forecast, and a forecast that came in low
+  // means the swap eats the side the deposit needed. Measured at +4.91% high
+  // on a farm whose row was four hours old, and seen taking the whole of one
+  // side on a live position.
+  const floorUsd = new Map();
+  for (const b of priced) {
+    const ratioBooked = b.amount > 0 ? Math.min(1, (b.amountFloor ?? b.amount) / b.amount) : 0;
+    floorUsd.set(b.tokenId, (floorUsd.get(b.tokenId) || 0) + b.usd * keep * ratioBooked);
+  }
+
   return {
-    noSwap: false, ratio, grossUsd, feeUsd, netUsd,
+    noSwap: false, ratio, grossUsd, feeUsd, netUsd, floorUsd,
     targetA, targetB, finalA: haveA, finalB: haveB,
     // What the redeposit is sized against. Named explicitly rather than
     // recomputed from netUsd at the call site, so the two modes cannot drift.
