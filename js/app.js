@@ -8229,13 +8229,34 @@ async function renderLeaders() {
     <span class="ldpbar" style="--w:${share(r[key] || 0).toFixed(1)}%"></span>
   </div>`).join('');
 
+  // Concentration as a picture. A leaderboard is a list of who is biggest;
+  // the shape of it — one account with a third of everything, or forty with a
+  // slice each — is the part a table never quite says.
+  const half = (() => {
+    let acc = 0;
+    for (let i = 0; i < rows.length; i++) { acc += rows[i][key] || 0; if (acc >= total / 2) return i + 1; }
+    return rows.length;
+  })();
+
   out.innerHTML = `
     <div class="ldpodium">${podium}</div>
-    <p class="sub ldconc">The first ten hold <b>${share(topTen).toFixed(0)}%</b> of everything on this board,
-      and the largest alone holds <b>${share(top).toFixed(0)}%</b>. ${rows.length.toLocaleString()} accounts counted.</p>
+    <div class="ldsplit">
+      <div class="card ldpie"><h3>${esc(cfg.label)} by share <span class="dim">&mdash; top ${Math.min(8, rows.length)} of ${rows.length.toLocaleString()}</span></h3>
+        <div id="ldDonut"></div></div>
+      <div class="card ldfacts">
+        <h3>How concentrated it is</h3>
+        <dl class="ftrows wide">
+          <div><dt>The largest one</dt><dd><b>${share(top).toFixed(1)}%</b> <span class="dim">of everything on this board</span></dd></div>
+          <div><dt>The first ten together</dt><dd><b>${share(topTen).toFixed(1)}%</b></dd></div>
+          <div><dt>Half of it is held by</dt><dd><b>${half}</b> <span class="dim">account${half === 1 ? '' : 's'}</span></dd></div>
+          <div><dt>Counted here</dt><dd>${rows.length.toLocaleString()} accounts &middot; ${esc(String(fmt0(total)))} between them</dd></div>
+        </dl>
+        <p class="sub" style="margin:8px 0 0">${esc(cfg.note)}</p>
+      </div>
+    </div>
     <div class="tablewrap"><table><thead><tr>
       <th class="r" style="width:44px"></th><th>Account</th>
-      ${cfg.cols.map((c, i) => `<th class="r">${esc(c[1])}${i === 0 ? ' <span class="dim">share</span>' : ''}</th>`).join('')}
+      ${cfg.cols.map(c => `<th class="r">${esc(c[1])}</th>`).join('')}
     </tr></thead><tbody>${rows.map((r, i) => `<tr>
       <td class="rank">${i + 1}</td>
       <td class="mono">${acctLink(r.a)}</td>
@@ -8246,6 +8267,14 @@ async function renderLeaders() {
           ${v ? esc(String(c[2](v))) : '—'}</span></td>`;
       }).join('')}
     </tr>`).join('')}</tbody></table></div>`;
+
+  const pie = $('#ldDonut');
+  if (pie) {
+    pie.innerHTML = '';
+    pie.appendChild(donut(rows.map(r => ({ label: r.a, value: r[key] || 0 })), {
+      top: 8, size: 168, thickness: 26, legendShare: true, fmt: v => String(fmt0(v)),
+    }));
+  }
 
   // The name itself is the link; the row no longer needs its own binding.
 }
