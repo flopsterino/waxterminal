@@ -27,6 +27,8 @@ import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
+import { fusionState, fusionUser, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
+  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -188,7 +190,7 @@ const plain = (v, decimals = 0) => (v == null || !isFinite(v) ? '—'
 
 const forDays = d => d == null ? '—'
   : d < 1 ? `${Math.max(1, Math.round(d * 24))}h`
-  : d < 60 ? `${Math.round(d)} days`
+  : d < 60 ? `${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'}`
   : `${(d / 30).toFixed(1)} months`;
 
 // How long something has existed. New pools are where both the best yields and
@@ -3121,6 +3123,7 @@ async function renderLegacy(tab = 'waxfun') {
       <button role="tab" data-ltab="waxfun" aria-selected="true">wax.fun</button>
       <button role="tab" data-ltab="waxdao" aria-selected="false">WaxDAO drops</button>
       <button role="tab" data-ltab="blends" aria-selected="false">WaxDAO blends</button>
+      <button role="tab" data-ltab="fusion" aria-selected="false">WaxFusion</button>
     </div>
     <div class="lpane" data-lpane="waxfun">
       <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
@@ -3154,6 +3157,9 @@ async function renderLegacy(tab = 'waxfun') {
         <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops&hellip;</span></div></div>
       </div>
     </div>
+    <div class="lpane" data-lpane="fusion" hidden>
+      <div id="fusionOut"><div class="loading"><span class="spinner"></span><span>Reading the protocol&hellip;</span></div></div>
+    </div>
     <div class="lpane" data-lpane="blends" hidden>
       <div class="section"><h3>WaxDAO blends <span class="dim">&mdash; burn NFTs, and sometimes tokens, for something else</span></h3>
         <div class="toolbar">
@@ -3164,13 +3170,14 @@ async function renderLegacy(tab = 'waxfun') {
         <div id="blendGrid"><div class="loading"><span class="spinner"></span><span>Reading blends&hellip;</span></div></div>
       </div>
     </div>`;
-  let dropsLoaded = false, blendsLoaded = false;
+  let dropsLoaded = false, blendsLoaded = false, fusionLoaded = false;
   document.querySelectorAll('#legacyTabs button').forEach(b => b.onclick = () => {
     legacyTab(b.dataset.ltab);
     if (b.dataset.ltab === 'waxdao' && !dropsLoaded) { dropsLoaded = true; loadDrops(); }
     if (b.dataset.ltab === 'blends' && !blendsLoaded) { blendsLoaded = true; loadBlends(); }
+    if (b.dataset.ltab === 'fusion' && !fusionLoaded) { fusionLoaded = true; renderFusion().catch(() => {}); }
   });
-  legacyTab(['waxdao', 'blends'].includes(tab) ? tab : 'waxfun');
+  legacyTab(['waxdao', 'blends', 'fusion'].includes(tab) ? tab : 'waxfun');
 
   // ---- wax.fun ------------------------------------------------------------
   let tokens = [];
@@ -3449,6 +3456,7 @@ async function renderLegacy(tab = 'waxfun') {
 
   if (tab === 'waxdao') { dropsLoaded = true; loadDrops(); }
   if (tab === 'blends') { blendsLoaded = true; loadBlends(); }
+  if (tab === 'fusion') { fusionLoaded = true; renderFusion().catch(() => {}); }
 }
 
 // ------------------------------------------------------ WAX.FUN TOKEN PAGE --
@@ -4164,6 +4172,265 @@ const resultText = r => r.type === 'fungible'
   ? `${qty(r.tokenAmount)} ${esc(r.symbol)}`
   : r.type === 'preminted' ? `${r.count} NFT${r.count === 1 ? '' : 's'} from the creator's pool`
   : `${r.count} &times; ${esc(r.name && r.name !== 'name' ? r.name : `template ${r.templateId}`)}`;
+
+// ------------------------------------------------------------ WAXFUSION -----
+// Liquid staking with no website left. Everything here is the contract's own
+// state and its own actions; the page's job is to make the clock visible,
+// because the one thing that costs money is missing a redemption window.
+let fusionGen = 0;
+
+async function renderFusion() {
+  const out = $('#fusionOut');
+  if (!out) return;
+  const gen = ++fusionGen;
+  const stale = () => gen !== fusionGen;
+  out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the protocol…</span></div>';
+
+  let st;
+  try { st = await fusionState(); }
+  catch (e) { out.innerHTML = `<div class="card"><h3>WaxFusion</h3><p class="sub">The contract did not answer (${esc(e.message)}). Try again in a moment.</p></div>`; return; }
+  if (stale()) return;
+
+  const waxUsd = state.waxUsd || null;
+  const inUsd = wax => (waxUsd ? usd(wax * waxUsd) : `${qty(wax)} WAX`);
+  const win = st.openEpoch || st.nextEpoch;
+  const windowLine = st.openEpoch
+    ? `<b class="pos">A redemption window is open</b> until ${new Date(st.openEpoch.windowTo).toLocaleString()} &mdash; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
+    : st.nextEpoch
+      ? `The next redemption window opens ${new Date(st.nextEpoch.windowFrom).toLocaleString()} &mdash; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}, and stays open ${forDays(st.windowSeconds / 86400)}`
+      : 'No redemption window is scheduled in what the contract still holds.';
+
+  out.innerHTML = `
+    <div class="section"><h3>WaxFusion <span class="dim">&mdash; liquid staking on <span class="mono">dapp.fusion</span>, still running without its site</span></h3>
+
+      <div class="stats">
+        <div class="stat"><span class="v">${qty(st.staked)} WAX</span><span class="k">staked with it</span>
+          <span class="sub">${waxUsd ? `${usd(st.staked * waxUsd)} &middot; ` : ''}${qty(st.earning)} sWAX earning, ${qty(st.backing)} behind LSWAX</span></div>
+        <div class="stat"><span class="v">${st.aprPct != null ? `${st.aprPct.toFixed(2)}%` : '—'}</span><span class="k">staking rate</span>
+          <span class="sub">from the reward rate now${st.aprCapPct ? `, capped at ${st.aprCapPct}%` : ''}</span></div>
+        <div class="stat"><span class="v">${st.lswaxInSwax.toFixed(6)}</span><span class="k">sWAX per LSWAX</span>
+          <span class="sub">only goes up &mdash; LSWAX compounds instead of paying</span></div>
+        <div class="stat"><span class="v">${qty(st.forRedemption)} WAX</span><span class="k">ready to redeem</span>
+          <span class="sub">${inUsd(st.forRedemption)} in the bucket right now</span></div>
+        <div class="stat"><span class="v">${qty(st.revenueDistributed)} WAX</span><span class="k">paid out so far</span>
+          <span class="sub">${qty(st.rewardsClaimed)} WAX of it claimed</span></div>
+        <div class="stat"><span class="v">${qty(st.availableForRentals)} WAX</span><span class="k">out on CPU rental</span>
+          <span class="sub">at ${pxNum(st.rentPricePerWax)} WAX per WAX &middot; ${esc(st.cpuContract)}</span></div>
+      </div>
+
+      <div class="cta" style="margin:0 0 12px"><div><b>${windowLine}</b>
+        <span class="sub">Redeeming takes two steps: ask for a place in an epoch, then take the WAX out during that epoch's window.
+          ${st.feePct ? `Or skip the queue with an instant redeem, which costs ${st.feePct}%.` : ''}</span></div></div>
+
+      ${st.paused ? '<div class="err" style="margin-bottom:12px"><b>The contract is paused.</b> Its panic switch is on, so deposits and redemptions will refuse.</div>' : ''}
+
+      <div class="funpage">
+        <div class="funcol">
+          <div class="card fundesk" id="fusionDesk"></div>
+        </div>
+        <div class="funcol">
+          <div class="card" id="fusionYou"></div>
+          <div class="card">
+            <h3>Redemption windows <span class="dim">&mdash; one epoch a week, each opening a fortnight later</span></h3>
+            <div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
+              <thead><tr><th>Epoch</th><th>Window</th><th class="r">In its bucket</th><th class="r">Returned</th><th></th></tr></thead>
+              <tbody>${st.epochs.map(e => `<tr>
+                <td class="dim">${new Date(e.startsAt).toISOString().slice(0, 10)}</td>
+                <td>${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}</td>
+                <td class="r num">${qty(e.bucket)}</td>
+                <td class="r num">${qty(e.returned)}</td>
+                <td>${e === st.openEpoch ? '<span class="badge good">open now</span>'
+                  : e.windowFrom > Date.now() ? `<span class="dim">in ${forDays((e.windowFrom - Date.now()) / 86400e3)}</span>`
+                  : '<span class="dim">closed</span>'}</td></tr>`).join('')}</tbody></table></div>
+          </div>
+          <div class="card">
+            <h3>Keeping it running <span class="dim">&mdash; anyone may press these, and somebody has to</span></h3>
+            <p class="sub">The protocol does not run itself: revenue only becomes LSWAX when somebody calls compound, idle WAX only starts
+              earning when somebody stakes it, and the farms it pays for only get funded when somebody funds them. With the site gone,
+              that somebody is whoever is looking. You pay the CPU; the benefit goes to everyone holding.</p>
+            <div class="keepergrid">${KEEPER.map(k => `<div class="keeper">
+              <div><b>${esc(k.title)}</b><span class="sub">${esc(k.what)}</span>
+                ${k.name === 'compound' ? `<span class="sub dim">Last run ${ago(new Date(st.lastCompoundAt).toISOString())}.</span>` : ''}
+                ${k.name === 'createfarms' ? `<span class="sub dim">${qty(st.incentivesBucket)} LSWAX waiting to be handed to the farms.</span>` : ''}
+                ${k.name === 'stakeallcpu' ? `<span class="sub dim">${st.nextStakeAllAt <= Date.now() ? 'Due now.' : `Next due ${new Date(st.nextStakeAllAt).toLocaleString()}.`}</span>` : ''}</div>
+              <button class="btn ghost" data-keeper="${esc(k.name)}">Run it</button>
+            </div>`).join('')}</div>
+            <div id="keeperOut"></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  out.querySelectorAll('[data-keeper]').forEach(b => b.onclick = async () => {
+    const box = $('#keeperOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const name = b.dataset.keeper;
+    const k = KEEPER.find(x => x.name === name);
+    const ok = await runStakeTx(box, buildFusionKeeper({ account: wallet.account(), name }), `${k.title} — done.`);
+    if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
+  });
+
+  paintFusionUser(st, stale);
+}
+
+// The half that belongs to whoever is looking.
+async function paintFusionUser(st, stale) {
+  const you = $('#fusionYou'), desk = $('#fusionDesk');
+  if (!you || !desk) return;
+  const me = wallet.account();
+  if (!me) {
+    you.innerHTML = `<h3>Your position</h3><p class="sub">Connect a wallet to see your sWAX, what it owes you, and to stake or redeem.</p>`;
+    desk.innerHTML = `<h3>Stake WAX <span class="dim">&mdash; connect first</span></h3>
+      <p class="sub">Staking sends WAX to <span class="mono">dapp.fusion</span> with the memo <span class="mono">stake</span> and gives you sWAX one for one.
+      sWAX pays you WAX; LSWAX compounds it instead. Minimum ${qty(st.minStake)} WAX.</p>`;
+    return;
+  }
+  you.innerHTML = '<h3>Your position</h3><div class="loading"><span class="spinner"></span><span>Reading your side…</span></div>';
+  let u;
+  try { u = await fusionUser(me); } catch { you.innerHTML = '<h3>Your position</h3><p class="sub">Could not read your position just now.</p>'; return; }
+  if (stale()) return;
+
+  const waxUsd = state.waxUsd || null;
+  const val = wax => (waxUsd ? ` <span class="dim">${usd(wax * waxUsd)}</span>` : '');
+  const lswaxInWax = u.lswax * st.lswaxInSwax;
+  const req = u.requests.reduce((s, r) => s + r.amount, 0);
+
+  you.innerHTML = `<h3>Your position <span class="dim">&mdash; ${esc(me)}</span></h3>
+    <dl class="ftrows wide">
+      <div><dt>sWAX, earning</dt><dd>${qty(u.swax)}${val(u.swax)}</dd></div>
+      <div><dt>LSWAX</dt><dd>${qty(u.lswax)} <span class="dim">= ${qty(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
+      <div><dt>Waiting to be claimed</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${qty(u.claimable)} WAX${val(u.claimable)}</dd></div>
+      ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${qty(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
+      <div><dt>In your wallet</dt><dd>${qty(u.wax)} WAX</dd></div>
+    </dl>
+    ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
+      <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Window</th><th></th></tr></thead>
+      <tbody>${u.requests.map(r => {
+        const e = st.epochs.find(x => x.id === r.epochId);
+        const open = e && e.windowFrom <= Date.now() && Date.now() < e.windowTo;
+        const missed = e && Date.now() >= e.windowTo;
+        return `<tr><td class="dim">${e ? new Date(e.startsAt).toISOString().slice(0, 10) : r.epochId}</td>
+          <td class="r num">${qty(r.amount)} WAX</td>
+          <td>${e ? `${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}` : '—'}</td>
+          <td>${open ? '<span class="badge good">take it now</span>' : missed ? '<span class="badge bad">window passed</span>' : '<span class="dim">waiting</span>'}</td></tr>`;
+      }).join('')}</tbody></table></div>` : ''}
+    <div class="toolbar" style="margin:10px 0 0">
+      ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${qty(u.claimable)} WAX</button>
+        <button class="btn ghost" data-fclaim="swax">Claim and restake</button>
+        <button class="btn ghost" data-fclaim="lswax">Claim as LSWAX</button>` : '<span class="sub">Nothing to claim right now.</span>'}
+    </div>
+    <div id="fusionClaimOut"></div>`;
+
+  you.querySelectorAll('[data-fclaim]').forEach(b => b.onclick = async () => {
+    const box = $('#fusionClaimOut');
+    const as = b.dataset.fclaim;
+    // Claiming as LSWAX prices through the same ratio a liquify does, so it
+    // names a floor a little under it rather than accepting anything.
+    const minLswax = as === 'lswax' ? (u.claimable / st.lswaxInSwax) * 0.98 : 0;
+    const ok = await runStakeTx(box, buildFusionClaim({ account: me, as, minLswax }),
+      as === 'wax' ? 'Claimed — the WAX is in your wallet.' : as === 'swax' ? 'Claimed and restaked as sWAX.' : 'Claimed as LSWAX.');
+    if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
+  });
+
+  drawFusionDesk(st, u);
+}
+
+// Stake, liquify, unliquify, redeem — one form, four jobs, so the page does not
+// become four pages.
+function drawFusionDesk(st, u) {
+  const desk = $('#fusionDesk');
+  if (!desk) return;
+  const me = u.account;
+  let mode = 'stake';
+  const paint = () => {
+    const cfg = {
+      stake: { unit: 'WAX', have: u.wax, note: `WAX to <span class="mono">dapp.fusion</span> with the memo <span class="mono">stake</span>. You get sWAX one for one, and it starts earning immediately. Minimum ${qty(st.minStake)} WAX.` },
+      liquify: { unit: 'sWAX', have: u.swax, note: 'Turns sWAX that pays you into LSWAX that compounds for you. It is tradeable; sWAX is not.' },
+      unliquify: { unit: 'LSWAX', have: u.lswax, note: `Back the other way, at ${st.lswaxInSwax.toFixed(6)} sWAX per LSWAX. Minimum ${qty(st.minUnliquify)} LSWAX.` },
+      redeem: { unit: 'sWAX', have: u.swax, note: `Ask for a place in an epoch and take the WAX out during its window, or redeem instantly for ${st.feePct}% out of the ${qty(st.forRedemption)} WAX in the bucket.` },
+    }[mode];
+    desk.innerHTML = `
+      <h3>Do something with it</h3>
+      <div class="seg" id="fusionMode" role="radiogroup" aria-label="What to do">
+        ${[['stake', 'Stake'], ['liquify', 'Liquify'], ['unliquify', 'Unliquify'], ['redeem', 'Redeem']]
+          .map(([k, label]) => `<button role="radio" data-fmode="${k}" aria-checked="${k === mode}">${label}</button>`).join('')}
+      </div>
+      <div class="buyinput"><input id="fusionAmt" type="number" step="any" min="0" inputmode="decimal" placeholder="0" aria-label="Amount">
+        <span class="unit">${cfg.unit}</span></div>
+      <div class="buymeta"><span>You hold ${qty(cfg.have)} ${cfg.unit}</span>
+        <span class="quick"><button class="linkbtn" id="fusionMax">Max</button></span></div>
+      <div class="buyresult"><span class="k">You get</span><b id="fusionGet">—</b><span class="sub" id="fusionGetSub">${cfg.note}</span></div>
+      ${mode === 'redeem' ? `<label class="pwtop"><input type="checkbox" id="fusionReplace"><span>Replace a request I already have</span></label>` : ''}
+      <div id="fusionOutBox"></div>
+      ${mode === 'redeem'
+        ? `<button class="btn" id="fusionGo">Ask for a place in the queue</button>
+           <button class="btn ghost" id="fusionInsta">Redeem instantly &mdash; ${st.feePct}% fee</button>
+           ${st.openEpoch && u.requests.some(r => r.epochId === st.openEpoch.id) ? '<button class="btn" id="fusionTake">Take the WAX out now</button>' : ''}`
+        : '<button class="btn" id="fusionGo">Review</button>'}`;
+
+    const amt = () => Math.max(0, Number($('#fusionAmt')?.value) || 0);
+    const quote = () => {
+      const el = $('#fusionGet');
+      if (!el) return;
+      const v = amt();
+      if (!(v > 0)) { el.textContent = '—'; return; }
+      el.textContent = mode === 'stake' ? `${qty(v)} sWAX`
+        : mode === 'liquify' ? `${qty(v / st.lswaxInSwax)} LSWAX`
+        : mode === 'unliquify' ? `${qty(v * st.lswaxInSwax)} sWAX`
+        : `${qty(v * (1 - st.feePct / 100))} WAX instantly, or ${qty(v)} WAX through the queue`;
+    };
+    $('#fusionAmt')?.addEventListener('input', quote);
+    const max = $('#fusionMax');
+    if (max) max.onclick = () => {
+      const el = $('#fusionAmt');
+      // A wallet with no WAX left cannot sign the next thing it wants to do.
+      if (el) el.value = String(mode === 'stake' ? Math.max(0, Math.floor((cfg.have - 1) * 1e4) / 1e4) : Math.floor(cfg.have * 1e8) / 1e8);
+      quote();
+    };
+    desk.querySelectorAll('[data-fmode]').forEach(b => b.onclick = () => { mode = b.dataset.fmode; paint(); });
+
+    const run = (actions, msg) => runStakeTx($('#fusionOutBox'), actions, msg).then(ok => {
+      if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
+    });
+    const go = $('#fusionGo');
+    if (go) go.onclick = async () => {
+      const box = $('#fusionOutBox');
+      const v = amt();
+      if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      if (mode === 'stake') {
+        if (v < st.minStake) { box.innerHTML = `<div class="err">The contract wants at least ${qty(st.minStake)} WAX.</div>`; return; }
+        return run(buildFusionStake({ account: me, wax: v }), `Staked ${qty(v)} WAX — you hold the sWAX now.`);
+      }
+      if (mode === 'liquify') return run(buildFusionLiquify({ account: me, swax: v }), 'Liquified — you hold LSWAX now.');
+      if (mode === 'unliquify') {
+        if (v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract wants at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
+        return run(buildFusionUnliquify({ account: me, lswax: v, minSwax: v * st.lswaxInSwax * 0.99 }), 'Unliquified — it is sWAX again.');
+      }
+      const replace = !!$('#fusionReplace')?.checked;
+      box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+        Ask to redeem <b>${qty(v)} sWAX</b>. The contract books it into an epoch; you then have to come back during that epoch's
+        48-hour window and take the WAX out, or the request expires and the sWAX stays staked.
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionReq">Sign and request</button></div></div>`;
+      $('#fusionReq').onclick = () => run(buildFusionReqRedeem({ account: me, swax: v, replace }), 'Requested — come back when its window opens.');
+    };
+    const insta = $('#fusionInsta');
+    if (insta) insta.onclick = async () => {
+      const box = $('#fusionOutBox');
+      const v = amt();
+      if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+      if (v > st.forRedemption) { box.innerHTML = `<div class="err">Only ${qty(st.forRedemption)} WAX is in the bucket right now, so an instant redeem of ${qty(v)} would fail. Ask for a place in the queue instead.</div>`; return; }
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+        Redeem <b>${qty(v)} sWAX</b> now for about <b>${qty(v * (1 - st.feePct / 100))} WAX</b> — the protocol keeps ${st.feePct}%.
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionInstaGo">Sign and redeem</button></div></div>`;
+      $('#fusionInstaGo').onclick = () => run(buildFusionInstaRedeem({ account: me, swax: v }), 'Redeemed — the WAX is in your wallet.');
+    };
+    const take = $('#fusionTake');
+    if (take) take.onclick = () => run(buildFusionRedeem({ account: me }), 'Redeemed — the WAX is in your wallet.');
+  };
+  paint();
+}
 
 // ---------------------------------------------------------------- RATINGS ---
 // Four verdicts, each one a small payment. The counts come off the chain, so

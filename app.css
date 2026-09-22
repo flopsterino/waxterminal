@@ -1905,6 +1905,19 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .funfigs .s { font-size: 11px; color: var(--muted); }
 
+/* ---- WaxFusion ---------------------------------------------------------- */
+.keepergrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 9px; margin-top: 10px; }
+.keeper { display: flex; flex-direction: column; justify-content: space-between; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 11px; }
+.keeper > div { display: flex; flex-direction: column; gap: 3px; }
+.keeper b { font-size: 13px; }
+.keeper .sub { margin: 0; font-size: 11.5px; }
+.keeper .btn { width: 100%; justify-content: center; }
+#fusionDesk .seg { width: 100%; }
+#fusionDesk .seg button { flex: 1; }
+#fusionDesk .btn { width: 100%; justify-content: center; }
+#fusionDesk .pwtop { align-items: center; gap: 8px; }
+
 /* ---- blends ------------------------------------------------------------- */
 .blendflow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
