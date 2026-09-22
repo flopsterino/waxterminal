@@ -8,7 +8,7 @@ import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pend
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
-import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart } from './charts.js';
+import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -4173,6 +4173,32 @@ const resultText = r => r.type === 'fungible'
   : r.type === 'preminted' ? `${r.count} NFT${r.count === 1 ? '' : 's'} from the creator's pool`
   : `${r.count} &times; ${esc(r.name && r.name !== 'name' ? r.name : `template ${r.templateId}`)}`;
 
+// The redemption calendar as a rail rather than a table: three weeks either
+// side of now, every 48-hour door drawn where it falls, and a marker for where
+// we are. The one thing on this page that costs money is missing a door.
+function fusionTimeline(st) {
+  const now = Date.now();
+  const from = now - 8 * 86400e3, to = now + 22 * 86400e3;
+  const at = t => Math.max(0, Math.min(100, ((t - from) / (to - from)) * 100));
+  const doors = st.epochs
+    .filter(e => e.windowTo > from && e.windowFrom < to)
+    .map(e => {
+      const open = e.windowFrom <= now && now < e.windowTo;
+      const past = e.windowTo <= now;
+      const left = at(e.windowFrom), width = Math.max(1.2, at(e.windowTo) - at(e.windowFrom));
+      return `<div class="fudoor ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%;width:${width}%"
+        title="Epoch of ${new Date(e.startsAt).toISOString().slice(0, 10)} — open ${new Date(e.windowFrom).toLocaleString()} to ${new Date(e.windowTo).toLocaleString()}"></div>
+        <span class="fudoorlab ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%">${new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
+    }).join('');
+  return `<div class="furail">
+    <div class="furailbg"></div>
+    ${doors}
+    <div class="funow" style="left:${at(now)}%" title="Now"></div>
+    <span class="funowlab" style="left:${at(now)}%">now</span>
+  </div>
+  <div class="fulegend"><span><i class="d open"></i> open now</span><span><i class="d"></i> a door you can book</span><span><i class="d past"></i> closed</span></div>`;
+}
+
 // ------------------------------------------------------------ WAXFUSION -----
 // Liquid staking with no website left. Everything here is the contract's own
 // state and its own actions; the page's job is to make the clock visible,
@@ -4200,8 +4226,31 @@ async function renderFusion() {
       ? `The next redemption window opens ${new Date(st.nextEpoch.windowFrom).toLocaleString()} &mdash; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}, and stays open ${forDays(st.windowSeconds / 86400)}`
       : 'No redemption window is scheduled in what the contract still holds.';
 
+  // The shape of the thing, drawn once so the words underneath have something
+  // to point at: WAX goes in and becomes sWAX, sWAX pays you, and LSWAX is the
+  // same sWAX with the rewards folded back in instead.
+  const flow = `<div class="fuflow">
+    <div class="fustep"><span class="k">You bring</span><b>WAX</b><span class="s">${qty(st.minStake)} minimum</span></div>
+    <div class="fuarrow"><span>stake</span><i></i></div>
+    <div class="fustep on"><span class="k">You hold</span><b>sWAX</b><span class="s">${st.aprPct != null ? `${st.aprPct.toFixed(2)}% a year, paid in WAX` : 'paid in WAX'}</span></div>
+    <div class="fuarrow two"><span>liquify</span><i></i><span class="back">unliquify</span></div>
+    <div class="fustep alt"><span class="k">Or hold</span><b>LSWAX</b><span class="s">1 = ${st.lswaxInSwax.toFixed(4)} sWAX, and rising</span></div>
+    <div class="fuarrow"><span>redeem</span><i></i></div>
+    <div class="fustep"><span class="k">You get back</span><b>WAX</b><span class="s">in a window, or now for ${st.feePct}%</span></div>
+  </div>`;
+
+  // Where the money it earns goes. Three numbers that are usually buried in a
+  // contract table, as the bar they actually are.
+  const split = `<div class="fusplit">
+    ${[['Stakers', st.shares.user, 'var(--good)'], ['Protocol liquidity', st.shares.pol, 'var(--c3)'], ['Ecosystem farms', st.shares.ecosystem, 'var(--c4)']]
+      .map(([label, pctv, color]) => `<div class="fubar" style="flex:${pctv};--c:${color}" title="${esc(label)}: ${pctv}% of revenue">
+        <span class="fubarv">${pctv}%</span><span class="fubark">${esc(label)}</span></div>`).join('')}
+  </div>`;
+
   out.innerHTML = `
     <div class="section"><h3>WaxFusion <span class="dim">&mdash; liquid staking on <span class="mono">dapp.fusion</span>, still running without its site</span></h3>
+
+      ${flow}
 
       <div class="stats">
         <div class="stat"><span class="v">${qty(st.staked)} WAX</span><span class="k">staked with it</span>
@@ -4218,9 +4267,15 @@ async function renderFusion() {
           <span class="sub">at ${pxNum(st.rentPricePerWax)} WAX per WAX &middot; ${esc(st.cpuContract)}</span></div>
       </div>
 
-      <div class="cta" style="margin:0 0 12px"><div><b>${windowLine}</b>
-        <span class="sub">Redeeming takes two steps: ask for a place in an epoch, then take the WAX out during that epoch's window.
-          ${st.feePct ? `Or skip the queue with an instant redeem, which costs ${st.feePct}%.` : ''}</span></div></div>
+      <div class="card fuwindow"><h3>The clock <span class="dim">&mdash; an epoch a week, each one opening its door a fortnight later</span></h3>
+        <p class="sub" style="margin:0 0 10px">${windowLine}.
+          Redeeming takes two steps: ask for a place in an epoch, then take the WAX out during that epoch's window.
+          ${st.feePct ? `Or skip the queue with an instant redeem, which costs ${st.feePct}%.` : ''}</p>
+        ${fusionTimeline(st)}
+      </div>
+
+      <div class="card" style="margin-bottom:12px"><h3>Where the revenue goes <span class="dim">&mdash; ${qty(st.revenueDistributed)} WAX so far</span></h3>
+        ${split}</div>
 
       ${st.paused ? '<div class="err" style="margin-bottom:12px"><b>The contract is paused.</b> Its panic switch is on, so deposits and redemptions will refuse.</div>' : ''}
 
@@ -4230,19 +4285,6 @@ async function renderFusion() {
         </div>
         <div class="funcol">
           <div class="card" id="fusionYou"></div>
-          <div class="card">
-            <h3>Redemption windows <span class="dim">&mdash; one epoch a week, each opening a fortnight later</span></h3>
-            <div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
-              <thead><tr><th>Epoch</th><th>Window</th><th class="r">In its bucket</th><th class="r">Returned</th><th></th></tr></thead>
-              <tbody>${st.epochs.map(e => `<tr>
-                <td class="dim">${new Date(e.startsAt).toISOString().slice(0, 10)}</td>
-                <td>${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}</td>
-                <td class="r num">${qty(e.bucket)}</td>
-                <td class="r num">${qty(e.returned)}</td>
-                <td>${e === st.openEpoch ? '<span class="badge good">open now</span>'
-                  : e.windowFrom > Date.now() ? `<span class="dim">in ${forDays((e.windowFrom - Date.now()) / 86400e3)}</span>`
-                  : '<span class="dim">closed</span>'}</td></tr>`).join('')}</tbody></table></div>
-          </div>
           <div class="card">
             <h3>Keeping it running <span class="dim">&mdash; anyone may press these, and somebody has to</span></h3>
             <p class="sub">The protocol does not run itself: revenue only becomes LSWAX when somebody calls compound, idle WAX only starts
@@ -7251,7 +7293,10 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
         <button class="chip" data-band="full" aria-pressed="true">Full</button>
         <button class="chip" data-band="50">&plusmn;50%</button>
         <button class="chip" data-band="20">&plusmn;20%</button>
+        <button class="chip" data-band="10">&plusmn;10%</button>
         <button class="chip" data-band="5">&plusmn;5%</button>
+        <button class="chip" data-band="2">&plusmn;2%</button>
+        <button class="chip" data-band="seen" title="Cover every price this pool has traded at in the last 30 days">Last 30 days</button>
         <button class="chip" data-band="custom">Custom</button>
       </div>
       <div class="npband">
@@ -7297,7 +7342,23 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
         upper: Math.min(MAXT, Math.max(lo + spacing, Math.ceil(hi / spacing) * spacing)),
       };
     }
-    const pct = Number(band) / 100;
+    if (band === 'seen') {
+      // Every price the pool has traded at lately, with a little room. A band
+      // that would have held for a month is a different proposition from one
+      // picked off a percentage chip, and the daily record already knows it.
+      const seen = seenRange(p);
+      if (seen) {
+        const T = r => Math.log(r) / Math.log(1.0001);
+        const base = 10 ** (p.decA - p.decB);
+        return {
+          lower: Math.max(-MAXT, Math.floor(T(seen.lo * 0.98 / base) / spacing) * spacing),
+          upper: Math.min(MAXT, Math.ceil(T(seen.hi * 1.02 / base) / spacing) * spacing),
+        };
+      }
+    }
+    // 'seen' with no record behind it falls back to a sane band rather than
+    // computing ticks from NaN.
+    const pct = band === 'seen' ? 0.2 : Number(band) / 100;
     const cur = p.tick ?? 0;
     // A tick is a 1.0001 step, so each side is computed from its own ratio:
     // halving and doubling are not mirror images on a log scale, and a
@@ -7311,6 +7372,34 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
 
   const fig = (k, v, cls = '', sub = '') =>
     `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${sub ? `<span class="figsub">${sub}</span>` : ''}</div>`;
+
+  // The daily record the site already downloads for its other charts: one
+  // price per day per pool, which is exactly the resolution a range wants.
+  // Nothing is read from the chain for this.
+  let series = [];
+  const seriesFor = async p => {
+    const key = `${p.dex}:${p.id}`;
+    try {
+      const hist = await loadHistory();
+      series = poolSeries(hist, key).filter(r => r.price > 0).map(r => ({ x: r.at, y: r.price }));
+    } catch { series = []; }
+    return series;
+  };
+  const seenRange = () => {
+    const cut = Date.now() - 30 * 86400e3;
+    const ys = series.filter(r => r.x >= cut).map(r => r.y);
+    return ys.length >= 3 ? { lo: Math.min(...ys), hi: Math.max(...ys) } : null;
+  };
+  // How much of the recorded past the band would have covered. The number a
+  // range is actually chosen on, and one no venue shows.
+  const heldFor = (lo, hi) => {
+    if (!series.length) return null;
+    const cut = Date.now() - 90 * 86400e3;
+    const rows = series.filter(r => r.x >= cut);
+    if (rows.length < 5) return null;
+    const inside = rows.filter(r => r.y >= lo && r.y <= hi).length;
+    return { pct: (inside / rows.length) * 100, days: rows.length };
+  };
 
   // Everything the panel knows, recomputed on every change: the ratio the band
   // demands, how hard the money works inside it, what share of the pool that
@@ -7331,9 +7420,28 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
     if (document.activeElement !== MAX) MAX.value = band === 'full' ? '' : Number(hi.toPrecision(6));
     MIN.disabled = MAX.disabled = band === 'full';
 
-    // The band, drawn against the price, rather than described in words.
+    // The band, drawn on the price it is meant to cover, with edges you can
+    // drag. A percentage chip is a guess; this is the same band against what
+    // the pool actually did.
     const bar = q('#npBar');
     bar.innerHTML = '';
+    const spacing = p.tickSpacing || 60;
+    const base = 10 ** (p.decA - p.decB);
+    const tickOf = price => Math.log(Math.max(price, 1e-30) / base) / Math.log(1.0001);
+    bar.appendChild(priceBandChart(series, {
+      lower: band === 'full' ? null : lo, upper: band === 'full' ? null : hi, price: now,
+      fmt: v => sigfig(v), height: 190,
+      label: `${p.symB} per ${p.symA} with the chosen range`,
+      onChange: (nlo, nhi) => {
+        band = 'custom';
+        custom = {
+          lower: Math.floor(tickOf(nlo) / spacing) * spacing,
+          upper: Math.ceil(tickOf(nhi) / spacing) * spacing,
+        };
+        box.querySelectorAll('[data-band]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.band === 'custom')));
+        paint();
+      },
+    }));
     if (band !== 'full') bar.appendChild(rangeBar(lower, upper, p.tick ?? 0));
 
     q('#npRange').innerHTML = band === 'full'
@@ -7358,7 +7466,16 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
         conc ? 'a full-range position of the same size' : 'outside the band, nothing is working')
       + fig('Share of the pool', share > 0 ? `${(share * 100).toFixed(share >= 1 ? 1 : 2)}%` : '—', '', share > 0 ? 'of the liquidity at this price' : 'enter an amount')
       + fig('Fees at today’s volume', feesDay > 0 ? usd(feesDay) : '—', feesDay > 0 ? '' : 'dim',
-        apr != null ? `${pct(apr)} a year while in range` : 'from this pool’s last 24 hours');
+        apr != null ? `${pct(apr)} a year while in range` : 'from this pool’s last 24 hours')
+      + (() => {
+        // How often this band would have been earning, measured rather than
+        // hoped: the daily record, which the chart above is drawn from.
+        const held = band === 'full' ? { pct: 100, days: null } : heldFor(lo, hi);
+        if (!held) return fig('Would have held', '—', 'dim', 'no daily record for this pool yet');
+        return fig('Would have held', `${held.pct.toFixed(0)}%`,
+          held.pct >= 80 ? 'pos' : held.pct >= 40 ? '' : 'neg',
+          held.days ? `of the last ${held.days} days in range` : 'a full range always holds');
+      })();
 
     const warn = q('#npWarn');
     warn.innerHTML = !r.inRange
@@ -7409,6 +7526,10 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   const setPool = p => {
     pool = p;
     custom = { lower: null, upper: null };
+    // The price record for the chart. Free — it is the daily snapshot file the
+    // rest of the site already has — so it is fetched per pool and redrawn
+    // when it lands.
+    seriesFor(p).then(() => { if (pool === p) paint(); });
     // Fee tiers for the pair, with the pooled value beside each: the tier with
     // no liquidity in it is a choice people make by accident.
     const tiers = tiersFor(p);
@@ -9207,10 +9328,20 @@ function renderCreatePool(box) {
 // band is not symmetric in price — halving and doubling are not mirror images
 // on a log scale, so each side is computed from its own ratio and rounded
 // outward. Shared by both ways of funding a position.
-function bandTicks(pool, band) {
+function bandTicks(pool, band, custom = null) {
   const spacing = pool.tickSpacing || 60;
   const MAX = Math.floor(443580 / spacing) * spacing;
   if (band === 'full') return { lower: -MAX, upper: MAX };
+  // Dragged on the chart: two prices, rounded outward onto the pool's spacing
+  // so a band is never quietly narrower than the one that was drawn.
+  if (band === 'custom' && custom?.lower > 0 && custom?.upper > custom?.lower) {
+    const base = 10 ** (pool.decA - pool.decB);
+    const T = v => Math.log(Math.max(v, 1e-30) / base) / Math.log(1.0001);
+    return {
+      lower: Math.max(-MAX, Math.floor(T(custom.lower) / spacing) * spacing),
+      upper: Math.min(MAX, Math.ceil(T(custom.upper) / spacing) * spacing),
+    };
+  }
   const pct = Number(band) / 100;
   const cur = pool.tick ?? 0;
   const T = r => Math.log(r) / Math.log(1.0001);
@@ -9230,6 +9361,13 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
   const sqrtP = sqrtPriceFromX64(pool.sqrtX64);
   let fromToken = pool.tokenA;
   let band = '50';
+  let zapCustom = null;
+  // The same daily price record the both-tokens panel draws, so a zap picks
+  // its band against what the pool did rather than off a chip.
+  let zapSeries = [];
+  loadHistory()
+    .then(hist => { zapSeries = poolSeries(hist, `${pool.dex}:${pool.id}`).filter(r => r.price > 0).map(r => ({ x: r.at, y: r.price })); paint(); })
+    .catch(() => {});
 
   // A quote is a network call, so an older one can land after a newer one.
   // Every paint takes a ticket and drops its result if it is no longer the
@@ -9237,9 +9375,24 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
   let gen = 0;
   const paint = async () => {
     const mine = ++gen;
-    const { lower: tickLower, upper: tickUpper } = bandTicks(pool, band);
+    const { lower: tickLower, upper: tickUpper } = bandTicks(pool, band, zapCustom);
     const lo = priceAtTick(pool, tickLower), hi = priceAtTick(pool, tickUpper);
     const now = priceAtTick(pool, pool.tick ?? 0);
+    const bar = $('#zapBar');
+    if (bar) {
+      bar.innerHTML = '';
+      bar.appendChild(priceBandChart(zapSeries, {
+        lower: band === 'full' ? null : lo, upper: band === 'full' ? null : hi, price: now,
+        fmt: v => sigfig(v), height: 170,
+        label: `${pool.symB} per ${pool.symA} with the chosen range`,
+        onChange: (nlo, nhi) => {
+          band = 'custom';
+          zapCustom = { lower: nlo, upper: nhi };
+          box.querySelectorAll('[data-zapband]').forEach(x => x.setAttribute('aria-pressed', 'false'));
+          paint();
+        },
+      }));
+    }
     const bandNote = $('#zapBand');
     if (bandNote) bandNote.innerHTML = band === 'full'
       ? `Earns at every price, and earns least per dollar for it.`
@@ -9309,9 +9462,11 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
   box.innerHTML = `<div class="${embedded ? '' : 'card'}">${embedded ? '' : '<h3>Open a position <span class="dim">&mdash; one token, straight in</span></h3>'}
     <div class="toolbar" style="margin:0 0 6px">
       <span class="sub">Range</span>
-      ${[['full', 'Full'], ['50', '\u00b150%'], ['20', '\u00b120%'], ['5', '\u00b15%']].map(([v, l]) =>
+      ${[['full', 'Full'], ['50', '\u00b150%'], ['20', '\u00b120%'], ['10', '\u00b110%'], ['5', '\u00b15%'], ['2', '\u00b12%']].map(([v, l]) =>
         `<button class="chip" data-zapband="${v}"${v === '50' ? ' aria-pressed="true"' : ''}>${l}</button>`).join('')}
+      <span class="dim" style="font-size:11.5px">or drag the edges</span>
     </div>
+    <div class="rb-slot" id="zapBar"></div>
     <p class="sub" id="zapBand" style="margin:0 0 10px"></p>
     <div class="toolbar" style="margin:0 0 10px">
       <span class="sub">Bring</span>
@@ -9323,6 +9478,7 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
     <div id="zapOut"></div></div>`;
   box.querySelectorAll('[data-zapband]').forEach(b => b.onclick = () => {
     band = b.dataset.zapband;
+    zapCustom = null;
     box.querySelectorAll('[data-zapband]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     paint();
   });

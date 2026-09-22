@@ -866,3 +866,147 @@ export function depthChart(bands, { price, fmtPrice = v => v, fmt = v => v, heig
   wrap.appendChild(svg);
   return wrap;
 }
+
+// ------------------------------------------------------- price band chart ---
+// A band drawn on the price it is meant to cover, with edges you can drag.
+//
+// The schematic bar above it says where the band sits relative to the price
+// now. It cannot say the thing a depositor actually needs to know, which is
+// whether that band would have held for the last three months — and that
+// question has an answer, in a series the site already downloads for its other
+// charts. So: the price, the band over it, and both edges as handles.
+//
+// The y axis is logarithmic because a band is: ticks are 1.0001 steps, and a
+// range that is "half to double" is symmetric on a log axis and lopsided on a
+// linear one.
+export function priceBandChart(points, {
+  lower, upper, price, height = 200, fmt = v => String(v), onChange = null, label = 'price with the chosen range',
+} = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart bandchart';
+  const pts = (points || []).filter(p => p && p.y > 0).sort((a, b) => a.x - b.x);
+  const W = chartW(), H = height, padL = 52, padR = 58, padT = 10, padB = 18;
+  const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
+
+  // The domain has to hold the series and the band, with a little air. A
+  // full-range band would otherwise squash every price into one line.
+  const seriesLo = pts.length ? Math.min(...pts.map(p => p.y)) : price;
+  const seriesHi = pts.length ? Math.max(...pts.map(p => p.y)) : price;
+  const wide = !(lower > 0) || !(upper > 0) || upper / lower > 400;
+  const lo = Math.min(seriesLo, price, wide ? Infinity : lower) * 0.92;
+  const hi = Math.max(seriesHi, price, wide ? 0 : upper) * 1.08;
+  const lg = v => Math.log(Math.max(v, 1e-30));
+  const span = lg(hi) - lg(lo) || 1;
+  const Y = v => y1 - ((lg(Math.max(v, 1e-30)) - lg(lo)) / span) * (y1 - y0);
+  const V = y => Math.exp(lg(lo) + ((y1 - y) / (y1 - y0)) * span);
+  const X = t => (pts.length < 2 ? x1 : x0 + ((t - pts[0].x) / (pts.at(-1).x - pts[0].x || 1)) * (x1 - x0));
+
+  // Stretched, not letterboxed: with the default aspect handling an SVG inside
+  // a card wider than its viewBox centres the drawing and leaves a third of
+  // the card empty on either side.
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'bandsvg', role: 'img', 'aria-label': label });
+  svg.style.width = '100%';
+  svg.style.height = `${H}px`;
+
+  // Gridlines, in prices somebody would actually say out loud.
+  for (let i = 0; i <= 3; i++) {
+    const y = y0 + ((y1 - y0) * i) / 3;
+    svg.appendChild(el('line', { x1: x0, y1: y, x2: x1, y2: y, class: 'bcgrid' }));
+    const t = el('text', { x: x0 - 6, y: y + 3.5, class: 'bclabel', 'text-anchor': 'end' });
+    t.textContent = fmt(V(y));
+    svg.appendChild(t);
+  }
+
+  const inBand = v => (wide ? true : v >= lower && v <= upper);
+  // The band itself. A full range covers the chart, and shading the whole
+  // plot says nothing that the words under it do not — so it is left clear.
+  if (!wide) {
+    const bandTop = Math.max(y0, Y(upper));
+    const bandBot = Math.min(y1, Y(lower));
+    svg.appendChild(el('rect', { x: x0, y: bandTop, width: x1 - x0, height: Math.max(1, bandBot - bandTop), class: 'bcband' }));
+  }
+
+  // The price, split into what the band would have covered and what it would
+  // have missed — which is the whole question, drawn.
+  if (pts.length > 1) {
+    let run = [], last = null;
+    const flush = () => {
+      if (run.length > 1) {
+        svg.appendChild(el('path', { d: run.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(''), class: `bcline${last ? '' : ' out'}` }));
+      }
+      run = run.length ? [run.at(-1)] : [];
+    };
+    for (const p of pts) {
+      const ok = inBand(p.y);
+      if (last !== null && ok !== last) { flush(); last = ok; }
+      if (last === null) last = ok;
+      run.push(p);
+    }
+    flush();
+  } else if (pts.length === 1) {
+    svg.appendChild(el('circle', { cx: x1, cy: Y(pts[0].y), r: 3, class: 'bcnow' }));
+  }
+
+  // Where the price is now.
+  const yNow = Y(price);
+  svg.appendChild(el('line', { x1: x0, y1: yNow, x2: x1, y2: yNow, class: 'bcnowline' }));
+  const nowT = el('text', { x: x1 + 5, y: yNow + 3.5, class: 'bclabel now' });
+  nowT.textContent = fmt(price);
+  svg.appendChild(nowT);
+
+  // The handles, when there is a band to move.
+  const handles = {};
+  if (!wide) {
+    for (const [key, value] of [['upper', upper], ['lower', lower]]) {
+      const y = Math.max(y0, Math.min(y1, Y(value)));
+      const g = el('g', { class: `bchandle ${key}`, tabindex: '0', role: 'slider',
+        'aria-label': key === 'upper' ? 'Top of the range' : 'Bottom of the range', 'aria-valuetext': fmt(value) });
+      g.appendChild(el('line', { x1: x0, y1: y, x2: x1, y2: y, class: 'bchline' }));
+      g.appendChild(el('rect', { x: x1 - 2, y: y - 7, width: padR - 4, height: 14, rx: 4, class: 'bchgrip' }));
+      const t = el('text', { x: x1 + 5, y: y + 3.5, class: 'bclabel edge' });
+      t.textContent = fmt(value);
+      g.appendChild(t);
+      // A fat invisible bar, because a two-pixel line is not a drag target on
+      // a phone.
+      g.appendChild(el('rect', { x: x0, y: y - 11, width: x1 - x0 + padR, height: 22, class: 'bchit' }));
+      svg.appendChild(g);
+      handles[key] = g;
+    }
+  }
+
+  wrap.appendChild(svg);
+
+  if (onChange && !wide) {
+    const rectOf = () => svg.getBoundingClientRect();
+    const drag = (key, ev) => {
+      ev.preventDefault();
+      const move = e => {
+        const r = rectOf();
+        const yPx = ((e.touches ? e.touches[0].clientY : e.clientY) - r.top) * (H / r.height);
+        const v = V(Math.max(y0, Math.min(y1, yPx)));
+        const next = key === 'upper'
+          ? { lower, upper: Math.max(v, lower * 1.0005) }
+          : { lower: Math.min(v, upper * 0.9995), upper };
+        onChange(next.lower, next.upper, { live: true });
+      };
+      // Nothing to commit on release: every move already set the range, and
+      // calling back with the values this chart was BUILT with would undo the
+      // whole drag the moment the finger came off.
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    };
+    for (const key of ['lower', 'upper']) {
+      handles[key]?.addEventListener('pointerdown', e => drag(key, e));
+      handles[key]?.addEventListener('keydown', e => {
+        const step = key === 'upper' ? upper * 0.01 : lower * 0.01;
+        if (e.key === 'ArrowUp') { onChange(key === 'lower' ? lower + step : lower, key === 'upper' ? upper + step : upper); e.preventDefault(); }
+        if (e.key === 'ArrowDown') { onChange(key === 'lower' ? lower - step : lower, key === 'upper' ? upper - step : upper); e.preventDefault(); }
+      });
+    }
+  }
+  return wrap;
+}
