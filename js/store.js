@@ -697,23 +697,127 @@ export async function walletPositionsFast(account) {
     const pool = byId.get(`alcor:${r.pool}`);
     if (!pool) continue;
     const fa = parseAsset(r.feesA || '0 X'), fb = parseAsset(r.feesB || '0 X');
+    const amtA = parseAsset(r.amountA || '0 X').amount, amtB = parseAsset(r.amountB || '0 X').amount;
+    const ours = amtA * (pool.priceUsdA || 0) + amtB * (pool.priceUsdB || 0);
     const s = pool.sqrtX64 ? sqrtPriceFromX64(pool.sqrtX64) : null;
     const ratio = s ? depositRatio(s, r.tickLower, r.tickUpper) : { shareA: 0.5, shareB: 0.5, inRange: !!r.inRange, side: 'in' };
     out.push({
       dex: 'alcor', pool, posId: r.id, owner: r.owner,
       tickLower: r.tickLower, tickUpper: r.tickUpper, liquidity: Number(r.liquidity),
-      amountA: parseAsset(r.amountA || '0 X').amount,
-      amountB: parseAsset(r.amountB || '0 X').amount,
+      amountA: amtA,
+      amountB: amtB,
       feesA: fa.amount, feesB: fb.amount,
-      valueUsd: Number(r.totalValue) || 0,
-      feesUsd: Number(r.totalFeesUSD) || 0,
+      // Valued here, not by Alcor. `totalFeesUSD` comes back 0 on every row
+      // this was measured on — a position with fees waiting reported none — and
+      // `totalValue` prices a token Alcor does not list at zero, which deletes
+      // the position from the page. Our own price table has both, and using it
+      // means a position is valued the same way as the same tokens sitting in
+      // the wallet above it.
+      valueUsd: ours > 0 ? ours : Number(r.totalValue) || 0,
+      feesUsd: fa.amount * (pool.priceUsdA || 0) + fb.amount * (pool.priceUsdB || 0),
       depositedUsd: Number(r.depositedUSDTotal) || 0,
-      pnlUsd: Number(r.pNl) || 0,
+      // What the position has already paid out in fees. Alcor publishes this as
+      // `pNl`, which is not what that name means: measured against the full
+      // ledger it is exactly collectedFees.inUSD. Profit is computed from the
+      // ledger instead, in positionLedger below.
+      collectedUsd: Number(r.collectedFees?.inUSD) || 0,
+      lastCollectAt: r.collectedFees?.lastCollectTime ? Date.parse(r.collectedFees.lastCollectTime) : null,
       inRange: !!r.inRange, side: ratio.side, ratio,
     });
   }
   out.sort((a, b) => b.valueUsd - a.valueUsd);
   return out;
+}
+
+// ---------------------------------------------------------- what it made ----
+// Alcor's `pNl` is not profit. Measured against the ledger below it is exactly
+// `collectedFees.inUSD` — the fees already taken out — so a position worth
+// $957 that cost $863 reported "+$4.15" and looked flat.
+//
+// The ledger is every event the position ever had, each already valued in USD
+// at the moment it happened:
+//
+//   mint     tokens put in          cost
+//   burn     liquidity taken out    returned
+//   collect  fees taken out         income
+//
+// A withdrawal writes both a burn and a collect in one transaction, and the
+// collect there is the fees only — measured on a closed position: burn $33.59,
+// collect $0.20 — so the two add up rather than double-count.
+//
+//   profit = worth now + everything taken out - everything put in
+//
+// Compounding cancels itself out, which is right: a collect that is minted
+// straight back counts once as income and once as cost.
+//
+// In WAX as well as in dollars, because they are different questions and can
+// have different answers. WAX went from $0.0037 to $0.0055 over the weeks the
+// largest position measured here was open, so it is up in dollars and down in
+// WAX at once. Every event converts at the WAX price on its own day, never at
+// today's.
+const EMPTY_AGG = () => ({ inUsd: 0, outUsd: 0, feesUsd: 0, inWax: 0, outWax: 0, feesWax: 0, events: 0, firstAt: null, lastAt: null });
+
+let waxDaysCache = null;
+async function waxUsdDays() {
+  if (waxDaysCache) return waxDaysCache;
+  // Pool 314 is WAX/WAXUSDC and its daily closes are the WAX price in dollars,
+  // back to the day the pool opened in May 2023.
+  const c = await alcorCandles(314, 86400).catch(() => null);
+  waxDaysCache = (c || []).map(x => ({ t: x.time * 1000, usd: x.close })).filter(x => x.usd > 0);
+  return waxDaysCache;
+}
+
+function rateAt(days, ms) {
+  if (!days.length) return null;
+  if (ms <= days[0].t) return days[0].usd;
+  let lo = 0, hi = days.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (days[mid].t <= ms) lo = mid; else hi = mid - 1; }
+  return days[lo].usd;
+}
+
+export async function positionLedger(account) {
+  const [res, days] = await Promise.all([
+    fetch(`https://wax.alcor.exchange/api/v2/account/${encodeURIComponent(account)}/positions-history`,
+      { signal: AbortSignal.timeout(20000) }),
+    waxUsdDays(),
+  ]);
+  if (!res.ok) throw new Error(`ledger ${res.status}`);
+  const events = await res.json();
+  const byPos = new Map();
+  const all = EMPTY_AGG();
+  for (const e of events) {
+    const usdV = Number(e.totalUSDValue) || 0;
+    const at = Date.parse(e.time);
+    if (!isFinite(at)) continue;
+    const rate = rateAt(days, at);
+    const waxV = rate > 0 ? usdV / rate : 0;
+    const key = String(e.id);
+    let m = byPos.get(key);
+    if (!m) { m = EMPTY_AGG(); m.posId = key; m.poolId = String(e.pool); byPos.set(key, m); }
+    for (const t of [m, all]) {
+      if (e.type === 'mint') { t.inUsd += usdV; t.inWax += waxV; }
+      else { t.outUsd += usdV; t.outWax += waxV; }
+      if (e.type === 'collect') { t.feesUsd += usdV; t.feesWax += waxV; }
+      t.events++;
+      if (t.firstAt == null || at < t.firstAt) t.firstAt = at;
+      if (t.lastAt == null || at > t.lastAt) t.lastAt = at;
+    }
+  }
+  return { byPos, all, waxUsdDays: days };
+}
+
+// Profit for one position, given its ledger row. `valueUsd` is what it is worth
+// now including fees not yet collected; a closed position passes 0.
+export function positionPnl(led, valueUsd, waxUsdNow) {
+  if (!led) return null;
+  const nowWax = waxUsdNow > 0 ? valueUsd / waxUsdNow : 0;
+  return {
+    usd: valueUsd + led.outUsd - led.inUsd,
+    wax: nowWax + led.outWax - led.inWax,
+    inUsd: led.inUsd, outUsd: led.outUsd, inWax: led.inWax, outWax: led.outWax,
+    feesUsd: led.feesUsd, feesWax: led.feesWax,
+    firstAt: led.firstAt,
+  };
 }
 
 export async function walletPositions(account, { onProgress = () => {}, skipAlcor = false } = {}) {

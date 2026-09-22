@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, positionLedger, positionPnl, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
@@ -120,6 +120,24 @@ const fixed = (v, digits) => {
   return sign + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
 const usdExact = v => fixed(v, 2);
+// Profit, in the unit on screen — computed in that unit, never converted into
+// it. WAX was $0.0037 when a position opened and $0.0055 today, so the same
+// position is up in dollars and down in WAX at the same time; running the
+// dollar answer through today's WAX price would print the dollar answer twice
+// and call it WAX. The other unit rides along in the tooltip.
+const signed = (v, unit) => (v >= 0 ? '+' : '-') + (unit === 'wax'
+  ? Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' WAX'
+  : '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const pnlNum = pl => (pl ? (UNIT === 'wax' ? pl.wax : pl.usd) : null);
+const pnlBasis = pl => (pl ? (UNIT === 'wax' ? pl.inWax : pl.inUsd) : 0);
+const pnlText = pl => (pl ? signed(pnlNum(pl), UNIT) : '—');
+const pnlTitle = pl => {
+  if (!pl) return '';
+  const put = UNIT === 'wax' ? `${qty(pl.inWax)} WAX put in` : `${usdRaw(pl.inUsd)} put in`;
+  const took = UNIT === 'wax' ? `${qty(pl.outWax)} WAX taken back out` : `${usdRaw(pl.outUsd)} taken back out`;
+  const other = UNIT === 'wax' ? `${signed(pl.usd, 'usd')} in dollars` : `${signed(pl.wax, 'wax')} in WAX`;
+  return `${put}, ${took}, and what is in it now — ${other}`;
+};
 // Four decimals, because two of them cannot show a number moving by a
 // thousandth of a cent a second — which is the whole point of showing it move.
 const usd4 = v => fixed(v, 4);
@@ -5810,12 +5828,13 @@ function positionSlices(account) {
       const px = id === pool.tokenA ? pool.priceUsdA : pool.priceUsdB;
       if (!(amt > 0) || px == null) continue;
       const sym = (state.tokens.get(id)?.symbol) || id.split('@')[0];
-      const cur = out.get(sym) || { id, value: 0 };
+      const cur = out.get(sym) || { id, value: 0, amount: 0 };
       cur.value += amt * px;
+      cur.amount += amt;
       out.set(sym, cur);
     }
   }
-  return [...out].map(([label, x]) => ({ label, id: x.id, value: x.value }));
+  return [...out].map(([label, x]) => ({ label, id: x.id, value: x.value, amount: x.amount }));
 }
 
 function walletTab(name) {
@@ -6175,23 +6194,29 @@ function paintWalletAll() {
 
   // ---- holdings, merged: one token held three ways is one holding
   const merged = new Map();
-  const add = (sym, id, usdV, where) => {
+  // Amounts as well as dollars: "$41 of CHEESE" is not what somebody came to
+  // their own wallet page to read. A source that cannot say how many tokens it
+  // holds marks the row rather than understating it silently.
+  const add = (sym, id, usdV, where, amount = null) => {
     if (!(usdV > 0)) return;
     const k = id || sym;
-    const m = merged.get(k) || { sym, id, usd: 0, where: new Set() };
+    const m = merged.get(k) || { sym, id, usd: 0, amount: 0, partial: false, where: new Set() };
     m.usd += usdV; m.where.add(where);
+    if (amount > 0) m.amount += amount; else m.partial = true;
     merged.set(k, m);
   };
-  for (const r of a.tokens?.rows || []) add(r.symbol, r.id, r.usd, 'wallet');
-  for (const x of positionSlices(account)) add(x.label, x.id, x.value, 'pools');
-  if (a.staked?.usd > 0) add('WAX', WAX_ID, a.staked.usd, 'staked');
-  for (const x of a.farms?.tokens || []) add(x.sym, x.id, x.usd, 'farms');
+  for (const r of a.tokens?.rows || []) add(r.symbol, r.id, r.usd, 'wallet', r.amount);
+  for (const x of positionSlices(account)) add(x.label, x.id, x.value, 'pools', x.amount);
+  if (a.staked?.usd > 0) add('WAX', WAX_ID, a.staked.usd, 'staked', a.staked.wax);
+  for (const x of a.farms?.tokens || []) add(x.sym, x.id, x.usd, 'farms', x.amount);
   for (const m of merged.values()) { m.face = m.usd; if (m.id) m.usd = sellable(m.id, m.usd); m.ch = m.id ? change24Of(m.id) : null; }
   const held = [...merged.values()].filter(m => m.usd > 0.005).sort((x, y) => y.usd - x.usd);
   const heldSum = held.reduce((t, m) => t + m.usd, 0);
 
   // ---- headline
-  $('#avTotal').textContent = usd(total);
+  // To the cent. "$1.9k" is not a figure anybody can check against their own
+  // wallet, and this is the number they came to check.
+  $('#avTotal').textContent = usdExact(total);
   // 24h from each holding's own 24h move, weighted by what is held today;
   // longer spans from the rebuilt history once it is in.
   const priced = held.filter(m => m.ch != null);
@@ -6261,15 +6286,16 @@ function paintWalletAll() {
   const top = $('#acctTop');
   if (!top) return;
   const shownN = a.showAllHeld ? 60 : 10;
-  top.innerHTML = held.length ? `<div class="minitabwrap"><table class="minitab holdtab"><thead><tr><th>Token</th><th>Held in</th><th class="r">Price</th><th class="r">24h</th><th class="r">Value</th><th class="r">Share</th></tr></thead><tbody>${
+  top.innerHTML = held.length ? `<div class="minitabwrap"><table class="minitab holdtab"><thead><tr><th>Token</th><th>Held in</th><th class="r">Amount</th><th class="r">Price</th><th class="r">Value</th><th class="r">Share</th></tr></thead><tbody>${
     held.slice(0, shownN).map(m => {
       const capped = m.face > m.usd * 1.1;
       const pxNow = m.id ? state.prices.get(m.id)?.usd : null;
       return `<tr${m.id ? ` class="clickable" data-tokid="${esc(m.id)}"` : ''}>
       <td>${m.id ? `<span data-pm="${esc(m.id)}|${esc(m.sym)}"></span>` : ''}<span class="pairbig">${esc(m.sym)}</span></td>
       <td>${[...m.where].map(w => `<span class="wherechip">${w}</span>`).join('')}</td>
+      <td class="r num"${m.partial ? ' title="Part of this is held somewhere that does not report a token amount, so the figure is what could be counted."' : ''}>${
+        m.amount > 0 ? bal(m.amount) : '—'}${m.partial && m.amount > 0 ? '<span class="capmark">+</span>' : ''}</td>
       <td class="r num">${pxNow != null ? px(pxNow) : '—'}</td>
-      <td class="r num ${chgCls(m.ch)}">${chgTxt(m.ch)}</td>
       <td class="r num"${capped ? ` title="${usd(m.face)} at face value; its pools could pay out about ${usd(m.usd)}"` : ''}>${usd(m.usd)}${capped ? '<span class="capmark">*</span>' : ''}</td>
       <td class="r num dim">${heldSum > 0 ? (m.usd / heldSum * 100).toFixed(1) + '%' : '—'}</td></tr>`;
     }).join('')}</tbody></table></div>
@@ -6314,7 +6340,7 @@ async function renderWalletFarmStakes(account) {
     const tokId = p?.acceptSymbol ? `${p.acceptSymbol}@${p.acceptContract}` : null;
     const spx = s2.stakedTokens > 0 && p?.acceptSymbol ? priceOf(p.acceptSymbol, p.acceptContract) : null;
     const sUsd = spx != null ? sellable(tokId, s2.stakedTokens * spx) : null;
-    if (sUsd != null) tokens.push({ sym: p.acceptSymbol, id: tokId, usd: sUsd });
+    if (sUsd != null) tokens.push({ sym: p.acceptSymbol, id: tokId, usd: sUsd, amount: s2.stakedTokens });
     items.push({
       venue: 'pepper', key: `pepper:${s2.poolId}`, name: p?.name || `Pool #${s2.poolId}`, img: p?.img, sub: `PepperStake · #${s2.poolId}`,
       staked: s2.stakedTokens > 0 ? `${qty(s2.stakedTokens)} ${esc(p?.acceptSymbol || '')}` : nfts ? `${nfts} NFT${nfts === 1 ? '' : 's'}` : 'nothing',
@@ -6645,6 +6671,25 @@ function wireJoinFarm(root, account) {
 // than prose, the price band drawn instead of described, the composition as a
 // bar because a 52/48 split is a shape and not a pair of numbers, and the farm
 // gap called out where it cannot be missed.
+// What a position earns a day. The estimate — the pool's 24h volume times its
+// fee tier times your share of it — is a forecast, and it was the only figure
+// on the card. The ledger says what the position has actually paid out since
+// it opened, which is the same question answered by measurement, so that goes
+// first once there is more than a day of it to divide by.
+function earningPerDay(p, feeDay, farmDay) {
+  const est = feeDay + farmDay;
+  const days = p.pnl?.firstAt ? (Date.now() - p.pnl.firstAt) / 86400e3 : 0;
+  const realUsd = days >= 1 && p.led ? p.led.feesUsd / days : null;
+  const realWax = days >= 1 && p.led ? p.led.feesWax / days : null;
+  if (realUsd > 0) {
+    const shown = UNIT === 'wax' ? `${qty(realWax)} WAX` : usdRaw(realUsd);
+    return ['Fees / day', shown, '', `paid out over ${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}${
+      est > 0 ? ` &middot; ${usd(est)} at today's volume` : ''}`];
+  }
+  return ['Earning / day', est > 0 ? usd(est) : '&mdash;', est > 0 ? '' : 'dim',
+    est > 0 ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}` : ''];
+}
+
 function positionCard(p, mine = false) {
   const pool = p.pool;
   const share = pool.tvl > 0 ? Math.min(1, p.valueUsd / pool.tvl) : null;
@@ -6685,11 +6730,12 @@ function positionCard(p, mine = false) {
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
         <div class="pc-pair">${pairLinks(pool)}<span class="venue alcor">Alcor</span></div>
-        <div class="pc-meta">${poolLink(pool.dex, pool.id, '#' + p.posId)} &middot; ${(pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(share >= 1 ? 1 : 2)}% of the pool` : ''}</div>
+        <div class="pc-meta">${poolLink(pool.dex, pool.id, '#' + p.posId)} &middot; ${(pool.feeBps / 100).toFixed(2)}% fee${share != null ? ` &middot; ${(share * 100).toFixed(share >= 1 ? 1 : 2)}% of the pool` : ''}${
+          p.pnl?.firstAt ? ` &middot; opened ${new Date(p.pnl.firstAt).toISOString().slice(0, 10)}` : ''}</div>
       </div>
       <div class="pc-val">
         <span class="v">${usdExact(p.valueUsd)}</span>
-        ${p.depositedUsd > 0 ? `<span class="d ${p.pnlUsd >= 0 ? 'pos' : 'neg'}" title="Value now against what was put in">${p.pnlUsd >= 0 ? '+' : ''}${usdExact(p.pnlUsd)} since opened</span>` : ''}
+        ${p.pnl && pnlBasis(p.pnl) > 0 ? `<span class="d ${pnlNum(p.pnl) >= 0 ? 'pos' : 'neg'}" title="${esc(pnlTitle(p.pnl))}">${pnlText(p.pnl)}</span>` : ''}
       </div>
     </header>
 
@@ -6713,10 +6759,7 @@ function positionCard(p, mine = false) {
     <div class="pc-figs">
       ${fig('Fees waiting', usd(p.feesUsd), p.feesUsd > 0 ? 'accent' : 'dim')}
       ${fig('Farm rewards', `<span data-farmpend="${p.posId}" class="dim">&mdash;</span>`, '', '&nbsp;')}
-      ${fig('Earning / day', feeDay + farmDay > 0 ? usd(feeDay + farmDay) : '&mdash;', feeDay + farmDay > 0 ? '' : 'dim',
-        feeDay + farmDay > 0
-          ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}`
-          : '')}
+      ${fig(...earningPerDay(p, feeDay, farmDay))}
       ${fig('Top up at', `${(p.ratio.shareA * 100).toFixed(0)} / ${(p.ratio.shareB * 100).toFixed(0)}`)}
     </div>
 
@@ -6825,6 +6868,17 @@ async function lookupWallet(account) {
     return;
   }
 
+  // What each position cost and what it has paid back, from Alcor's own event
+  // ledger. Without it the header shows value and nothing else; it is one
+  // request and the page does not wait on anything else for it.
+  const ledger = await positionLedger(account).catch(() => null);
+  for (const p of res.alcor) {
+    p.led = ledger?.byPos.get(String(p.posId)) || null;
+    // Worth now counts the fees sitting in the position: they are yours, they
+    // are just not in your wallet yet.
+    p.pnl = positionPnl(p.led, (p.valueUsd || 0) + (p.feesUsd || 0), state.waxUsd);
+  }
+
   // Being an LP and being IN THE FARM are different things, and this page used
   // to show only the first. A position sitting in a pool with a live incentive
   // it never joined earns trading fees and nothing else, and nothing on screen
@@ -6844,14 +6898,22 @@ async function lookupWallet(account) {
   const oorUsd = outOfRange.reduce((s, p) => s + (p.valueUsd || 0), 0);
   // What the position is earning, from the pool's own 24h volume and fee tier
   // times your share of it. Only in-range positions earn anything.
-  // Deposited, profit and value all come from Alcor's own books for the Alcor
-  // positions. The headline "liquidity value" also counts TacoSwap, valued
-  // here, so putting the two side by side invited the subtraction and gave the
-  // wrong answer: $827.74 against $750.58 deposited reads as $77 of profit,
-  // where the figure shown was $4.04. It was right — it just was not comparing
-  // against the number printed beside it.
-  const deposited = res.alcor.reduce((s, p) => s + (p.depositedUsd || 0), 0);
-  const pnl = res.alcor.reduce((s, p) => s + (p.pnlUsd || 0), 0);
+  // Profit across the Alcor positions, from the ledger — and including the ones
+  // that are closed, because money made on a position that was taken out is
+  // still money made. TacoSwap is not in it: it is valued here but has no
+  // ledger, and a figure that silently mixed the two would be neither.
+  const sumPnl = list => list.reduce((t, pl) => {
+    if (!pl) return t;
+    t.usd += pl.usd; t.wax += pl.wax; t.inUsd += pl.inUsd; t.inWax += pl.inWax;
+    t.outUsd += pl.outUsd; t.outWax += pl.outWax; t.n += pl.n || 1;
+    return t;
+  }, { usd: 0, wax: 0, inUsd: 0, inWax: 0, outUsd: 0, outWax: 0, n: 0 });
+  const openIds = new Set(res.alcor.map(p => String(p.posId)));
+  const closedPnl = ledger
+    ? sumPnl([...ledger.byPos].filter(([id]) => !openIds.has(id)).map(([, led]) => positionPnl(led, 0, state.waxUsd)))
+    : null;
+  const openPnl = sumPnl(res.alcor.map(p => p.pnl));
+  const livePnl = ledger ? sumPnl([openPnl, closedPnl]) : null;
   const alcorValue = res.alcor.reduce((s, p) => s + (p.valueUsd || 0), 0);
   const tacoCount = all.length - res.alcor.length;
   const dailyFees = all.reduce((s, p) => {
@@ -6865,7 +6927,11 @@ async function lookupWallet(account) {
       <div class="stat"><span class="v" id="rwStat">${usdExact(feesUsd)}</span><span class="k">rewards waiting</span><span class="sub" id="rwStatSub">fees, and farm rewards once read</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usdExact(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
-      ${deposited > 0 ? `<div class="stat"><span class="v ${pnl >= 0 ? 'pos' : 'neg'}">${pnl >= 0 ? '+' : ''}${usd(pnl)}</span><span class="k">profit so far</span><span class="sub">${usd(alcorValue)} now against ${usd(deposited)} put in, on Alcor positions only${tacoCount > 0 ? ` &mdash; the ${tacoCount} TacoSwap position${tacoCount === 1 ? '' : 's'} above ${tacoCount === 1 ? 'is' : 'are'} not in this` : ''}</span></div>` : ''}
+      ${openPnl && pnlBasis(openPnl) > 0 ? `<div class="stat"><span class="v ${pnlNum(openPnl) >= 0 ? 'pos' : 'neg'}" title="${esc(pnlTitle(openPnl))}">${pnlText(openPnl)}</span><span class="k">profit on these positions</span><span class="sub">${
+        [`${(pnlNum(openPnl) / pnlBasis(openPnl) * 100).toFixed(1)}% on what went in`,
+          closedPnl && pnlBasis(closedPnl) > 0 ? `${pnlText(closedPnl)} on ${closedPnl.n} closed &mdash; ${pnlText(livePnl)} all told` : '',
+          tacoCount > 0 ? 'TacoSwap not counted' : ''].filter(Boolean).join(' &middot; ')
+      }</span></div>` : ''}
     </div>`;
 
   if (outOfRange.length) {
@@ -8299,21 +8365,8 @@ async function renderLeaders() {
   const total = rows.reduce((a, r) => a + (r[key] || 0), 0);
   const share = v => (total > 0 ? (v / total) * 100 : 0);
   const topTen = rows.slice(0, 10).reduce((a, r) => a + (r[key] || 0), 0);
-
-  // A podium, because a board's first three are the thing people came to see
-  // and reading them off row one of a table is not the same as seeing them.
-  const medal = ['1st', '2nd', '3rd'];
-  const podium = rows.slice(0, 3).map((r, i) => `<div class="ldp ldp${i + 1}">
-    <span class="ldpr">${medal[i]}</span>
-    <b class="ldpa">${acctLink(r.a)}</b>
-    <span class="ldpv">${esc(String(fmt0(r[key] || 0)))}</span>
-    <span class="ldps">${cfg.cols.slice(1, 3).map(c => `${esc(String(c[2](r[field(c)] || 0)))} ${esc(c[1].toLowerCase())}`).join(' · ')}</span>
-    <span class="ldpbar" style="--w:${share(r[key] || 0).toFixed(1)}%"></span>
-  </div>`).join('');
-
-  // Concentration as a picture. A leaderboard is a list of who is biggest;
-  // the shape of it — one account with a third of everything, or forty with a
-  // slice each — is the part a table never quite says.
+  // How few accounts it takes to hold half the board — the one number that
+  // says whether this is a market or a handful of people.
   const half = (() => {
     let acc = 0;
     for (let i = 0; i < rows.length; i++) { acc += rows[i][key] || 0; if (acc >= total / 2) return i + 1; }
@@ -8321,7 +8374,6 @@ async function renderLeaders() {
   })();
 
   out.innerHTML = `
-    <div class="ldpodium">${podium}</div>
     <div class="ldsplit">
       <div class="card ldpie"><h3>${esc(cfg.label)} by share <span class="dim">&mdash; top ${Math.min(8, rows.length)} of ${rows.length.toLocaleString()}</span></h3>
         <div id="ldDonut"></div></div>

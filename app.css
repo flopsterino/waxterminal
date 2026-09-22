@@ -152,12 +152,15 @@ td.r, th.r { text-align: right; }
 .pc-head { display: flex; align-items: flex-start; gap: 11px; }
 .pc-mark { flex: 0 0 auto; display: flex; align-items: center; }
 .pc-id { min-width: 0; flex: 1; }
+/* Wraps, because it has to share the row with the value beside it and a WAX
+   figure is four times as wide as the dollar one: "171,891.77 WAX" ran straight
+   over the pair name and swallowed the venue badge. */
 .pc-pair { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 650;
-  letter-spacing: -.012em; line-height: 1.25; }
+  letter-spacing: -.012em; line-height: 1.25; flex-wrap: wrap; min-width: 0; }
 .pc-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-family: var(--font-data); }
-.pc-val { text-align: right; flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; }
-.pc-val .v { font-family: var(--font-data); font-size: 19px; font-weight: 650; letter-spacing: -.02em; line-height: 1.2; }
-.pc-val .d { font-family: var(--font-data); font-size: 12px; margin-top: 1px; }
+.pc-val { text-align: right; flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-end; }
+.pc-val .v { font-family: var(--font-data); font-size: 19px; font-weight: 650; letter-spacing: -.02em; line-height: 1.2; white-space: nowrap; }
+.pc-val .d { font-family: var(--font-data); font-size: 12px; margin-top: 1px; white-space: nowrap; }
 
 .pc-pills { display: flex; flex-wrap: wrap; gap: 6px; }
 .pill { font-size: 10.5px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase;
@@ -1912,18 +1915,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .funfigs .s { font-size: 11px; color: var(--muted); }
 
-/* ---- scoreboard ---------------------------------------------------------- */
-.ldpodium { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 10px; }
-.ldp { position: relative; display: flex; flex-direction: column; gap: 3px; overflow: hidden;
-  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px 14px; }
-.ldp1 { border-color: var(--accent); background: var(--accent-soft); }
-.ldp2 { border-color: color-mix(in srgb, var(--ink-2) 35%, transparent); }
-.ldpr { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; color: var(--muted); }
-.ldp1 .ldpr { color: var(--accent); }
-.ldpa { font-size: 14px; }
-.ldpv { font-size: 21px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.ldps { font-size: 11px; color: var(--ink-2); }
-.ldpbar { position: absolute; left: 0; bottom: 0; height: 3px; width: var(--w); background: var(--accent); opacity: .7; }
+/* ---- leaderboard --------------------------------------------------------- */
 .ldsplit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin: 0 0 12px; }
 .ldpie .donut { margin-top: 6px; }
 .ldfacts .ftrows { margin-top: 4px; }
