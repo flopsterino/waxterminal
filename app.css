@@ -2045,7 +2045,10 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   .fuarrow i { width: 34px; }
   .fusplit { flex-wrap: wrap; }
   .fubar { flex: 1 1 100px; }
-  .furail { height: 62px; }
+  /* The open period's pill is wider than the block it belongs to on a phone,
+     so it sits under the rail as a line rather than hanging off the edge. */
+  .furail { height: 78px; }
+  .fuperiodlab.full { left: 0 !important; transform: none; top: 48px; }
 }
 
 /* Revenue, as the split it is. */
@@ -2153,11 +2156,11 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fundesk .pwtop { align-items: center; }
 .fundesk .sub { margin: 0; }
 .ftrows { display: flex; flex-direction: column; gap: 0; margin: 0; }
-.ftrows > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+.ftrows > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap;
   padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
 .ftrows > div:last-child { border-bottom: 0; }
 .ftrows dt { color: var(--muted); margin: 0; }
-.ftrows dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.ftrows dd { margin: 0; min-width: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .ftrows.wide dd { font-weight: 500; }
 .memoline { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 10px; padding: 7px 10px; font-size: 11px; min-width: 0; }
