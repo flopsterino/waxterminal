@@ -28,7 +28,7 @@
 // choice the operator makes by what they put in `promotion.account`.
 // =============================================================================
 
-import { hyperion, dropEchoes } from './chain.js';
+import { hyperionDeep, dropEchoes } from './chain.js';
 
 let cfg = null;
 
@@ -69,13 +69,22 @@ export async function activePromotions({ now = Date.now(), maxAgeMs = 3 * 60 * 1
   for (let page = 0; page < 4; page++) {
     let d;
     try {
-      d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
+      // Deepest node first. The rotation's shallowest node keeps days rather
+      // than months of this account, and a paid slot that vanishes because the
+      // read landed there is the one failure this must not have.
+      d = await hyperionDeep(`/v2/history/get_actions?${new URLSearchParams({
         // Only transfers to the promotion account; see ratings.js for what the
         // unfiltered read cost.
         'act.account': cfg.token.contract, 'act.name': 'transfer', 'transfer.to': cfg.account, after,
         limit: '1000', skip: String(page * 1000), sort: 'desc',
       })}`);
-    } catch { break; }
+    } catch {
+      // A read that failed is not the same as nothing being promoted. If there
+      // is a previous answer, keep it rather than dropping somebody's paid slot
+      // off every page until the next attempt.
+      if (!out.length && liveCache?.rows?.length) return liveCache.rows;
+      break;
+    }
     const got = d.actions || [];
     rows.push(...got);
     if (got.length < 1000) break;

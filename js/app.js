@@ -1595,7 +1595,11 @@ async function renderAdsPromos() {
   const st = promotionStanding(live, t.slots);
   const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
   const byToken = new Map(tokenTable().map(x => [x.id, x]));
-  const byFarm = new Map(farmGroups().map(g => [g.key, g]));
+  // seedApr, not farmGroups alone: a group's APR is 'lazy' until the nightly
+  // staked-per-pool figures are folded in, and an unseeded group reports no
+  // rate at all — which is why a promoted market showed its price move and
+  // nothing else.
+  const byFarm = new Map(seedApr(farmGroups()).map(g => [g.key, g]));
   const days = ms => Math.max(0, Math.round(ms / 86400000));
   const rows = live.map(pr => {
     const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
@@ -1640,7 +1644,11 @@ async function renderPromoted() {
 
   const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
   const byToken = new Map(tokenTable().map(x => [x.id, x]));
-  const byFarm = new Map(farmGroups().map(g => [g.key, g]));
+  // seedApr, not farmGroups alone: a group's APR is 'lazy' until the nightly
+  // staked-per-pool figures are folded in, and an unseeded group reports no
+  // rate at all — which is why a promoted market showed its price move and
+  // nothing else.
+  const byFarm = new Map(seedApr(farmGroups()).map(g => [g.key, g]));
   const rows = live.slice(0, promotionTerms().slots).map(pr => {
     const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
     if (!subject) return null;
@@ -4763,7 +4771,11 @@ async function renderTicker() {
   const toks = tokenTable();
   const byToken = new Map(toks.map(t => [t.id, t]));
   const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
-  const byFarm = new Map(farmGroups().map(g => [g.key, g]));
+  // seedApr, not farmGroups alone: a group's APR is 'lazy' until the nightly
+  // staked-per-pool figures are folded in, and an unseeded group reports no
+  // rate at all — which is why a promoted market showed its price move and
+  // nothing else.
+  const byFarm = new Map(seedApr(farmGroups()).map(g => [g.key, g]));
 
   let live = [];
   try { live = promotionConfigured() ? await activePromotions() : []; } catch { live = []; }
@@ -8147,6 +8159,10 @@ function nightlyFile() {
         groups._key = null;
         if (lastView === 'farms') renderFarms();
         else if (lastView === 'overview') renderOverview();
+        // The strip is on every page and reads the same farm rates, so it was
+        // drawn before this landed and kept a promoted market with no APR on
+        // it until something else repainted. It is cheap; redraw it.
+        renderTicker().catch(() => {});
       })
       .catch(() => { nightly = {}; });
   }
