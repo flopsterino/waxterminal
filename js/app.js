@@ -188,6 +188,12 @@ const ago = t => {
 const plain = (v, decimals = 0) => (v == null || !isFinite(v) ? '—'
   : v.toLocaleString('en-US', { maximumFractionDigits: Math.min(8, decimals) }));
 
+// A balance, written the way a wallet writes it: never abbreviated, and with
+// enough decimals to be exact at the size it is — "1.9k WAX" is not a number
+// anybody can check against what they hold, and rounding 0.00406876 to 0.0041
+// on a claim button is worse.
+const bal = v => plain(v, Math.abs(Number(v) || 0) >= 1 ? 4 : 8);
+
 // How long until something frees up, in the unit that reads at that distance.
 const forHours = ms => {
   const h = (ms || 0) / 3600e3;
@@ -4536,10 +4542,10 @@ async function paintFusionUser(st, stale) {
   you.innerHTML = `<h3>Your position</h3>
     ${has ? '' : '<p class="sub">Nothing of yours is in WaxFusion yet. Staking WAX below turns it into sWAX, which starts earning straight away.</p>'}
     <dl class="ftrows wide">
-      <div><dt>sWAX, earning</dt><dd>${qty(u.swax)} sWAX${val(u.swax)}</dd></div>
-      <div><dt>LSWAX</dt><dd>${qty(u.lswax)} LSWAX <span class="dim">= ${qty(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
-      <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${qty(u.claimable)} WAX${val(u.claimable)}</dd></div>
-      ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${qty(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
+      <div><dt>sWAX, earning</dt><dd>${bal(u.swax)} sWAX${val(u.swax)}</dd></div>
+      <div><dt>LSWAX</dt><dd>${bal(u.lswax)} LSWAX <span class="dim">= ${bal(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
+      <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${bal(u.claimable)} WAX${val(u.claimable)}</dd></div>
+      ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${bal(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
     </dl>
     ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
       <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Redemption period</th><th></th></tr></thead>
@@ -4548,12 +4554,12 @@ async function paintFusionUser(st, stale) {
         const open = e && e.windowFrom <= Date.now() && Date.now() < e.windowTo;
         const missed = e && Date.now() >= e.windowTo;
         return `<tr><td class="dim">${e ? new Date(e.startsAt).toISOString().slice(0, 10) : r.epochId}</td>
-          <td class="r num">${qty(r.amount)} WAX</td>
+          <td class="r num">${bal(r.amount)} WAX</td>
           <td>${e ? `${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}` : '—'}</td>
           <td>${open ? '<span class="badge good">withdraw now</span>' : missed ? '<span class="badge bad">period passed</span>' : '<span class="dim">waiting</span>'}</td></tr>`;
       }).join('')}</tbody></table></div>` : ''}
     <div class="toolbar" style="margin:10px 0 0">
-      ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${qty(u.claimable)} WAX</button>
+      ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${bal(u.claimable)} WAX</button>
         <button class="btn ghost" data-fclaim="swax">Claim and restake</button>
         <button class="btn ghost" data-fclaim="lswax">Claim as LSWAX</button>` : '<span class="sub">Nothing to claim right now.</span>'}
     </div>
@@ -4599,12 +4605,12 @@ function drawFusionDesk(st, u) {
       </div>
       <div class="buyinput"><input id="fusionAmt" type="number" step="any" min="0" inputmode="decimal" placeholder="0" aria-label="Amount">
         <span class="unit">${cfg.unit}</span></div>
-      <div class="buymeta"><span>You hold ${qty(cfg.have)} ${cfg.unit}</span>
+      <div class="buymeta"><span>You hold ${bal(cfg.have)} ${cfg.unit}</span>
         <span class="quick"><button class="linkbtn" id="fusionMax">Max</button></span></div>
       <div class="buyresult"><span class="k">You get</span><b id="fusionGet">—</b><span class="sub" id="fusionGetSub">${cfg.note}</span></div>
       ${mode === 'redeem' ? `<div class="furedeemcap${u.swax > st.forRedemption ? ' over' : ''}">
-        <span>Instant limit</span><b>${qty(st.forRedemption)} sWAX</b>
-        <span class="dim">= ${qty(st.forRedemption / st.lswaxInSwax)} LSWAX${u.swax > st.forRedemption ? ` &middot; you hold more than that` : ''}</span></div>` : ''}
+        <span>Instant limit</span><b>${bal(st.forRedemption)} sWAX</b>
+        <span class="dim">= ${bal(st.forRedemption / st.lswaxInSwax)} LSWAX${u.swax > st.forRedemption ? ' &middot; you hold more than that' : ''}</span></div>` : ''}
       ${mode === 'redeem' ? `<label class="pwtop"><input type="checkbox" id="fusionReplace"><span>Replace a request I already have</span></label>` : ''}
       <div id="fusionOutBox"></div>
       ${mode === 'redeem'
