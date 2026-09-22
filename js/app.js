@@ -1666,34 +1666,36 @@ async function renderPromoted() {
   if (!rows.length) { sec.hidden = true; return; }
   sec.hidden = false;
 
-  // Cards, not a table of receipts. What was paid and for how long is the
-  // operator's bookkeeping; what a reader wants is the same figures they would
-  // get from any other card on this page — and a paid slot that looks like the
-  // rest of the site is worth more than one that looks like an advert.
+  // Cards, not a table of receipts — and short ones, because eight of them
+  // have to sit above the page's own content without pushing it off screen.
+  // One line of figures, the logos people actually recognise, and the days
+  // left where it does not compete with them.
   const days = ms => Math.max(0, Math.round(ms / 86400000));
-  const fig = (k, v, cls = '') => `<div><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+  const bit = (v, k, cls = '') => `<span class="${cls}">${v}</span> <span class="dim">${k}</span>`;
   box.innerHTML = `<div class="promogrid">${rows.map(r => {
     const { pr, subject, kind } = r;
-    const figs = kind === 'f'
-      ? fig('APR', subject.aprReal != null || subject.apr != null ? `<span class="apr">${pct(subject.aprReal ?? subject.apr)}</span>` : '—')
-        + fig('Pays', `${usd(subject.rewardRealDay)}<span class="dim">/day</span>`)
-        + fig('Staked', subject.stakedReal != null ? usd(subject.stakedReal) : '—')
+    const mark = kind === 'p' ? `${esc(subject.tokenA)}|${esc(subject.symA)}|${esc(subject.tokenB)}|${esc(subject.symB)}`
+      : kind === 'f' && subject.pool ? `${esc(subject.pool.tokenA)}|${esc(subject.pool.symA)}|${esc(subject.pool.tokenB)}|${esc(subject.pool.symB)}`
+      : kind === 't' ? `${esc(subject.id)}|${esc(subject.symbol)}` : '';
+    const line = kind === 'f'
+      ? [(subject.aprReal ?? subject.apr) != null ? bit(pct(subject.aprReal ?? subject.apr), 'APR', 'apr') : '',
+        subject.rewardRealDay > 0 ? bit(usd(subject.rewardRealDay), 'a day') : '',
+        subject.stakedReal != null ? bit(usd(subject.stakedReal), 'staked') : '']
       : kind === 'p'
-        ? fig('Farm APR', r.farm ? `<span class="apr">${pct(r.farm.aprReal ?? r.farm.apr)}</span>` : '<span class="dim">no farm</span>')
-          + fig('Fee APR', feeApr(subject) > 0 ? `<span class="apr">${pct(feeApr(subject))}</span>` : '—')
-          + fig('Pooled', usd(subject.tvlReal))
-          + fig('24h', subject.vol24 > 0 ? usd(subject.vol24) : '—')
-        : fig('Price', px(subject.price))
-          + fig('24h', subject.change24 != null ? chgTxt(subject.change24) : '—', chgCls(subject.change24))
-          + fig('Volume', subject.vol24 > 0 ? usd(subject.vol24) : '—')
-          + fig('Pooled', usd(subject.tvl));
-    return `<article class="promocard" data-promo="${esc(pr.kind)}|${esc(pr.id)}">
-      <header><span class="badge warn">paid</span><b>${esc(r.name)}</b>
-        <span class="dim">${esc(r.sub)}</span>
-        <span class="promoleft">${days(pr.until - Date.now())}d left</span></header>
-      <div class="promofigs">${figs}</div>
+        ? [r.farm && (r.farm.aprReal ?? r.farm.apr) != null ? bit(pct(r.farm.aprReal ?? r.farm.apr), 'farm APR', 'apr') : '',
+          feeApr(subject) > 0 ? bit(pct(feeApr(subject)), 'fees', 'apr') : '',
+          bit(usd(subject.tvlReal), 'pooled'),
+          subject.vol24 > 0 ? bit(usd(subject.vol24), '24h') : '']
+        : [bit(px(subject.price), 'price'),
+          subject.change24 != null ? bit(chgTxt(subject.change24), '24h', chgCls(subject.change24)) : '',
+          subject.vol24 > 0 ? bit(usd(subject.vol24), 'traded') : bit(usd(subject.tvl), 'pooled')];
+    return `<article class="promocard" data-promo="${esc(pr.kind)}|${esc(pr.id)}" title="Paid promotion — ${qty(pr.paid)} ${esc(t.token)} spent, ${days(pr.until - Date.now())} days left">
+      <header>${mark ? `<span class="pmark" data-pm="${mark}"></span>` : ''}<b>${esc(r.name)}</b>
+        <span class="badge warn">paid</span><span class="promoleft">${days(pr.until - Date.now())}d</span></header>
+      <div class="promoline">${line.filter(Boolean).join('<span class="sep">&middot;</span>')}</div>
     </article>`;
   }).join('')}</div>`;
+  fillMarks(box);
 
   box.querySelectorAll('[data-promo]').forEach(card => {
     const [kind, id] = card.dataset.promo.split('|');
@@ -4832,8 +4834,11 @@ async function renderTicker() {
     if (apr != null) facts.push([`${pct(apr)} APR`, 'apr']);
     const change = isFarm ? subject.pool?.change24 : subject.change24;
     if (change != null) facts.push([chgTxt(change), chgCls(change)]);
+    const mark = isPool ? `${subject.tokenA}|${subject.symA}|${subject.tokenB}|${subject.symB}`
+      : isFarm && subject.pool ? `${subject.pool.tokenA}|${subject.pool.symA}|${subject.pool.tokenB}|${subject.pool.symB}`
+      : !isFarm && !isPool ? `${subject.id}|${subject.symbol}` : '';
     return {
-      promoted: true, name,
+      promoted: true, name, mark,
       facts,
       id: pr.kind === 't' ? subject.id : null,
       poolKey: isPool ? `${subject.dex}:${subject.id}` : null,
@@ -4867,6 +4872,7 @@ async function renderTicker() {
   const cell = r => `<button class="tkitem paid" title="${esc(r.title)}"
     ${r.id ? `data-tokid="${esc(r.id)}"` : ''}${r.poolKey ? ` data-poolkey="${esc(r.poolKey)}"` : ''}${r.farmKey ? ` data-farmkey="${esc(r.farmKey)}"` : ''}>
     <span class="tkpaid">paid</span>
+    ${r.mark ? `<span class="tkmark" data-pm="${esc(r.mark)}"></span>` : ''}
     <span class="tkname">${esc(r.name)}</span>
     ${r.facts.map(([txt, cls]) => `<span class="tkval ${esc(cls)}">${txt}</span>`).join('')}
   </button>`;
@@ -4877,6 +4883,7 @@ async function renderTicker() {
   const once = rows.map(cell).join('');
   track.style.removeProperty('animation');
   track.innerHTML = `<div class="tkrun">${once}</div><div class="tkrun" aria-hidden="true">${once}</div>`;
+  fillMarks(track);
   // Long lists scroll slower, so the speed per item stays the same whether
   // there are four entries or twenty.
   track.style.setProperty('--tkdur', `${Math.max(24, rows.length * 4.5)}s`);
