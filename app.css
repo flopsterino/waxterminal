@@ -2063,6 +2063,10 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 #fusionDesk .seg button { flex: 1; }
 #fusionDesk .btn { width: 100%; justify-content: center; }
 #fusionDesk .pwtop { align-items: center; gap: 8px; }
+.furedeemcap { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
+.furedeemcap b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.furedeemcap.over { border-color: var(--warn, var(--accent)); }
 
 /* ---- blends ------------------------------------------------------------- */
 .blendflow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center;
