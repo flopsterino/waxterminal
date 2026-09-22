@@ -4773,36 +4773,23 @@ async function renderTicker() {
     const isFarm = pr.kind === 'f';
     const name = isFarm ? (subject.pool ? `${subject.pool.symA}/${subject.pool.symB}` : `farm ${subject.poolId}`)
       : isPool ? `${subject.symA}/${subject.symB}` : subject.symbol;
-    // facts: [text, class]. Money first, then the rate, then the movement —
-    // the order somebody reads a row in.
+    // Two facts, and only these two: what the farm on it pays, and how the
+    // price moved today. Eight entries with three figures each is a strip
+    // nobody reads — pooled value and volume belong on the page it links to.
     const facts = [];
-    if (isFarm) {
-      const apr = subject.aprReal ?? subject.apr;
-      if (apr != null) facts.push([`${pct(apr)} APR`, 'apr']);
-      if (subject.rewardRealDay > 0) facts.push([`${usd(subject.rewardRealDay)}/day`, '']);
-      if (subject.pool?.tvlReal > 0) facts.push([usd(subject.pool.tvlReal), 'dim']);
-    } else if (isPool) {
-      const g = farmOn(`${subject.dex}:${subject.id}`);
-      const apr = g ? (g.aprReal ?? g.apr) : null;
-      if (apr != null) facts.push([`${pct(apr)} farm APR`, 'apr']);
-      else { const fa = feeApr(subject); if (fa > 0) facts.push([`${pct(fa)} fees`, 'apr']); }
-      if (subject.tvlReal > 0) facts.push([usd(subject.tvlReal), '']);
-      if (subject.vol24 > 0) facts.push([`${usd(subject.vol24)} 24h`, 'dim']);
-      if (subject.change24 != null) facts.push([chgTxt(subject.change24), chgCls(subject.change24)]);
-    } else {
-      if (subject.price > 0) facts.push([px(subject.price), '']);
-      if (subject.change24 != null) facts.push([chgTxt(subject.change24), chgCls(subject.change24)]);
-      if (subject.vol24 > 0) facts.push([`${usd(subject.vol24)} 24h`, 'dim']);
-      else if (subject.tvl > 0) facts.push([`${usd(subject.tvl)} pooled`, 'dim']);
-    }
+    const apr = isFarm ? (subject.aprReal ?? subject.apr)
+      : isPool ? (() => { const g = farmOn(`${subject.dex}:${subject.id}`); return g ? (g.aprReal ?? g.apr) : null; })()
+      : null;
+    if (apr != null) facts.push([`${pct(apr)} APR`, 'apr']);
+    const change = isFarm ? subject.pool?.change24 : subject.change24;
+    if (change != null) facts.push([chgTxt(change), chgCls(change)]);
     return {
       promoted: true, name,
-      kind: isFarm ? 'farm' : isPool ? 'market' : 'token',
-      facts: facts.slice(0, 3),
+      facts,
       id: pr.kind === 't' ? subject.id : null,
       poolKey: isPool ? `${subject.dex}:${subject.id}` : null,
       farmKey: isFarm ? subject.key : null,
-      title: t ? `Paid promotion — ${qty(pr.paid)} ${t.token} spent, ${days(pr.until - Date.now())} days left. Paid placement never changes a ranking.` : 'Paid promotion',
+      title: t ? `${isFarm ? 'Farm' : isPool ? 'Market' : 'Token'} — paid promotion, ${qty(pr.paid)} ${t.token} spent, ${days(pr.until - Date.now())} days left. Paid placement never changes a ranking.` : 'Paid promotion',
     };
   }).filter(Boolean);
 
@@ -4832,8 +4819,7 @@ async function renderTicker() {
     ${r.id ? `data-tokid="${esc(r.id)}"` : ''}${r.poolKey ? ` data-poolkey="${esc(r.poolKey)}"` : ''}${r.farmKey ? ` data-farmkey="${esc(r.farmKey)}"` : ''}>
     <span class="tkpaid">paid</span>
     <span class="tkname">${esc(r.name)}</span>
-    <span class="tkkind">${esc(r.kind)}</span>
-    ${r.facts.map(([txt, cls]) => `<span class="tkval ${esc(cls)}">${txt}</span>`).join('<span class="tkdot">&middot;</span>')}
+    ${r.facts.map(([txt, cls]) => `<span class="tkval ${esc(cls)}">${txt}</span>`).join('')}
   </button>`;
 
   // Written twice, because a marquee that loops has to have somewhere to loop
