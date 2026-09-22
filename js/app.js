@@ -8222,15 +8222,8 @@ async function renderLeaders() {
     <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts${sc.swapsUnvalued ? ` &middot; ${sc.swapsUnvalued.toLocaleString()} more this terminal will not price` : ''}</span></div>
     <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span><span class="sub">rebuilt nightly</span></div>`;
 
-  // Liquidity nobody owns. Positions transferred to the burn account keep
-  // earning fees — the pool cannot tell the difference — and nobody can ever
-  // collect them. It topped the fees board until it was taken off it, which is
-  // a finding rather than a leader.
-  const bn = d.burned;
-  $('#ldBurn').innerHTML = bn && bn.n
-    ? `${bn.n.toLocaleString()} burned positions at <span class="mono">eosio.null</span> hold ${usdExact(bn.v)} and are owed ${usdExact(bn.f)}, uncollectable. Left off the boards.`
-    : '';
-  $('#ldBurn').hidden = !(bn && bn.n);
+  // Positions at the burn account are still left off the boards — the builder
+  // drops them — but the page no longer opens with a paragraph about them.
 
   document.querySelectorAll('#ldTabs [data-board]').forEach(b =>
     b.setAttribute('aria-pressed', String(b.dataset.board === ldBoard)));
