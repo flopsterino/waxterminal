@@ -421,8 +421,12 @@ i.soft {
   display: inline-block; width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent); margin-left: 6px; vertical-align: middle; opacity: .75;
 }
+/* One colour for every rate on the site — farm APR, fee APR, observed rate.
+   Two colours for the same kind of number is a distinction the reader has to
+   invent a meaning for. */
 .apr { font-family: var(--font-data); font-weight: 600; color: var(--good); font-variant-numeric: tabular-nums; }
-.apr.small { color: var(--ink-2); font-weight: 500; }
+.stat .v.apr { font-size: inherit; font-family: inherit; }
+.apr.small { opacity: .8; font-weight: 500; }
 
 /* Farms table: the APR is what people came for, so it gets the weight. */
 td.rank { color: var(--muted); font-family: var(--font-data); font-size: 11px; width: 34px; text-align: right; padding-right: 0; }
@@ -1271,7 +1275,10 @@ td.rank { font-size: 11px; }
 }
 #tokTax:not([hidden]) { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 /* A rate that stands on very little: shown, never ranked as if it were solid. */
-.apr.thin { color: var(--ink-2); font-weight: 500; text-decoration: underline dotted var(--line-2); text-underline-offset: 3px; cursor: help; }
+/* A rate that cannot be trusted is marked, not recoloured: every APR on the
+   site is one colour, and the dotted underline says "hover me" without
+   inventing a second meaning for a second colour. */
+.apr.thin { opacity: .78; font-weight: 500; text-decoration: underline dotted var(--line-2); text-underline-offset: 3px; cursor: help; }
 tbody tr.faded td { opacity: 1; }
 tbody tr.faded .pairbig, tbody tr.faded .apr { opacity: .8; }
 

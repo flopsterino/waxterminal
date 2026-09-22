@@ -1220,7 +1220,7 @@ function renderOverview() {
   mini('#ovFarms', bestApr.slice(0, 14).map(g => ({ pool: gKey(g), x: g })), [
     { h: 'Pool', v: g => g.pool ? pairCell(g.pool) : esc(g.poolId) },
     { h: 'Farm APR', r: true, v: g => `<span class="apr">${pct(g.aprAt)}</span>` },
-    { h: 'Fee APR', r: true, v: g => pct(feeApr(g.pool)), cls: g => feeApr(g.pool) > 0 ? '' : 'dim' },
+    { h: 'Fee APR', r: true, v: g => (feeApr(g.pool) > 0 ? `<span class="apr">${pct(feeApr(g.pool))}</span>` : '<span class="dim">—</span>') },
     { h: 'Liquidity', r: true, v: g => usd(g.pool?.tvlReal) },
   ], 'No farm currently has both real rewards and real staked capital.');
 
@@ -1246,7 +1246,7 @@ function renderOverview() {
   mini('#ovPaid', paid.map(x => ({ pool: pKey(x.p), x })), [
     { h: 'Pool', v: x => pairCell(x.p) + tierTag(x.p) },
     { h: 'Fees 7d', r: true, v: x => usd(x.fees) },
-    { h: 'Fee APR', r: true, v: x => pct(feeApr(x.p)) },
+    { h: 'Fee APR', r: true, v: x => (feeApr(x.p) > 0 ? `<span class="apr">${pct(feeApr(x.p))}</span>` : '<span class="dim">—</span>') },
     { h: 'Liquidity', r: true, v: x => usd(x.p.tvlReal) },
   ], 'No trading fees recorded this week.');
 
@@ -1274,7 +1274,7 @@ function renderOverview() {
     { h: 'Pool', v: p2 => pairCell(p2) + tierTag(p2) },
     { h: 'Liquidity', r: true, v: p2 => usd(p2.tvlReal) },
     { h: 'Vol 24h', r: true, v: p2 => p2.vol24 > 0 ? usd(p2.vol24) : '—', cls: p2 => p2.vol24 > 0 ? '' : 'dim' },
-    { h: 'Fee APR', r: true, v: p2 => pct(feeApr(p2)), cls: p2 => feeApr(p2) > 0 ? '' : 'dim' },
+    { h: 'Fee APR', r: true, v: p2 => (feeApr(p2) > 0 ? `<span class="apr">${pct(feeApr(p2))}</span>` : '<span class="dim">—</span>') },
   ], 'No pools priced yet.');
 
   // A farm emitting more in a day than its pool is worth is a token being
@@ -2416,7 +2416,7 @@ function renderFarms() {
       <td class="r num" title="${g.pool ? `${usd(g.pool.tvl)} at face value` : ''}">${usd(g.pool?.tvlReal ?? null)}${
         g.pool && g.pool.tvl > (g.pool.tvlReal || 0) * 1.05 ? `<span class="nominal">${usd(g.pool.tvl)} face</span>` : ''}</td>
       <td class="r">${aprCell}</td>
-      <td class="r num ${g.feeApr ? '' : 'dim'}" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? pct(g.feeApr) : '—'}</td>
+      <td class="r" title="${esc(feeAprWhy(g.pool))}">${g.feeApr != null ? `<span class="apr">${pct(g.feeApr)}</span>` : '<span class="dim">—</span>'}</td>
       <td class="paycell">${g.rewardUsdDay > 0 ? `<b class="payday">${payDay(g)}</b>` : ''}${chips}</td>
       <td class="r num ${g.stakedReal > 0 ? '' : 'dim'}">${g.stakedReal > 0 ? usd(g.stakedReal) : '—'}</td>
       <td class="r num ${rw != null && rw < 7 ? 'neg' : 'dim'}" title="${rw == null ? '' : `Rewards run out in about ${rw < 1 ? Math.round(rw * 24) + ' hours' : Math.round(rw) + ' days'} at today's rate`}">${
@@ -8805,7 +8805,7 @@ async function openToken(id) {
           <td>${[...new Map(g.rewards.map(r => [r.token, r.symbol]))].slice(0, 4).map(([tk, sym]) => tokLink(tk, sym)).join(', ')}</td>
           <td class="r num">${usd(g.rewardRealDay)}</td>
           <td class="r num">${g.stakedReal != null ? usd(g.stakedReal) : '<span class="dim">—</span>'}</td>
-          <td class="r num">${g.aprReal != null ? pct(g.aprReal) : '<span class="dim">—</span>'}</td>
+          <td class="r">${g.aprReal != null ? `<span class="apr">${pct(g.aprReal)}</span>` : '<span class="dim">—</span>'}</td>
           <td data-apr="${esc(g.key)}"><span class="dim">…</span></td>
           <td class="r num dim">${g.runwayDays != null && isFinite(g.runwayDays) ? Math.round(g.runwayDays) + 'd' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>`;
@@ -10716,8 +10716,8 @@ async function openPool(key) {
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24) : '—'}</span><span class="k">volume 24h</span><span class="sub">${p.vol7d > 0 ? usd(p.vol7d) + ' in 7 days' : ''}</span></div>
       <div class="stat"><span class="v">${p.vol24 > 0 ? usd(p.vol24 * (lpCut(p) / 10000)) : '—'}</span><span class="k">fees to providers, 24h</span><span class="sub">${p.vol7d > 0 ? `${usd(p.vol7d * (lpCut(p) / 10000))} over 7 days` : 'at this pool\u2019s own volume'}</span></div>
       <div class="stat"><span class="v" id="poolHiLo">—</span><span class="k">24h range</span><span class="sub" id="poolHiLoSub">high and low, from the candles</span></div>
-      <div class="stat"><span class="v ${fee > 0 ? '' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
-      <div class="stat"><span class="v ${farmRate != null ? 'pos' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${payDay(grp0)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
+      <div class="stat"><span class="v ${fee > 0 ? 'apr' : 'dim'}">${fee != null ? pct(fee) : '—'}</span><span class="k">fee APR ${farmFilters.feeWindow}</span><span class="sub">${(p.feeBps / 100).toFixed(2)}% on every trade</span></div>
+      <div class="stat"><span class="v ${farmRate != null ? 'apr' : 'dim'}">${farmRate != null ? pct(farmRate) : '—'}</span><span class="k">farm APR</span><span class="sub">${grp0 ? (farmRate != null ? `${grp0.farms.length} incentive${grp0.farms.length === 1 ? '' : 's'} &middot; ${payDay(grp0)}/day` : esc(aprWhy(grp0.aprStatus))) : 'no farm on this pool'}</span></div>
       <div class="stat"><span class="v">${qty(resBase)}</span><span class="k">${esc(o.baseSym)} pooled</span><span class="sub">${qty(resQuote)} ${esc(o.quoteSym)}</span></div>
       ${p.dex === 'taco' && p.lpSupply > 0 ? '<div class="stat" id="poolLock" hidden></div>' : ''}
     </div>
