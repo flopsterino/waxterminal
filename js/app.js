@@ -33,7 +33,7 @@ import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPep
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
-import { configurePromotion, promotionConfigured, promotionTerms, activePromotions } from './promote.js';
+import { configurePromotion, promotionConfigured, promotionTerms, activePromotions, promotionStanding } from './promote.js';
 import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, VOTES } from './ratings.js';
 import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT, bannerCalendar, buildBannerRent, buildBannerEdit, RENT_LEAD_SEC, JOIN_LEAD_SEC } from './cheese.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity, liquidityForAmounts, concentration } from './math.js';
@@ -631,6 +631,9 @@ async function boot() {
   nightlyFile();
 
   const paint = () => {
+    // The strip is on every page, so it is drawn with the data rather than
+    // with the front page — a deep link to a market used to leave it empty.
+    renderTicker().catch(() => {});
     try { renderFarms(); renderTokens(); renderOverview(); }
     catch (e) { banner(`<div class="err"><b>Could not draw the page.</b> <code class="mono">${esc(e.message)}</code></div>`); }
   };
@@ -1273,7 +1276,6 @@ function renderOverview() {
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
   renderWatchlist(groups);
   renderPromoted();
-  renderTicker().catch(() => {});
   mini('#ovDeep', top.map(p2 => ({ pool: pKey(p2), x: p2 })), [
     { h: 'Pool', v: p2 => pairCell(p2) + tierTag(p2) },
     { h: 'Liquidity', r: true, v: p2 => usd(p2.tvlReal) },
@@ -1501,7 +1503,7 @@ function promoteBox(kind, id, name) {
         <span class="sub">For</span>
         ${[7, 30, 90].map((d, i) => `<button class="chip" data-promo-days="${d}"${i === 0 ? ' aria-pressed="true"' : ''}>${d} days</button>`).join('')}
         <span style="flex:1"></span>
-        <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}">Promote &mdash; <span id="promoCost">${qty(7 * t.perDay)} ${esc(t.token)}</span></button>
+        <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}" data-name="${esc(name)}">Promote &mdash; <span id="promoCost">${qty(7 * t.perDay)} ${esc(t.token)}</span></button>
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
       <div class="promoshow">
@@ -1512,10 +1514,12 @@ function promoteBox(kind, id, name) {
             <button class="tkitem" type="button" tabindex="-1"><span class="tkrank">1</span><span class="tkname">&hellip;</span><span class="tkval">&nbsp;</span></button>
           </div></div></div>
       </div>
-      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day puts ${esc(name)} in the strip at the top of
-        <b>every page</b> — in front of the movers, marked as paid — and in the promoted block on the front page.
-        Ordered by spend, so the top slot is bought by paying more rather than by starting earlier; paying again extends it.
+      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day &mdash; ${qty(7 * t.perDay)} for a week &mdash; puts
+        ${esc(name)} in the strip at the top of <b>every page</b>, marked as paid, and in the promoted block on the front page.
+        Tokens, markets and farms all take the same slot. The strip holds the ${t.slots} highest by total spend, so the top of it is
+        bought by paying more rather than by starting earlier; paying again extends your run.
         It never changes a ranking, a filter or an average anywhere on this site.</p>
+      <p class="sub" id="promoStand" style="margin:6px 0 0"></p>
     </div></div>`;
 }
 
@@ -1530,6 +1534,30 @@ function wirePromote(root = document) {
   const buy = root.querySelector('#promoBuy');
   if (!buy || !promotionConfigured()) return;
   const t = promotionTerms();
+
+  // What the queue looks like right now, so a buyer can see what being seen
+  // costs instead of guessing. Same read the strip makes, shared.
+  const stand = root.querySelector('#promoStand');
+  if (stand) {
+    activePromotions().then(live => {
+      const st = promotionStanding(live, t.slots);
+      const mine = live.find(p => `${p.kind}:${p.id}` === `${buy.dataset.kind}:${buy.dataset.id}`);
+      if (mine) {
+        stand.innerHTML = `Already promoted: <b>${qty(mine.paid)} ${esc(t.token)}</b> spent, ranked <b>#${mine.rank}</b> of ${st.total},
+          ${Math.max(0, Math.round((mine.until - Date.now()) / 86400000))} days left${mine.rank > st.slots
+            ? ` &mdash; below the ${st.slots} shown in the strip. ${qty(Math.max(0, st.lastVisible - mine.paid) + t.perDay)} ${esc(t.token)} more would pass the last one.`
+            : ' &mdash; in the strip.'} Paying again extends it.`;
+        return;
+      }
+      stand.innerHTML = !st.total
+        ? `Nothing is promoted at the moment, so any payment takes the first slot.`
+        : st.full
+          ? `${st.total} promoted right now and every one of the ${st.slots} strip slots is taken. The last visible one has spent
+             <b>${qty(st.lastVisible)} ${esc(t.token)}</b>; more than that gets ${esc(buy.dataset.name || 'it')} into the strip, less puts it in the block below it.`
+          : `${st.total} promoted right now, ${st.slots - st.total} strip slot${st.slots - st.total === 1 ? '' : 's'} still free.
+             The most anyone has spent is <b>${qty(st.top)} ${esc(t.token)}</b>.`;
+    }).catch(() => {});
+  }
   let days = 7;
   root.querySelectorAll('[data-promo-days]').forEach(b => b.onclick = () => {
     root.querySelectorAll('[data-promo-days]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
@@ -4664,7 +4692,10 @@ async function renderTicker() {
   const t = promotionConfigured() ? promotionTerms() : null;
 
   const days = ms => Math.max(0, Math.round(ms / 86400000));
-  const paid = live.map(pr => {
+  // The same cap the front page uses. More buyers than slots is not a refusal
+  // — the ones below sit in the promoted block instead, and every row knows
+  // its rank, so what it takes to be seen is a number anyone can read.
+  const paid = live.slice(0, t?.slots ?? 8).map(pr => {
     const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
     if (!subject) return null;
     const isPool = pr.kind === 'p';

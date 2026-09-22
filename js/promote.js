@@ -55,8 +55,13 @@ export function promotionMemo(kind, id) {
 // so there is nothing to gain by reading further back.
 const LOOKBACK_DAYS = 120;
 
-export async function activePromotions({ now = Date.now() } = {}) {
+// Three places want this list on the same page — the strip, the front-page
+// block and the box that sells a slot — and it is one read of the same
+// transfers for all of them.
+let liveCache = null;
+export async function activePromotions({ now = Date.now(), maxAgeMs = 3 * 60 * 1000, force = false } = {}) {
   if (!cfg) return [];
+  if (liveCache && !force && now - liveCache.at < maxAgeMs) return liveCache.rows;
   const prefix = `${cfg.memoPrefix || 'promote'}:`;
   const after = new Date(now - LOOKBACK_DAYS * 86400000).toISOString();
 
@@ -132,5 +137,18 @@ export async function activePromotions({ now = Date.now() } = {}) {
   // to move up.
   const ranked = [...merged.values()].sort((a, b) => b.paid - a.paid || b.until - a.until);
   ranked.forEach((r, i) => { r.rank = i + 1; r.total = ranked.length; });
+  liveCache = { at: now, rows: ranked };
   return ranked;
+}
+
+// What it would take to be seen, in the buyer's terms: how many are paid up,
+// how many the strip holds, and what the last visible slot cost.
+export function promotionStanding(live, slots = cfg?.slots ?? 8) {
+  const rows = live || [];
+  const visible = rows.slice(0, slots);
+  return {
+    total: rows.length, slots, full: rows.length >= slots,
+    top: rows[0]?.paid ?? 0,
+    lastVisible: visible.length ? visible.at(-1).paid : 0,
+  };
 }

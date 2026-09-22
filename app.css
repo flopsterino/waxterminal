@@ -1913,6 +1913,9 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
    header's own search results still cover the strip. */
 .tickerbar { display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--line);
   background: var(--surface); position: sticky; top: 54px; z-index: 39; }
+/* display:flex on a class beats the browser's own [hidden] rule, which is how
+   an empty strip stayed on screen with nothing in it. */
+.tickerbar[hidden] { display: none; }
 @media (max-width: 720px) { .tickerbar { position: static; } }
 .tklabel { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 12px;
   font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; color: var(--muted);
