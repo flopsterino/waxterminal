@@ -154,18 +154,11 @@ export async function lpHoldings(account, tokenId, pools) {
 // The distinction is the difference between a real number and a flattering one:
 // counting every row would say 16.5 million CHEESE is locked whether or not it
 // was ever deposited.
-const LOCKER = 'waxdaolocker';
 let locksCache = null;
-let rawLocks = null;
-
-// The rows themselves, read once. Both the per-token total and the calendar
-// below are views of the same single table read.
-async function allLocks() {
-  if (rawLocks) return rawLocks;
-  const { getAllRows } = await import('./chain.js');
-  rawLocks = await getAllRows(LOCKER, LOCKER, 'locks');
-  return rawLocks;
-}
+// The rows themselves, read once — by js/waxdao.js, which owns the contract.
+// The per-token total here, the supply calendar, and a holder's own locks are
+// three views of the same single table read.
+const allLocks = (...a) => import('./waxdao.js').then(m => m.allLocks(...a));
 
 // Supply arriving on a schedule. Every live lock on WAX, soonest first.
 //

@@ -124,3 +124,100 @@ export function buildWaxdaoClaims({ account, farms, auth = null }) {
     data: { user: account, farmname: farm },
   }));
 }
+
+// =============================================================================
+// WAXDAOLOCKER — tokens somebody put out of reach, on purpose, until a date.
+//
+// One contract, chain-wide: every lock ever made on WAX sits in one table, and
+// the terminal already reads it for the supply calendar and the locked share on
+// a token page. What it never did was the half that has money in it — 113 locks
+// are past their date and still sitting there, because collecting one needs a
+// button that no longer exists anywhere.
+//
+// The flow, taken from what the contract's own history does rather than its
+// ABI. A lock is created and funded in one transaction:
+//
+//   waxdaolocker::createlock  creator, receiver, amount, token_contract, unlock
+//   <token>::transfer         the same amount to waxdaolocker, memo deposit_v2
+//
+// and the receiver collects it afterwards with withdraw{lock_ID}. Verified on
+// 2b5125c7… (a 3,002,718,038 MOONBOY lock made on 2026-09-20) and on lock 510,
+// withdrawn by its receiver on 2026-09-09.
+//
+// status is the field that decides what a row means: 0 created and never
+// funded, 1 holding money, 2 already withdrawn.
+// =============================================================================
+
+export const LOCKER = 'waxdaolocker';
+export const LOCK_MEMO = 'deposit_v2';
+
+let lockRows = null, lockAt = 0;
+export async function allLocks({ maxAgeMs = 5 * 60 * 1000, force = false } = {}) {
+  if (lockRows && !force && Date.now() - lockAt < maxAgeMs) return lockRows;
+  const { getAllRows } = await import('./chain.js');
+  lockRows = await getAllRows(LOCKER, LOCKER, 'locks');
+  lockAt = Date.now();
+  return lockRows;
+}
+
+const lockRow = (r, now) => {
+  const [amtStr, symbol] = String(r.amount || '').split(' ');
+  const amount = parseFloat(amtStr) || 0;
+  const unlockAt = Number(r.unlock_time) * 1000;
+  return {
+    id: Number(r.ID), creator: r.creator, receiver: r.receiver,
+    amount, symbol, contract: r.token_contract, tokenId: `${symbol}@${r.token_contract}`,
+    decimals: (String(amtStr).split('.')[1] || '').length,
+    createdAt: Number(r.time_of_creation) * 1000,
+    fundedAt: Number(r.time_of_deposit) * 1000 || null,
+    unlockAt, status: Number(r.status),
+    ready: Number(r.status) === 1 && unlockAt <= now,
+  };
+};
+
+// One account's locks, from the same read the rest of the page already made.
+export async function locksFor(account, { now = Date.now() } = {}) {
+  const rows = await allLocks();
+  const mine = rows.map(r => lockRow(r, now))
+    .filter(r => r.amount > 0 && (r.receiver === account || r.creator === account));
+  return {
+    // Yours to take, now.
+    ready: mine.filter(r => r.receiver === account && r.ready).sort((a, b) => a.unlockAt - b.unlockAt),
+    // Yours, later.
+    waiting: mine.filter(r => r.receiver === account && r.status === 1 && !r.ready).sort((a, b) => a.unlockAt - b.unlockAt),
+    // Locks you made for someone else, which is money you no longer control.
+    given: mine.filter(r => r.creator === account && r.receiver !== account && r.status === 1).sort((a, b) => a.unlockAt - b.unlockAt),
+    // Created and never funded: the contract is holding a row, not money.
+    unfunded: mine.filter(r => r.status === 0),
+  };
+}
+
+export function buildLockWithdraw({ account, lockIds, auth = null }) {
+  const ids = (Array.isArray(lockIds) ? lockIds : [lockIds]).map(Number).filter(n => n >= 0);
+  if (!ids.length) throw new Error('No lock to withdraw.');
+  return ids.map(id => ({
+    account: LOCKER, name: 'withdraw',
+    authorization: auth || [{ actor: account, permission: 'active' }],
+    data: { lock_ID: id },
+  }));
+}
+
+// Create and fund in one transaction, the way the contract's own users do it.
+// Nothing here can undo it: past this signature the tokens belong to the
+// receiver on that date and to nobody before it.
+export function buildTokenLock({ account, receiver, amount, symbol, decimals, contract, unlockAt, auth = null }) {
+  const a = auth || [{ actor: account, permission: 'active' }];
+  const qty = `${(Math.floor(Number(amount) * 10 ** decimals) / 10 ** decimals).toFixed(decimals)} ${symbol}`;
+  const seconds = Math.floor(unlockAt / 1000);
+  if (!(seconds > Date.now() / 1000)) throw new Error('The unlock date has to be in the future.');
+  return [
+    {
+      account: LOCKER, name: 'createlock', authorization: a,
+      data: { creator: account, receiver: receiver || account, amount: qty, token_contract: contract, unlock_time: seconds },
+    },
+    {
+      account: contract, name: 'transfer', authorization: a,
+      data: { from: account, to: LOCKER, quantity: qty, memo: LOCK_MEMO },
+    },
+  ];
+}

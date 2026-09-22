@@ -25,7 +25,7 @@ import { waxfunTokens, waxfunToken, waxfunTrades, buildWaxfunBuy, buildWaxfunSel
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
-import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake } from './waxdao.js';
+import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -4978,6 +4978,142 @@ function aggSet(account, key, val) {
 
 const sumParts = w => WALLET_PARTS.reduce((t, p) => t + (w[p.k]?.usd || 0), 0);
 
+// ---- locked tokens ---------------------------------------------------------
+// waxdaolocker holds money behind a date. The table is chain-wide and the
+// terminal already reads it — for the supply calendar and for how much of a
+// token cannot move — so a holder's own locks cost nothing extra to show.
+//
+// What they cost to leave out is the other thing: 113 locks on WAX are past
+// their date and still sitting in the contract, across thirty accounts, because
+// collecting one needs a button that no longer exists anywhere. That is the
+// whole feature.
+async function renderWalletLocks(account) {
+  const out = $('#walletLocks');
+  if (!out) return;
+  let l;
+  try { l = await locksFor(account); }
+  catch { out.innerHTML = ''; aggSet(account, 'locks', { failed: true }); return; }
+  if (walletShown !== account) return;
+
+  const price = id => state.prices.get(id)?.usd ?? null;
+  const worth = r => { const p = price(r.tokenId); return p != null ? r.amount * p : null; };
+  const money = r => { const w = worth(r); return w != null ? usd(w) : '<span class="dim">no market price</span>'; };
+  const readyUsd = l.ready.reduce((s, r) => s + (worth(r) || 0), 0);
+  aggSet(account, 'locks', {
+    ready: l.ready.length, readyUsd,
+    waiting: l.waiting.length, nextAt: l.waiting[0]?.unlockAt ?? null,
+  });
+
+  const mine = isMine(account);
+  const row = (r, kind) => `<tr>
+    <td>${tokLink(r.tokenId, r.symbol)}</td>
+    <td class="r num">${qty(r.amount)}</td>
+    <td class="r">${money(r)}</td>
+    <td class="${kind === 'ready' ? 'pos' : ''}">${kind === 'ready'
+      ? `ready since ${new Date(r.unlockAt).toISOString().slice(0, 10)}`
+      : `${new Date(r.unlockAt).toISOString().slice(0, 10)} <span class="dim">&middot; in ${forDays((r.unlockAt - Date.now()) / 86400e3)}</span>`}</td>
+    <td>${kind === 'given' ? acctLink(r.receiver) : `<span class="dim">from ${esc(r.creator)}</span>`}</td>
+    <td class="r">${kind === 'ready' && mine
+      ? `<button class="btn ghost" data-lockget="${r.id}">Withdraw</button>`
+      : `<span class="dim mono">#${r.id}</span>`}</td>
+  </tr>`;
+
+  const table = (rows, kind, head) => rows.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
+      <thead><tr><th>${head}</th><th class="r">Amount</th><th class="r">Worth</th><th>Unlocks</th><th></th><th></th></tr></thead>
+      <tbody>${rows.map(r => row(r, kind)).join('')}</tbody></table></div>` : '';
+
+  out.innerHTML = (!l.ready.length && !l.waiting.length && !l.given.length && !mine) ? '' : `
+    <div class="card">
+      <h3>Locked tokens <span class="dim">&mdash; held by <span class="mono">waxdaolocker</span> until a date</span></h3>
+      ${l.ready.length ? `<div class="cta" style="margin:0 0 10px">
+        <div><b>${l.ready.length} lock${l.ready.length === 1 ? '' : 's'} ready to collect${readyUsd > 0 ? ` &mdash; ${usd(readyUsd)}` : ''}</b>
+          <span class="sub">The date has passed. The contract keeps them until you ask for them.</span></div>
+        ${mine ? `<button class="btn" id="lockAll">Withdraw ${l.ready.length === 1 ? 'it' : 'all'}</button>` : ''}
+      </div>` : ''}
+      <div id="lockOut"></div>
+      ${table(l.ready, 'ready', 'Waiting for you')}
+      ${l.waiting.length ? `<h4 class="sub" style="margin:12px 0 6px">Still locked</h4>${table(l.waiting, 'waiting', 'Token')}` : ''}
+      ${l.given.length ? `<h4 class="sub" style="margin:12px 0 6px">Locks you made for someone else</h4>${table(l.given, 'given', 'Token')}` : ''}
+      ${!l.ready.length && !l.waiting.length && !l.given.length ? '<p class="sub">Nothing of yours is locked here.</p>' : ''}
+      ${mine ? lockFormMarkup() : ''}
+    </div>`;
+
+  const go = (ids, msg) => {
+    const box = $('#lockOut');
+    return runStakeTx(box, buildLockWithdraw({ account, lockIds: ids }), msg);
+  };
+  out.querySelectorAll('[data-lockget]').forEach(b => b.onclick = async () => {
+    const ok = await go([Number(b.dataset.lockget)], 'Withdrawn — the tokens are in your wallet.');
+    if (ok) setTimeout(() => renderWalletLocks(account).catch(() => {}), 2500);
+  });
+  const all = $('#lockAll');
+  if (all) all.onclick = async () => {
+    const ok = await go(l.ready.map(r => r.id), `Withdrawn — ${l.ready.length} lock${l.ready.length === 1 ? '' : 's'} collected.`);
+    if (ok) setTimeout(() => renderWalletLocks(account).catch(() => {}), 2500);
+  };
+  wireLockForm(account);
+}
+
+// Locking is the other half of the contract, and the half nothing else on WAX
+// offers a form for. It is also irreversible in a way a compound is not: past
+// the signature, the tokens belong to the receiver on that date and to nobody
+// at all before it. So it says that, in those words, before it signs.
+function lockFormMarkup() {
+  const rows = (walletAgg?.tokens?.rows || []).filter(r => r.amount > 0).slice(0, 60);
+  return `<details class="lockmake">
+    <summary>Lock tokens away</summary>
+    <p class="sub">The contract holds them until the date you pick and hands them to the receiver then &mdash; not before, and not back to you.</p>
+    <div class="lockgrid">
+      <label><span>Token</span>${rows.length
+        ? `<select id="lockTok">${rows.map(r => `<option value="${esc(r.id)}">${esc(r.symbol)} &middot; ${qty(r.amount)}</option>`).join('')}</select>`
+        : '<input id="lockTok" placeholder="SYMBOL@contract" autocomplete="off">'}</label>
+      <label><span>Amount</span><input id="lockAmt" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
+      <label><span>Receiver</span><input id="lockTo" placeholder="your own account" autocomplete="off" spellcheck="false"></label>
+      <label><span>Unlocks on</span><input id="lockDate" type="date"></label>
+    </div>
+    <div id="lockMakeOut"></div>
+    <button class="btn" id="lockMake">Review</button>
+  </details>`;
+}
+
+function wireLockForm(account) {
+  const btn = $('#lockMake');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const box = $('#lockMakeOut');
+    const id = String($('#lockTok')?.value || '').trim();
+    const amount = Number($('#lockAmt')?.value) || 0;
+    const to = String($('#lockTo')?.value || '').trim() || account;
+    const date = String($('#lockDate')?.value || '').trim();
+    const [symbol, contract] = id.split('@');
+    if (!symbol || !contract) { box.innerHTML = '<div class="err">Pick a token, or write it as SYMBOL@contract.</div>'; return; }
+    if (!(amount > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
+    if (!date) { box.innerHTML = '<div class="err">Pick the date it unlocks.</div>'; return; }
+    // Midday rather than midnight: a date picked in one timezone should not
+    // unlock on the day before in another.
+    const unlockAt = new Date(`${date}T12:00:00Z`).getTime();
+    if (!(unlockAt > Date.now())) { box.innerHTML = '<div class="err">That date has already passed.</div>'; return; }
+    const have = (walletAgg?.tokens?.rows || []).find(r => r.id === id);
+    if (have && amount > have.amount) { box.innerHTML = `<div class="err">You hold ${qty(have.amount)} ${esc(symbol)}.</div>`; return; }
+    const decimals = have?.decimals ?? state.tokens.get(id)?.decimals;
+    if (decimals == null) { box.innerHTML = `<div class="err">This terminal has not seen ${esc(symbol)}, so it cannot be sure of its precision. Open its token page first.</div>`; return; }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const px = state.prices.get(id)?.usd ?? null;
+    box.innerHTML = `<div class="err" style="border-color:var(--warn,var(--accent));background:var(--accent-soft)">
+      Lock <b>${qty(amount)} ${esc(symbol)}</b>${px != null ? ` (${usd(amount * px)})` : ''} until
+      <b>${new Date(unlockAt).toISOString().slice(0, 10)}</b>, for <b>${esc(to)}</b>.
+      <br><span class="dim">This cannot be undone, cancelled or brought forward. Until that date nobody can move them, including you;
+      on that date only ${esc(to)} can take them out.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="lockSign">Sign and lock</button></div></div>`;
+    $('#lockSign').onclick = async () => {
+      const ok = await runStakeTx(box, buildTokenLock({ account: wallet.account(), receiver: to, amount, symbol, decimals, contract, unlockAt }),
+        'Locked. It shows up below, with its date.');
+      if (ok) setTimeout(() => renderWalletLocks(account).catch(() => {}), 2500);
+    };
+  };
+}
+
+
 // ---- value over time ---------------------------------------------------------
 async function renderAcctHistory(account) {
   const el = $('#acctHist');
@@ -5207,6 +5343,11 @@ function paintWalletAll() {
   else if (a.vote?.voting && a.vote.ready && a.vote.waited >= 1) T('resources', `<b>Vote rewards unclaimed</b> for ${a.vote.waited} day${a.vote.waited === 1 ? '' : 's'}`, 'good', 'Claim');
   if (a.farms?.waitingUsd >= 0.01 || a.farms?.waitingFarms) T('staking', `<b>${a.farms.waitingUsd >= 0.01 ? usd(a.farms.waitingUsd) : 'Rewards'}</b> waiting in ${a.farms.waitingFarms} PepperStake/WaxDAO farm${a.farms.waitingFarms === 1 ? '' : 's'}`, 'good', 'Claim');
   if (a.farms?.endedHolding) T('staking', `<b>${a.farms.endedHolding} ended farm${a.farms.endedHolding === 1 ? '' : 's'}</b> still ${a.farms.endedHolding === 1 ? 'holds' : 'hold'} your stake`, 'warn', 'Unstake');
+  if (a.locks?.ready) {
+    T('claims', `<b>${a.locks.readyUsd >= 0.01 ? usd(a.locks.readyUsd) : `${a.locks.ready} lock${a.locks.ready === 1 ? '' : 's'}`}</b> past the unlock date, still in <span class="mono">waxdaolocker</span>`, 'good', 'Withdraw');
+  } else if (a.locks?.waiting && a.locks.nextAt) {
+    T('claims', `<b>${a.locks.waiting} lock${a.locks.waiting === 1 ? '' : 's'}</b> still held &mdash; the first opens in ${forDays((a.locks.nextAt - Date.now()) / 86400e3)}`, 'info', 'View');
+  }
   if (a.res?.refund) {
     const r = a.res.refund, left = r.readyAt - Date.now();
     T('resources', left <= 0 ? `<b>${qty(r.total)} WAX</b> unstaked and ready to claim` : `<b>${qty(r.total)} WAX</b> unstaking, arrives in ${forDays(left / 86400e3)}`, left <= 0 ? 'good' : 'info', left <= 0 ? 'Claim' : 'View');
@@ -5759,6 +5900,7 @@ async function lookupWallet(account) {
   renderEarned(account).catch(() => {});
   renderWalletBalances(account).catch(() => {});
   renderTradeFlow(account).catch(() => {});
+  renderWalletLocks(account).catch(() => {});
 
   const out = $('#walletOut');
   out.innerHTML = '<div class="loading"><span class="spinner"></span><span id="wmsg">Looking up…</span></div>';

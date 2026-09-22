@@ -1904,6 +1904,19 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .funfigs .v { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .funfigs .s { font-size: 11px; color: var(--muted); }
+
+/* ---- locking tokens away ----------------------------------------------- */
+.lockmake { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.lockmake summary { cursor: pointer; font-weight: 650; font-size: 13px; color: var(--ink-2); }
+.lockmake summary:hover { color: var(--ink); }
+.lockmake > p { margin: 8px 0 0; }
+.lockgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 9px; margin: 10px 0; }
+.lockgrid label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600; min-width: 0; }
+.lockgrid input, .lockgrid select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+  padding: 8px 10px; color: var(--ink); font: inherit; font-size: 13px; text-transform: none; letter-spacing: 0; min-width: 0; }
+.lockgrid input:focus, .lockgrid select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.lockmake .btn { width: 100%; justify-content: center; }
 .dropprice { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: -2px; }
 .dropprice b { font-size: 16px; font-variant-numeric: tabular-nums; }
 .dropprice .sub { font-size: 11.5px; }
