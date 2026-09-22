@@ -18,7 +18,7 @@
 // how it looked last spring.
 // =============================================================================
 
-import { hyperion, dropEchoes } from './chain.js';
+import { hyperionDeep, dropEchoes } from './chain.js';
 
 export const VOTES = [
   { key: 'rocket', emoji: '🚀', label: 'Going up' },
@@ -83,7 +83,10 @@ export async function loadRatings({ maxAgeMs = 4 * 60 * 1000 } = {}) {
       // HOLE transfer on the chain — 4,637 in 90 days against 23 to the rating
       // account — three pages of a thousand on every page load, which is how a
       // public Hyperion starts answering 429.
-      d = await hyperion(`/v2/history/get_actions?${new URLSearchParams({
+      // Deepest node first, for the same reason the promotions read does: the
+      // shallowest node in the rotation keeps days of this account, and a
+      // read that lands there reports a rated token as unrated.
+      d = await hyperionDeep(`/v2/history/get_actions?${new URLSearchParams({
         'act.account': cfg.token.contract, 'act.name': 'transfer', 'transfer.to': cfg.account, after,
         limit: '1000', skip: String(page * 1000), sort: 'desc',
       })}`);
