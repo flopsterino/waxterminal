@@ -107,6 +107,13 @@ try {
 } catch (e) { console.error('raw pools:', e.message); }
 console.log(`reading positions in ${pools.length} pools (${rawPools.size} fee-growth rows)…`);
 
+// Most of the accounts on these boards are not providing a market for WAX at
+// all: they are pairing two of their own tokens with each other, which prints
+// a large "liquidity" number that nobody can trade out of. Both totals are
+// kept so the page can show either, and say which it is showing.
+const WAX_TOKEN = 'WAX@eosio.token';
+const isWaxPair = p => p.tokenA === WAX_TOKEN || p.tokenB === WAX_TOKEN;
+
 const lp = new Map();       // account -> totals
 const poolOwners = new Map();  // poolId -> the distinct wallets providing there
 // poolId -> nominal USD staked into a live incentive there.
@@ -119,7 +126,11 @@ const poolOwners = new Map();  // poolId -> the distinct wallets providing there
 const stakedByPool = new Map();
 const touch = a => {
   let r = lp.get(a);
-  if (!r) { r = { account: a, valueUsd: 0, nominalUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set() }; lp.set(a, r); }
+  if (!r) {
+    r = { account: a, valueUsd: 0, nominalUsd: 0, feesUsd: 0, positions: 0, staked: 0, stakedUsd: 0, pools: new Set(),
+      waxValueUsd: 0, waxFeesUsd: 0, waxStakedUsd: 0, waxPositions: 0, waxStaked: 0, waxPools: new Set() };
+    lp.set(a, r);
+  }
   return r;
 };
 
@@ -169,9 +180,17 @@ await mapLimit(pools, 4, async p => {
     r.feesUsd += feesUsd;
     r.positions++;
     r.pools.add(p.id);
+    const waxPair = isWaxPair(p);
+    if (waxPair) {
+      r.waxValueUsd += valueUsd;
+      r.waxFeesUsd += feesUsd;
+      r.waxPositions++;
+      r.waxPools.add(p.id);
+    }
     const inc = stakedIn.get(String(pos.id)) || [];
     if (inc.some(id => liveIncentives.has(id))) {
       r.staked++; r.stakedUsd += valueUsd;
+      if (waxPair) { r.waxStaked++; r.waxStakedUsd += valueUsd; }
       // Nominal, not discounted: the page applies its own exit ratio to this,
       // and applying it twice would halve every APR denominator.
       stakedByPool.set(String(p.id), (stakedByPool.get(String(p.id)) || 0) + nominalUsd);
@@ -217,8 +236,9 @@ while (pages < 120) {
     if (!(usd > 0)) { unpriced++; continue; }
     const who = dat.sender;
     let t = traders.get(who);
-    if (!t) { t = { account: who, usd: 0, swaps: 0, pools: new Set() }; traders.set(who, t); }
+    if (!t) { t = { account: who, usd: 0, swaps: 0, pools: new Set(), waxUsd: 0, waxSwaps: 0, waxPools: new Set() }; traders.set(who, t); }
     t.usd += usd; t.swaps++; t.pools.add(String(pool.id));
+    if (isWaxPair(pool)) { t.waxUsd += usd; t.waxSwaps++; t.waxPools.add(String(pool.id)); }
     swaps++; volume += usd;
   }
   oldestSeen = new Date((acts[acts.length - 1].timestamp).replace(/Z?$/, 'Z')).getTime();
@@ -239,17 +259,23 @@ const publish = (rows, key, map) => rows
   .slice(0, TOP)
   .map(map);
 
+// Each row carries its WAX-paired half beside its total — vw, fw, nw, pw, sw —
+// so the page can hide the token-to-token pairs without a second file.
 const providers = publish([...lp.values()].filter(r => r.valueUsd > 1), 'valueUsd',
-  r => ({ a: r.account, v: round(r.valueUsd), f: round(r.feesUsd, 4), n: r.positions, p: r.pools.size, s: r.staked }));
+  r => ({ a: r.account, v: round(r.valueUsd), f: round(r.feesUsd, 4), n: r.positions, p: r.pools.size, s: r.staked,
+    vw: round(r.waxValueUsd), fw: round(r.waxFeesUsd, 4), nw: r.waxPositions, pw: r.waxPools.size, sw: r.waxStaked }));
 
 const earners = publish([...lp.values()].filter(r => r.feesUsd > 0.01), 'feesUsd',
-  r => ({ a: r.account, f: round(r.feesUsd, 4), v: round(r.valueUsd), n: r.positions, p: r.pools.size }));
+  r => ({ a: r.account, f: round(r.feesUsd, 4), v: round(r.valueUsd), n: r.positions, p: r.pools.size,
+    fw: round(r.waxFeesUsd, 4), vw: round(r.waxValueUsd), nw: r.waxPositions, pw: r.waxPools.size }));
 
 const farmers = publish([...lp.values()].filter(r => r.stakedUsd > 1), 'stakedUsd',
-  r => ({ a: r.account, v: round(r.stakedUsd), n: r.staked, p: r.pools.size }));
+  r => ({ a: r.account, v: round(r.stakedUsd), n: r.staked, p: r.pools.size,
+    vw: round(r.waxStakedUsd), nw: r.waxStaked, pw: r.waxPools.size }));
 
 const movers = publish([...traders.values()], 'usd',
-  r => ({ a: r.account, v: round(r.usd), n: r.swaps, p: r.pools.size }));
+  r => ({ a: r.account, v: round(r.usd), n: r.swaps, p: r.pools.size,
+    vw: round(r.waxUsd), nw: r.waxSwaps, pw: r.waxPools.size }));
 
 const burned = [...lp.values()].filter(r => BURN.has(r.account))
   .reduce((a, r) => ({ valueUsd: a.valueUsd + r.valueUsd, feesUsd: a.feesUsd + r.feesUsd, positions: a.positions + r.positions }),

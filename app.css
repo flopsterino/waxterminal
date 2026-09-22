@@ -1951,6 +1951,9 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .tkrank { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 12px; text-align: right; }
 .tkname { font-weight: 650; }
 .tkval { font-variant-numeric: tabular-nums; }
+.tkkind { font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.tkdot { color: var(--line); }
+.tkval.dim { color: var(--muted); }
 .tkval.pos { color: var(--good); }
 .tkval.neg { color: var(--bad); }
 .tkval.apr { color: var(--accent); }

@@ -4762,6 +4762,10 @@ async function renderTicker() {
   // The same cap the front page uses. More buyers than slots is not a refusal
   // — the ones below sit in the promoted block instead, and every row knows
   // its rank, so what it takes to be seen is a number anyone can read.
+  // A name and a percentage is an advert; a name, a price, a rate and what the
+  // farm on it pays is a reason to click. Each entry carries up to three facts,
+  // and the farm's rate is the one people are actually shopping for.
+  const farmOn = key => byFarm.get(key) || [...byFarm.values()].find(g => `${g.dex}:${g.poolId}` === key) || null;
   const paid = live.slice(0, t?.slots ?? 8).map(pr => {
     const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
     if (!subject) return null;
@@ -4769,13 +4773,32 @@ async function renderTicker() {
     const isFarm = pr.kind === 'f';
     const name = isFarm ? (subject.pool ? `${subject.pool.symA}/${subject.pool.symB}` : `farm ${subject.poolId}`)
       : isPool ? `${subject.symA}/${subject.symB}` : subject.symbol;
-    const change = isPool ? subject.change24 : isFarm ? null : subject.change24;
-    const right = isFarm && subject.aprReal != null ? pct(subject.aprReal)
-      : change != null ? chgTxt(change)
-      : isPool ? usd(subject.tvlReal) : usd(subject.tvl);
+    // facts: [text, class]. Money first, then the rate, then the movement —
+    // the order somebody reads a row in.
+    const facts = [];
+    if (isFarm) {
+      const apr = subject.aprReal ?? subject.apr;
+      if (apr != null) facts.push([`${pct(apr)} APR`, 'apr']);
+      if (subject.rewardRealDay > 0) facts.push([`${usd(subject.rewardRealDay)}/day`, '']);
+      if (subject.pool?.tvlReal > 0) facts.push([usd(subject.pool.tvlReal), 'dim']);
+    } else if (isPool) {
+      const g = farmOn(`${subject.dex}:${subject.id}`);
+      const apr = g ? (g.aprReal ?? g.apr) : null;
+      if (apr != null) facts.push([`${pct(apr)} farm APR`, 'apr']);
+      else { const fa = feeApr(subject); if (fa > 0) facts.push([`${pct(fa)} fees`, 'apr']); }
+      if (subject.tvlReal > 0) facts.push([usd(subject.tvlReal), '']);
+      if (subject.vol24 > 0) facts.push([`${usd(subject.vol24)} 24h`, 'dim']);
+      if (subject.change24 != null) facts.push([chgTxt(subject.change24), chgCls(subject.change24)]);
+    } else {
+      if (subject.price > 0) facts.push([px(subject.price), '']);
+      if (subject.change24 != null) facts.push([chgTxt(subject.change24), chgCls(subject.change24)]);
+      if (subject.vol24 > 0) facts.push([`${usd(subject.vol24)} 24h`, 'dim']);
+      else if (subject.tvl > 0) facts.push([`${usd(subject.tvl)} pooled`, 'dim']);
+    }
     return {
-      promoted: true, name, right,
-      cls: isFarm ? 'apr' : chgCls(change),
+      promoted: true, name,
+      kind: isFarm ? 'farm' : isPool ? 'market' : 'token',
+      facts: facts.slice(0, 3),
       id: pr.kind === 't' ? subject.id : null,
       poolKey: isPool ? `${subject.dex}:${subject.id}` : null,
       farmKey: isFarm ? subject.key : null,
@@ -4809,7 +4832,8 @@ async function renderTicker() {
     ${r.id ? `data-tokid="${esc(r.id)}"` : ''}${r.poolKey ? ` data-poolkey="${esc(r.poolKey)}"` : ''}${r.farmKey ? ` data-farmkey="${esc(r.farmKey)}"` : ''}>
     <span class="tkpaid">paid</span>
     <span class="tkname">${esc(r.name)}</span>
-    <span class="tkval ${esc(r.cls || '')}">${r.right}</span>
+    <span class="tkkind">${esc(r.kind)}</span>
+    ${r.facts.map(([txt, cls]) => `<span class="tkval ${esc(cls)}">${txt}</span>`).join('<span class="tkdot">&middot;</span>')}
   </button>`;
 
   // Written twice, because a marquee that loops has to have somewhere to loop
@@ -8144,28 +8168,35 @@ function poolStakedUsd(key) {
   return d.lps?.[id] != null ? 0 : null;
 }
 
+// Each column names the field it reads and the field it reads when the
+// token-to-token pairs are hidden — vw, fw, nw, pw, sw, written by
+// tools/leaders.mjs beside the totals.
 const LD_BOARDS = {
   providers: {
     key: 'providers', label: 'Liquidity',
     note: 'What their positions could actually pay out, not the pool\'s printed value.',
-    cols: [['v', 'Position value', usdExact], ['f', 'Fees owed', usd], ['n', 'Positions', String], ['p', 'Pools', String], ['s', 'Staked', String]],
+    cols: [['v', 'Position value', usdExact, 'vw'], ['f', 'Fees owed', usd, 'fw'], ['n', 'Positions', String, 'nw'],
+      ['p', 'Pools', String, 'pw'], ['s', 'Staked', String, 'sw']],
   },
   earners: {
     key: 'earners', label: 'Fees earned',
     note: 'Fees accrued and not yet collected. In no table on chain — rebuilt from each pool\'s fee-growth counters.',
-    cols: [['f', 'Fees owed', usdExact], ['v', 'Position value', usd], ['n', 'Positions', String], ['p', 'Pools', String]],
+    cols: [['f', 'Fees owed', usdExact, 'fw'], ['v', 'Position value', usd, 'vw'], ['n', 'Positions', String, 'nw'], ['p', 'Pools', String, 'pw']],
   },
   farmers: {
     key: 'farmers', label: 'Farming',
     note: 'Staked into incentives that are still running.',
-    cols: [['v', 'Staked value', usdExact], ['n', 'Staked positions', String], ['p', 'Pools', String]],
+    cols: [['v', 'Staked value', usdExact, 'vw'], ['n', 'Staked positions', String, 'nw'], ['p', 'Pools', String, 'pw']],
   },
   movers: {
     key: 'movers', label: 'Traders',
     note: 'Dollars moved through Alcor in 24h, by the account that signed the swap.',
-    cols: [['v', 'Volume 24h', usdExact], ['n', 'Swaps', v => v.toLocaleString()], ['p', 'Pools', String]],
+    cols: [['v', 'Volume 24h', usdExact, 'vw'], ['n', 'Swaps', v => v.toLocaleString(), 'nw'], ['p', 'Pools', String, 'pw']],
   },
 };
+// Off by default: the boards are about the whole venue. On, they are about
+// the part of it anyone can actually trade into.
+let ldWaxOnly = false;
 
 async function renderLeaders() {
   const out = $('#ldOut');
@@ -8205,14 +8236,31 @@ async function renderLeaders() {
     b.setAttribute('aria-pressed', String(b.dataset.board === ldBoard)));
 
   const cfg = LD_BOARDS[ldBoard];
-  const rows = d[cfg.key] || [];
-  $('#ldNote').textContent = cfg.note + (sc.hidden ? ` ${sc.hidden} withheld, still counted.` : '');
+  const all = d[cfg.key] || [];
+  // The WAX-paired halves are written by the nightly job. An older file has
+  // none, so the switch says so rather than showing an empty board.
+  const hasWax = all.some(r => r.vw != null || r.fw != null);
+  const field = c => (ldWaxOnly && hasWax && c[3] ? c[3] : c[0]);
+  const sortKey = field(cfg.cols[0]);
+  const rows = ldWaxOnly && hasWax
+    ? all.filter(r => (r[sortKey] || 0) > 0).sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0))
+    : all;
+  const waxBtn = $('#ldWaxOnly');
+  if (waxBtn) {
+    waxBtn.hidden = false;
+    waxBtn.disabled = !hasWax;
+    waxBtn.setAttribute('aria-pressed', String(ldWaxOnly && hasWax));
+    waxBtn.textContent = hasWax ? 'Only pairs against WAX' : 'Only pairs against WAX — after tonight’s rebuild';
+  }
+  $('#ldNote').textContent = cfg.note
+    + (ldWaxOnly && hasWax ? ' Counting only positions in pools paired against WAX — token-to-token pairs are left out.' : '')
+    + (sc.hidden ? ` ${sc.hidden} withheld, still counted.` : '');
 
   if (!rows.length) { out.innerHTML = '<div class="empty">Nothing on this board yet.</div>'; return; }
 
   // The headline column is the one the board is sorted on, so it is the one
   // worth drawing rather than only printing.
-  const key = cfg.cols[0][0], fmt0 = cfg.cols[0][2];
+  const key = sortKey, fmt0 = cfg.cols[0][2];
   const top = rows[0]?.[key] || 0;
   const total = rows.reduce((a, r) => a + (r[key] || 0), 0);
   const share = v => (total > 0 ? (v / total) * 100 : 0);
@@ -8225,7 +8273,7 @@ async function renderLeaders() {
     <span class="ldpr">${medal[i]}</span>
     <b class="ldpa">${acctLink(r.a)}</b>
     <span class="ldpv">${esc(String(fmt0(r[key] || 0)))}</span>
-    <span class="ldps">${cfg.cols.slice(1, 3).map(c => `${esc(String(c[2](r[c[0]] || 0)))} ${esc(c[1].toLowerCase())}`).join(' · ')}</span>
+    <span class="ldps">${cfg.cols.slice(1, 3).map(c => `${esc(String(c[2](r[field(c)] || 0)))} ${esc(c[1].toLowerCase())}`).join(' · ')}</span>
     <span class="ldpbar" style="--w:${share(r[key] || 0).toFixed(1)}%"></span>
   </div>`).join('');
 
@@ -8261,7 +8309,7 @@ async function renderLeaders() {
       <td class="rank">${i + 1}</td>
       <td class="mono">${acctLink(r.a)}</td>
       ${cfg.cols.map((c, ci) => {
-        const v = r[c[0]];
+        const v = r[field(c)];
         if (ci !== 0) return `<td class="r num${v ? '' : ' dim'}">${v ? esc(String(c[2](v))) : '—'}</td>`;
         return `<td class="r num"><span class="ldbar" style="--w:${top > 0 ? Math.max(1, ((v || 0) / top) * 100).toFixed(1) : 0}%">
           ${v ? esc(String(c[2](v))) : '—'}</span></td>`;
@@ -8284,6 +8332,8 @@ function wireLeaders() {
     ldBoard = b.dataset.board;
     renderLeaders();
   });
+  const wax = $('#ldWaxOnly');
+  if (wax) wax.onclick = () => { ldWaxOnly = !ldWaxOnly; renderLeaders(); };
 }
 
 async function renderActivity() {
