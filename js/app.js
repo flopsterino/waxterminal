@@ -4454,7 +4454,7 @@ async function drawFusionPrice(st) {
     const rows = series.filter(r => r.x >= cut);
     const shown = (rows.length > 2 ? rows : series).map(r => ({ x: r.x, y: (r.y / st.lswaxInSwax - 1) * 100 }));
     box.innerHTML = `<div class="toolbar" style="margin:0 0 4px">
-      ${[[30, '30 days'], [90, '3 months'], [400, 'All of it']].map(([d, lbl]) =>
+      ${[[30, '30 days'], [90, '3 months'], [400, 'All time']].map(([d, lbl]) =>
         `<button class="chip" data-fudays="${d}" aria-pressed="${String(d === days)}">${lbl}</button>`).join('')}
       <span class="dim" style="font-size:11.5px">${gap == null ? '' : `${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} backing now`}</span>
     </div>`;
@@ -4592,7 +4592,7 @@ function drawFusionDesk(st, u) {
           More than that has to go through an epoch's redemption period.` },
     }[mode];
     desk.innerHTML = `
-      <h3>Stake, liquify or redeem <span class="dim">&mdash; you hold ${qty(u.wax)} WAX</span></h3>
+      <h3>Stake, liquify or redeem</h3>
       <div class="seg" id="fusionMode" role="radiogroup" aria-label="What to do">
         ${[['stake', 'Stake'], ['liquify', 'Liquify'], ['unliquify', 'Unliquify'], ['redeem', 'Redeem']]
           .map(([k, label]) => `<button role="radio" data-fmode="${k}" aria-checked="${k === mode}">${label}</button>`).join('')}
