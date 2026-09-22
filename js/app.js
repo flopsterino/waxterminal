@@ -27,7 +27,7 @@ import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
-import { fusionState, fusionUser, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
+import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
   buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
@@ -1273,6 +1273,7 @@ function renderOverview() {
   const top = [...pools].sort((a, b) => (b.tvlReal || 0) - (a.tvlReal || 0)).slice(0, 8);
   renderWatchlist(groups);
   renderPromoted();
+  renderTicker().catch(() => {});
   mini('#ovDeep', top.map(p2 => ({ pool: pKey(p2), x: p2 })), [
     { h: 'Pool', v: p2 => pairCell(p2) + tierTag(p2) },
     { h: 'Liquidity', r: true, v: p2 => usd(p2.tvlReal) },
@@ -1503,7 +1504,18 @@ function promoteBox(kind, id, name) {
         <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}">Promote &mdash; <span id="promoCost">${qty(7 * t.perDay)} ${esc(t.token)}</span></button>
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
-      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day on the front page. Ordered by spend; paying again extends it.</p>
+      <div class="promoshow">
+        <span class="sub">What it buys</span>
+        <div class="tickerbar promoprev"><span class="tklabel">Promoted &amp; trending</span>
+          <div class="tkviewport"><div class="tkrun">
+            <button class="tkitem paid" type="button" tabindex="-1"><span class="tkpaid">paid</span><span class="tkname">${esc(name)}</span><span class="tkval pos">+4.2%</span></button>
+            <button class="tkitem" type="button" tabindex="-1"><span class="tkrank">1</span><span class="tkname">&hellip;</span><span class="tkval">&nbsp;</span></button>
+          </div></div></div>
+      </div>
+      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day puts ${esc(name)} in the strip at the top of
+        <b>every page</b> — in front of the movers, marked as paid — and in the promoted block on the front page.
+        Ordered by spend, so the top slot is bought by paying more rather than by starting earlier; paying again extends it.
+        It never changes a ranking, a filter or an average anywhere on this site.</p>
     </div></div>`;
 }
 
@@ -4277,6 +4289,11 @@ async function renderFusion() {
       <div class="card" style="margin-bottom:12px"><h3>Where the revenue goes <span class="dim">&mdash; ${qty(st.revenueDistributed)} WAX so far</span></h3>
         ${split}</div>
 
+      <div class="card" id="fusionPriceCard" style="margin-bottom:12px" hidden>
+        <h3>LSWAX: what it is backed by, and what it trades for <span class="dim" id="fusionPriceSub"></span></h3>
+        <div id="fusionPrice"></div>
+      </div>
+
       ${st.paused ? '<div class="err" style="margin-bottom:12px"><b>The contract is paused.</b> Its panic switch is on, so deposits and redemptions will refuse.</div>' : ''}
 
       <div class="funpage">
@@ -4290,11 +4307,9 @@ async function renderFusion() {
             <p class="sub">The protocol does not run itself: revenue only becomes LSWAX when somebody calls compound, idle WAX only starts
               earning when somebody stakes it, and the farms it pays for only get funded when somebody funds them. With the site gone,
               that somebody is whoever is looking. You pay the CPU; the benefit goes to everyone holding.</p>
-            <div class="keepergrid">${KEEPER.map(k => `<div class="keeper">
+            <div class="keepergrid" id="keeperGrid">${KEEPER.map(k => `<div class="keeper">
               <div><b>${esc(k.title)}</b><span class="sub">${esc(k.what)}</span>
-                ${k.name === 'compound' ? `<span class="sub dim">Last run ${ago(new Date(st.lastCompoundAt).toISOString())}.</span>` : ''}
-                ${k.name === 'createfarms' ? `<span class="sub dim">${qty(st.incentivesBucket)} LSWAX waiting to be handed to the farms.</span>` : ''}
-                ${k.name === 'stakeallcpu' ? `<span class="sub dim">${st.nextStakeAllAt <= Date.now() ? 'Due now.' : `Next due ${new Date(st.nextStakeAllAt).toLocaleString()}.`}</span>` : ''}</div>
+                <span class="keepwhen" data-keepwhen="${esc(k.name)}"></span></div>
               <button class="btn ghost" data-keeper="${esc(k.name)}">Run it</button>
             </div>`).join('')}</div>
             <div id="keeperOut"></div>
@@ -4303,6 +4318,8 @@ async function renderFusion() {
       </div>
     </div>`;
 
+  paintKeeperTiming(st);
+  drawFusionPrice(st).catch(() => {});
   out.querySelectorAll('[data-keeper]').forEach(b => b.onclick = async () => {
     const box = $('#keeperOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
@@ -4313,6 +4330,90 @@ async function renderFusion() {
   });
 
   paintFusionUser(st, stale);
+}
+
+// Backing against market. LSWAX is worth a fixed amount of sWAX by
+// construction — the contract says so, and it only goes up — but what it
+// actually changes hands for is whatever the pool says. The gap between those
+// two is the only number that matters to somebody deciding whether to unliquify
+// or just sell, and neither side of it was on the page.
+async function drawFusionPrice(st) {
+  const card = $('#fusionPriceCard'), box = $('#fusionPrice'), sub = $('#fusionPriceSub');
+  if (!card || !box) return;
+  // The deepest WAX pair, because the backing is quoted in WAX: sWAX is WAX,
+  // one for one, by the same construction.
+  const pools = state.pools.filter(p => p.tvlReal > 0
+    && ((p.tokenA === 'LSWAX@token.fusion' && p.tokenB === WAX_ID) || (p.tokenB === 'LSWAX@token.fusion' && p.tokenA === WAX_ID)));
+  const pool = pools.sort((a, b) => b.tvlReal - a.tvlReal)[0];
+  if (!pool) return;
+  // priceAB is B per A, so a WAX/LSWAX pool quotes LSWAX per WAX and has to be
+  // turned over to sit next to a backing quoted the other way.
+  const flip = pool.tokenA === WAX_ID;
+  const nowPrice = flip ? (pool.priceAB > 0 ? 1 / pool.priceAB : null) : pool.priceAB;
+  let series = [];
+  try {
+    const hist = await loadHistory();
+    series = poolSeries(hist, `${pool.dex}:${pool.id}`)
+      .filter(r => r.price > 0)
+      .map(r => ({ x: r.at, y: flip ? 1 / r.price : r.price }));
+  } catch { series = []; }
+  if (nowPrice == null && !series.length) return;
+  card.hidden = false;
+  const gap = nowPrice != null ? (nowPrice / st.lswaxInSwax - 1) * 100 : null;
+  if (sub) {
+    sub.innerHTML = gap == null ? '' : `&mdash; trading ${Math.abs(gap) < 0.05 ? 'at its backing'
+      : `${Math.abs(gap).toFixed(2)}% ${gap > 0 ? 'above' : 'below'} it`}`;
+  }
+  box.innerHTML = '';
+  box.appendChild(priceBandChart(series, {
+    // No band and no handles: the dashed line is the backing, and the line is
+    // the market against it.
+    lower: null, upper: null, price: st.lswaxInSwax,
+    fmt: v => (v >= 0.01 ? v.toFixed(4) : pxNum(v)), height: 190,
+    label: 'WAX per LSWAX on the market, against what it is backed by',
+  }));
+  box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">
+    The dashed line is the backing: <b>${st.lswaxInSwax.toFixed(6)}</b> sWAX behind every LSWAX, which rises every time somebody compounds.
+    The solid line is ${esc(pool.symA)}/${esc(pool.symB)} on ${esc(venueName[pool.dex] || pool.dex)}${nowPrice != null ? `, at <b>${nowPrice.toFixed(6)}</b> WAX now` : ''}.
+    ${gap == null ? '' : gap < -0.25
+      ? 'Below the backing, unliquifying returns more than selling — minus whatever the redemption queue costs you in time.'
+      : gap > 0.25 ? 'Above the backing, selling returns more than unliquifying.'
+      : 'The two are within a quarter of a percent of each other.'}</p>`);
+}
+
+// When each job last ran, and whether it is wanted now. Some of it the
+// contract keeps itself — the compound time, the incentive bucket, the next
+// stake-all — and the rest is one read of its own history. A button with no
+// idea whether pressing it would do anything is a button nobody presses.
+async function paintKeeperTiming(st) {
+  const now = Date.now();
+  const since = at => (at ? `last run ${ago(new Date(at).toISOString())}` : 'not in the history we can still read');
+  const put = (name, html) => {
+    const el = document.querySelector(`[data-keepwhen="${name}"]`);
+    if (el) el.innerHTML = html;
+  };
+  const due = (yes, when) => (yes ? '<b class="pos">worth doing now</b>' : `<span class="dim">${when}</span>`);
+
+  put('compound', `${since(st.lastCompoundAt)} &middot; ${due(st.pendingRevenue > 0.5,
+    st.pendingRevenue > 0 ? `${qty(st.pendingRevenue)} WAX has arrived since` : 'nothing has arrived since')}`);
+  put('createfarms', `${since(st.lastIncentiveAt)} &middot; ${due(st.incentivesBucket >= 1,
+    `${qty(st.incentivesBucket)} LSWAX in the bucket, enough at 1`)}`);
+  put('stakeallcpu', st.nextStakeAllAt <= now
+    ? `due since ${ago(new Date(st.nextStakeAllAt).toISOString())} &middot; <b class="pos">worth doing now</b>`
+    : `<span class="dim">next due ${new Date(st.nextStakeAllAt).toLocaleString()}</span>`);
+  put('updatetop21', `${since(st.top21At)} &middot; ${due(st.top21At != null && now - st.top21At > 36 * 3600e3,
+    st.producers ? `${st.producers} producers on the list` : 'no list read')}`);
+  put('clearexpired', '<span class="dim">only if a request of yours expired</span>');
+  put('claimrefunds', `${due(st.refundable > 0, st.refundable > 0 ? '' : 'nothing has finished unstaking')}`);
+
+  try {
+    const runs = await fusionKeeperRuns();
+    const r = runs.get('claimrefunds');
+    if (r) {
+      put('claimrefunds', `last run ${ago(new Date(r.at).toISOString())}${r.by ? ` by ${esc(r.by)}` : ''} &middot; ${
+        due(st.refundable > 0, st.refundable > 0 ? `${qty(st.refundable)} WAX waiting` : 'nothing has finished unstaking')}`);
+    }
+  } catch { /* the contract's own numbers are already on screen */ }
 }
 
 // The half that belongs to whoever is looking.
@@ -4537,6 +4638,92 @@ function wireRatings(root = document) {
       }
     });
   });
+}
+
+// ------------------------------------------------------------- TICKER ------
+// The strip under the header: paid slots first, then whatever is actually
+// moving. Every other terminal has one, and for a good reason — it is the only
+// part of a site that is on every page, so it is the only thing worth selling
+// that a reader sees wherever they land.
+//
+// The rules from js/promote.js hold here too. A paid entry is marked as paid,
+// with what was spent and when it runs out in its tooltip, and it never enters
+// the trending half: the promoted entries sit in front, the movers behind, and
+// nothing bought moves a ranking.
+let tickerDrawn = false;
+async function renderTicker() {
+  const bar = $('#tickerBar'), track = $('#tickerTrack'), label = $('#tickerLabel');
+  if (!bar || !track) return;
+  const toks = tokenTable();
+  const byToken = new Map(toks.map(t => [t.id, t]));
+  const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
+  const byFarm = new Map(farmGroups().map(g => [g.key, g]));
+
+  let live = [];
+  try { live = promotionConfigured() ? await activePromotions() : []; } catch { live = []; }
+  const t = promotionConfigured() ? promotionTerms() : null;
+
+  const days = ms => Math.max(0, Math.round(ms / 86400000));
+  const paid = live.map(pr => {
+    const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
+    if (!subject) return null;
+    const isPool = pr.kind === 'p';
+    const isFarm = pr.kind === 'f';
+    const name = isFarm ? (subject.pool ? `${subject.pool.symA}/${subject.pool.symB}` : `farm ${subject.poolId}`)
+      : isPool ? `${subject.symA}/${subject.symB}` : subject.symbol;
+    const change = isPool ? subject.change24 : isFarm ? null : subject.change24;
+    const right = isFarm && subject.aprReal != null ? pct(subject.aprReal)
+      : change != null ? chgTxt(change)
+      : isPool ? usd(subject.tvlReal) : usd(subject.tvl);
+    return {
+      promoted: true, name, right,
+      cls: isFarm ? 'apr' : chgCls(change),
+      id: pr.kind === 't' ? subject.id : null,
+      poolKey: isPool ? `${subject.dex}:${subject.id}` : null,
+      farmKey: isFarm ? subject.key : null,
+      title: t ? `Paid promotion — ${qty(pr.paid)} ${t.token} spent, ${days(pr.until - Date.now())} days left. Paid placement never changes a ranking.` : 'Paid promotion',
+    };
+  }).filter(Boolean);
+
+  // Nothing else goes in it. The strip is the thing being sold, and a slot in
+  // it is worth paying for exactly to the degree that it is not given away:
+  // filling the gaps with whatever moved today would make the paid entries
+  // decoration. With nothing sold it says what it is for, once, and links to
+  // the page that sells it.
+  const rows = paid;
+  if (!rows.length) {
+    if (!promotionConfigured()) { bar.hidden = true; return; }
+    bar.hidden = false;
+    if (label) label.textContent = 'Promoted';
+    track.innerHTML = `<div class="tkrun tkempty"><button class="tkitem invite" type="button" data-view="tokens">
+      <span class="tkpaid">open</span><span class="tkname">This strip is for promoted tokens and pairs</span>
+      <span class="tkval">${qty(t.perDay)} ${esc(t.token)} a day &middot; open any token or market to take it</span></button></div>`;
+    track.style.removeProperty('--tkdur');
+    // One item has nowhere to roll to: it would simply walk off the left edge.
+    track.style.animation = 'none';
+    track.querySelector('[data-view]')?.addEventListener('click', () => { show('tokens'); renderTokens(); });
+    return;
+  }
+  bar.hidden = false;
+  if (label) label.textContent = 'Promoted';
+
+  const cell = r => `<button class="tkitem paid" title="${esc(r.title)}"
+    ${r.id ? `data-tokid="${esc(r.id)}"` : ''}${r.poolKey ? ` data-poolkey="${esc(r.poolKey)}"` : ''}${r.farmKey ? ` data-farmkey="${esc(r.farmKey)}"` : ''}>
+    <span class="tkpaid">paid</span>
+    <span class="tkname">${esc(r.name)}</span>
+    <span class="tkval ${esc(r.cls || '')}">${r.right}</span>
+  </button>`;
+
+  // Written twice, because a marquee that loops has to have somewhere to loop
+  // to. The copy is hidden from a screen reader, which should hear the list
+  // once.
+  const once = rows.map(cell).join('');
+  track.style.removeProperty('animation');
+  track.innerHTML = `<div class="tkrun">${once}</div><div class="tkrun" aria-hidden="true">${once}</div>`;
+  // Long lists scroll slower, so the speed per item stays the same whether
+  // there are four entries or twenty.
+  track.style.setProperty('--tkdur', `${Math.max(24, rows.length * 4.5)}s`);
+  tickerDrawn = true;
 }
 
 // ------------------------------------------------------------- FILTERING ----

@@ -40,10 +40,11 @@ const asset = (v, decimals, symbol) => `${(Math.floor(Number(v) * 10 ** decimals
 
 // Everything the protocol says about itself, in three reads.
 export async function fusionState({ now = Date.now() } = {}) {
-  const [g, r, g2] = await Promise.all([
+  const [g, r, g2, top] = await Promise.all([
     getRows(FUSION, FUSION, 'global', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
     getRows(FUSION, FUSION, 'rewards', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
     getRows(FUSION, FUSION, 'global2', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
+    getRows(FUSION, FUSION, 'top21', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
   ]);
   if (!g) throw new Error('dapp.fusion did not answer');
   const startedAt = Number(g.last_epoch_start_time) || 0;
@@ -109,7 +110,31 @@ export async function fusionState({ now = Date.now() } = {}) {
     paused: !!g2?.panic,
     epochs, openEpoch, nextEpoch,
     rewardPool: r ? amt(r.rewardPool) : null,
+    top21At: top ? Number(top.last_update) * 1000 : null,
+    producers: (top?.block_producers || []).length,
+    // Refunds the CPU contracts owe back: an epoch whose unstaking has
+    // finished but whose WAX has not been collected.
+    refundable: epochs.filter(e => e.toRefund > 0 && e.unstakeAt <= now).reduce((s2, e) => s2 + e.toRefund, 0),
   };
+}
+
+// When each of the housekeeping actions last ran. The contract records some of
+// them itself; the rest are one read of its own history, which is cheap enough
+// once and cached for the session.
+let runCache = null;
+export async function fusionKeeperRuns({ maxAgeMs = 5 * 60 * 1000 } = {}) {
+  if (runCache && Date.now() - runCache.at < maxAgeMs) return runCache.map;
+  const map = new Map();
+  const { hyperion } = await import('./chain.js');
+  // One query per action would be six; this one read covers the actions the
+  // contract does not timestamp itself, which in practice is claimrefunds.
+  try {
+    const d = await hyperion(`/v2/history/get_actions?account=${FUSION}&act.name=claimrefunds&limit=1&sort=desc`);
+    const a = d.actions?.[0];
+    if (a) map.set('claimrefunds', { at: Date.parse(a.timestamp + (String(a.timestamp).endsWith('Z') ? '' : 'Z')), by: a.act?.authorization?.[0]?.actor || null });
+  } catch { /* a missing timestamp is not worth failing the page over */ }
+  runCache = { at: Date.now(), map };
+  return map;
 }
 
 // One account's side of it.
