@@ -881,6 +881,7 @@ export function depthChart(bands, { price, fmtPrice = v => v, fmt = v => v, heig
 // linear one.
 export function priceBandChart(points, {
   lower, upper, price, height = 200, fmt = v => String(v), onChange = null, label = 'price with the chosen range',
+  xLabels = true,
 } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart bandchart';
@@ -971,6 +972,21 @@ export function priceBandChart(points, {
       g.appendChild(el('rect', { x: x0, y: y - 11, width: x1 - x0 + padR, height: 22, class: 'bchit' }));
       svg.appendChild(g);
       handles[key] = g;
+    }
+  }
+
+  // Dates along the bottom. A price chart whose x axis says nothing is a
+  // picture of a shape, not of a period — "is this a week or a year?" is the
+  // first thing anyone asks it.
+  if (xLabels && pts.length > 1) {
+    const span2 = pts.at(-1).x - pts[0].x;
+    const day = t => new Date(t).toISOString().slice(0, 10);
+    for (let i = 0; i <= 2; i++) {
+      const t = pts[0].x + (span2 * i) / 2;
+      const anchor = i === 0 ? 'start' : i === 2 ? 'end' : 'middle';
+      const tx = el('text', { x: X(t).toFixed(1), y: y1 + 13, class: 'bclabel', 'text-anchor': anchor });
+      tx.textContent = span2 < 3 * 86400e3 ? day(t).slice(5) : day(t);
+      svg.appendChild(tx);
     }
   }
 

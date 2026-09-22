@@ -1905,6 +1905,22 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .funfigs .s { font-size: 11px; color: var(--muted); }
 
+/* ---- scoreboard ---------------------------------------------------------- */
+.ldpodium { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 10px; }
+.ldp { position: relative; display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px 14px; }
+.ldp1 { border-color: var(--accent); background: var(--accent-soft); }
+.ldp2 { border-color: color-mix(in srgb, var(--ink-2) 35%, transparent); }
+.ldpr { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; color: var(--muted); }
+.ldp1 .ldpr { color: var(--accent); }
+.ldpa { font-size: 14px; }
+.ldpv { font-size: 21px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ldps { font-size: 11px; color: var(--ink-2); }
+.ldpbar { position: absolute; left: 0; bottom: 0; height: 3px; width: var(--w); background: var(--accent); opacity: .7; }
+.ldconc { margin: 0 0 10px; }
+.ldbar { display: inline-block; position: relative; padding: 1px 7px; border-radius: 5px; font-variant-numeric: tabular-nums;
+  background: linear-gradient(90deg, var(--accent-soft) var(--w), transparent var(--w)); }
+
 /* ---- ticker -------------------------------------------------------------- */
 /* The one strip that is on every page, which is what makes a paid slot in it
    worth paying for. Promoted entries sit in front and are marked as paid. */
@@ -1992,9 +2008,16 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fuarrow .back { color: var(--muted); opacity: .75; }
 .fuarrow.two i::before { content: ''; position: absolute; left: 0; top: -3.5px; border: 3.5px solid transparent; border-right-color: var(--line); }
 @media (max-width: 720px) {
-  .fuflow { flex-direction: column; }
-  .fuarrow { flex: none; flex-direction: row; gap: 8px; padding: 2px 0; }
-  .fuarrow i { width: 40px; }
+  /* flex-basis 130px means 130px TALL once the strip turns vertical, which
+     made four steps eight hundred pixels of mostly empty box. */
+  .fuflow { flex-direction: column; gap: 2px; }
+  .fustep { flex: 0 0 auto; padding: 8px 11px; }
+  .fustep b { font-size: 15px; }
+  .fuarrow { flex: 0 0 auto; flex-direction: row; gap: 8px; padding: 1px 0 1px 12px; justify-content: flex-start; }
+  .fuarrow i { width: 34px; }
+  .fusplit { flex-wrap: wrap; }
+  .fubar { flex: 1 1 100px; }
+  .furail { height: 62px; }
 }
 
 /* Revenue, as the split it is. */

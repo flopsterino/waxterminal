@@ -1500,10 +1500,9 @@ function promoteBox(kind, id, name) {
   return `<div class="section"><h3>Promote ${esc(name)}</h3>
     <div class="card">
       <div class="toolbar" style="margin:0">
-        <span class="sub">For</span>
-        ${[7, 30, 90].map((d, i) => `<button class="chip" data-promo-days="${d}"${i === 0 ? ' aria-pressed="true"' : ''}>${d} days</button>`).join('')}
+        <span class="sub">${qty(t.perDay)} ${esc(t.token)} buys a day. Pay again whenever you want another.</span>
         <span style="flex:1"></span>
-        <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}" data-name="${esc(name)}">Promote &mdash; <span id="promoCost">${qty(7 * t.perDay)} ${esc(t.token)}</span></button>
+        <button class="btn" id="promoBuy" data-kind="${esc(kind)}" data-id="${esc(id)}" data-name="${esc(name)}" data-days="1">Promote for a day &mdash; <span id="promoCost">${qty(t.perDay)} ${esc(t.token)}</span></button>
       </div>
       <div id="promoOut" style="margin-top:10px"></div>
       <div class="promoshow">
@@ -1514,7 +1513,7 @@ function promoteBox(kind, id, name) {
             <button class="tkitem" type="button" tabindex="-1"><span class="tkrank">1</span><span class="tkname">&hellip;</span><span class="tkval">&nbsp;</span></button>
           </div></div></div>
       </div>
-      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day &mdash; ${qty(7 * t.perDay)} for a week &mdash; puts
+      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day puts
         ${esc(name)} in the strip at the top of <b>every page</b>, marked as paid, and in the promoted block on the front page.
         Tokens, markets and farms all take the same slot. The strip holds the ${t.slots} highest by total spend, so the top of it is
         bought by paying more rather than by starting earlier; paying again extends your run.
@@ -1558,29 +1557,77 @@ function wirePromote(root = document) {
              The most anyone has spent is <b>${qty(st.top)} ${esc(t.token)}</b>.`;
     }).catch(() => {});
   }
-  let days = 7;
-  root.querySelectorAll('[data-promo-days]').forEach(b => b.onclick = () => {
-    root.querySelectorAll('[data-promo-days]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    days = Number(b.dataset.promoDays);
-    const c = root.querySelector('#promoCost'); if (c) c.textContent = `${qty(days * t.perDay)} ${t.token}`;
-  });
+  // One price and one button. Days were a set of chips, and three prices for
+  // the same thing is a decision nobody wants to make before a small payment:
+  // a day costs a day's rate, and paying again adds another.
+  const days = 1;
   buy.onclick = async () => {
     const out = root.querySelector('#promoOut');
     if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
     const built = buildPromotion({ kind: buy.dataset.kind, id: buy.dataset.id, days, terms: t, me: wallet.account() });
     out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-      Send <b>${qty(built.amount)} ${esc(t.token)}</b> to <span class="mono">${esc(t.account)}</span> for <b>${days} days</b> of promotion.
+      Send <b>${qty(built.amount)} ${esc(t.token)}</b> to <span class="mono">${esc(t.account)}</span> for <b>a day</b> of promotion.
       ${t.account === 'eosio.null' ? '<br><span class="dim">Burned on arrival, so it costs supply rather than paying anyone.</span>' : ''}
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="promoSign">Sign and promote</button></div></div>`;
     $('#promoSign').onclick = async () => {
       out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
       try {
         const r = await wallet.transact(built.actions, { verify: true });
-        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Promoted.</b> Live on the front page for ${days} days.
+        out.innerHTML = `<div class="err" style="border-color:var(--good);background:var(--good-soft)"><b>Promoted.</b> In the strip and on the front page for a day &mdash; pay again to add another.
           <br><a class="mono" style="font-size:11px" href="${trxUrl(r.id)}" target="_blank" rel="noopener">${r.id.slice(0, 16)}… &nearr;</a></div>`;
       } catch (e) { out.innerHTML = txError(e); }
     };
   };
+}
+
+// The other thing being sold, on the page that sells things. Not a tab of its
+// own and not on the front page: somebody looking to advertise finds it here,
+// and everybody else never has to see it.
+async function renderAdsPromos() {
+  if (!promotionConfigured()) return;
+  const t = promotionTerms();
+  let live = [];
+  try { live = await activePromotions(); } catch { return; }
+  // Looked up after the read, not before it: this is called while the page
+  // around it is still being written.
+  const box = $('#adsPromos');
+  if (!box) return;
+  const st = promotionStanding(live, t.slots);
+  const byPool = new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p]));
+  const byToken = new Map(tokenTable().map(x => [x.id, x]));
+  const byFarm = new Map(farmGroups().map(g => [g.key, g]));
+  const days = ms => Math.max(0, Math.round(ms / 86400000));
+  const rows = live.map(pr => {
+    const subject = pr.kind === 'p' ? byPool.get(pr.id) : pr.kind === 'f' ? byFarm.get(pr.id) : byToken.get(pr.id);
+    const name = !subject ? pr.id
+      : pr.kind === 'f' ? (subject.pool ? `${subject.pool.symA}/${subject.pool.symB} farm` : `farm ${subject.poolId}`)
+      : pr.kind === 'p' ? `${subject.symA}/${subject.symB}` : subject.symbol;
+    const kindName = pr.kind === 'p' ? 'market' : pr.kind === 'f' ? 'farm' : 'token';
+    return { pr, name, kindName, subject };
+  });
+
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+    <h3>Promoted tokens and markets <span class="dim">&mdash; the strip at the top of every page</span></h3>
+    <p class="sub" style="margin:0 0 10px">${qty(t.perDay)} ${esc(t.token)} buys a day. The strip shows the ${t.slots} highest by total spend
+      and each one is marked as paid; anything below that sits in the promoted block on the front page instead. It buys a place on the page and
+      nothing else &mdash; no ranking, filter, total or average on this site moves for it. To take a slot, open the token, market or farm you want
+      promoted and use the Promote box at the bottom of its page.</p>
+    ${rows.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
+      <thead><tr><th>#</th><th>What</th><th class="r">Spent</th><th class="r">Days left</th><th></th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="clickable" data-promo="${esc(r.pr.kind)}|${esc(r.pr.id)}">
+        <td class="dim">${r.pr.rank}</td>
+        <td><b>${esc(r.name)}</b> <span class="dim">${esc(r.kindName)}</span>${r.pr.rank <= t.slots ? ' <span class="badge warn">in the strip</span>' : ''}</td>
+        <td class="r num">${qty(r.pr.paid)} ${esc(t.token)}${r.pr.payments > 1 ? ` <span class="dim">in ${r.pr.payments}</span>` : ''}</td>
+        <td class="r num">${days(r.pr.until - Date.now())}</td>
+        <td class="r dim">by ${esc(r.pr.from)}</td>
+      </tr>`).join('')}</tbody></table></div>`
+      : `<div class="chart-empty">Nothing is promoted right now &mdash; the first ${qty(t.perDay)} ${esc(t.token)} takes the top of the strip.</div>`}
+    ${st.full ? `<p class="sub" style="margin:10px 0 0">All ${t.slots} strip slots are taken; the last visible one has spent ${qty(st.lastVisible)} ${esc(t.token)}.</p>` : ''}
+  </div>`;
+  box.querySelectorAll('tr[data-promo]').forEach(tr => {
+    const [kind, id] = tr.dataset.promo.split('|');
+    tr.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
+  });
 }
 
 async function renderPromoted() {
@@ -3033,7 +3080,9 @@ async function renderAds() {
   }
 
   const mySlots = me ? cal.slots.filter(x => x.user === me || x.sharedUser === me) : [];
+  renderAdsPromos().catch(() => {});
   out.innerHTML = `
+    <div id="adsPromos"></div>
     <div class="card adsintro">
       <div class="adsfacts">
         <div><span class="k">A spot for a day</span><b>${wax(cal.priceUnits)}</b></div>
@@ -4388,25 +4437,38 @@ async function drawFusionPrice(st) {
   if (nowPrice == null && !series.length) return;
   card.hidden = false;
   const gap = nowPrice != null ? (nowPrice / st.lswaxInSwax - 1) * 100 : null;
-  if (sub) {
-    sub.innerHTML = gap == null ? '' : `&mdash; trading ${Math.abs(gap) < 0.05 ? 'at its backing'
-      : `${Math.abs(gap).toFixed(2)}% ${gap > 0 ? 'above' : 'below'} it`}`;
-  }
-  box.innerHTML = '';
-  box.appendChild(priceBandChart(series, {
-    // No band and no handles: the dashed line is the backing, and the line is
-    // the market against it.
-    lower: null, upper: null, price: st.lswaxInSwax,
-    fmt: v => (v >= 0.01 ? v.toFixed(4) : pxNum(v)), height: 190,
-    label: 'WAX per LSWAX on the market, against what it is backed by',
-  }));
-  box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">
-    The dashed line is the backing: <b>${st.lswaxInSwax.toFixed(6)}</b> sWAX behind every LSWAX, which rises every time somebody compounds.
-    The solid line is ${esc(pool.symA)}/${esc(pool.symB)} on ${esc(venueName[pool.dex] || pool.dex)}${nowPrice != null ? `, at <b>${nowPrice.toFixed(6)}</b> WAX now` : ''}.
-    ${gap == null ? '' : gap < -0.25
-      ? 'Below the backing, unliquifying returns more than selling — minus whatever the redemption queue costs you in time.'
-      : gap > 0.25 ? 'Above the backing, selling returns more than unliquifying.'
-      : 'The two are within a quarter of a percent of each other.'}</p>`);
+  if (sub) sub.innerHTML = '&mdash; the gap between them, day by day';
+  let days = 90;
+  const draw = () => {
+    const cut = Date.now() - days * 86400e3;
+    const rows = series.filter(r => r.x >= cut);
+    const shown = rows.length > 2 ? rows : series;
+    const from = shown.length ? new Date(shown[0].x).toISOString().slice(0, 10) : null;
+    box.innerHTML = `<div class="toolbar" style="margin:0 0 6px">
+      ${[[30, '30 days'], [90, '3 months'], [400, 'All of it']].map(([d, lbl]) =>
+        `<button class="chip" data-fudays="${d}" aria-pressed="${String(d === days)}">${lbl}</button>`).join('')}
+      <span class="dim" style="font-size:11.5px">${shown.length ? `${shown.length} daily readings since ${from}` : 'no daily record yet'}</span>
+    </div>`;
+    const holder = document.createElement('div');
+    box.appendChild(holder);
+    holder.appendChild(priceBandChart(shown, {
+      // No band and no handles: the dashed line is the backing, and the line
+      // is the market against it.
+      lower: null, upper: null, price: st.lswaxInSwax,
+      fmt: v => (v >= 0.01 ? v.toFixed(4) : pxNum(v)), height: 190,
+      label: 'WAX per LSWAX on the market, against what it is backed by',
+    }));
+    box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">
+      The dashed line is today's backing: <b>${st.lswaxInSwax.toFixed(6)}</b> sWAX behind every LSWAX, which rises every time somebody compounds.
+      The solid line is what ${esc(pool.symA)}/${esc(pool.symB)} on ${esc(venueName[pool.dex] || pool.dex)} actually traded at${
+        nowPrice != null ? `, <b>${nowPrice.toFixed(6)}</b> WAX now` : ''} &mdash; so the gap between them is the discount or premium of the day.
+      ${gap == null ? '' : gap < -0.25
+        ? 'Below the backing, unliquifying returns more than selling — minus whatever the queue costs you in time.'
+        : gap > 0.25 ? 'Above the backing, selling returns more than unliquifying.'
+        : ''}</p>`);
+    box.querySelectorAll('[data-fudays]').forEach(b => b.onclick = () => { days = Number(b.dataset.fudays); draw(); });
+  };
+  draw();
 }
 
 // When each job last ran, and whether it is wanted now. Some of it the
@@ -4462,17 +4524,21 @@ async function paintFusionUser(st, stale) {
   if (stale()) return;
 
   const waxUsd = state.waxUsd || null;
-  const val = wax => (waxUsd ? ` <span class="dim">${usd(wax * waxUsd)}</span>` : '');
+  // The money formatter follows the WAX/USD switch, so appending it to an
+  // amount already written in WAX printed "5.09 WAX 5.09 WAX". It only earns
+  // its place when it is saying something the first number does not.
+  const val = wax => (waxUsd && UNIT !== 'wax' ? ` <span class="dim">${usd(wax * waxUsd)}</span>` : '');
   const lswaxInWax = u.lswax * st.lswaxInSwax;
   const req = u.requests.reduce((s, r) => s + r.amount, 0);
+  const has = u.swax > 0 || u.lswax > 0 || u.claimable > 0 || req > 0;
 
-  you.innerHTML = `<h3>Your position <span class="dim">&mdash; ${esc(me)}</span></h3>
+  you.innerHTML = `<h3>Your position</h3>
+    ${has ? '' : '<p class="sub">Nothing of yours is in WaxFusion yet. Staking WAX below turns it into sWAX, which starts earning straight away.</p>'}
     <dl class="ftrows wide">
-      <div><dt>sWAX, earning</dt><dd>${qty(u.swax)}${val(u.swax)}</dd></div>
-      <div><dt>LSWAX</dt><dd>${qty(u.lswax)} <span class="dim">= ${qty(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
-      <div><dt>Waiting to be claimed</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${qty(u.claimable)} WAX${val(u.claimable)}</dd></div>
+      <div><dt>sWAX, earning</dt><dd>${qty(u.swax)} sWAX${val(u.swax)}</dd></div>
+      <div><dt>LSWAX</dt><dd>${qty(u.lswax)} LSWAX <span class="dim">= ${qty(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
+      <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${qty(u.claimable)} WAX${val(u.claimable)}</dd></div>
       ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${qty(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
-      <div><dt>In your wallet</dt><dd>${qty(u.wax)} WAX</dd></div>
     </dl>
     ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
       <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Window</th><th></th></tr></thead>
@@ -4521,7 +4587,7 @@ function drawFusionDesk(st, u) {
       redeem: { unit: 'sWAX', have: u.swax, note: `Ask for a place in an epoch and take the WAX out during its window, or redeem instantly for ${st.feePct}% out of the ${qty(st.forRedemption)} WAX in the bucket.` },
     }[mode];
     desk.innerHTML = `
-      <h3>Do something with it</h3>
+      <h3>Stake, liquify or redeem <span class="dim">&mdash; you hold ${qty(u.wax)} WAX</span></h3>
       <div class="seg" id="fusionMode" role="radiogroup" aria-label="What to do">
         ${[['stake', 'Stake'], ['liquify', 'Liquify'], ['unliquify', 'Unliquify'], ['redeem', 'Redeem']]
           .map(([k, label]) => `<button role="radio" data-fmode="${k}" aria-checked="${k === mode}">${label}</button>`).join('')}
@@ -8143,13 +8209,41 @@ async function renderLeaders() {
 
   if (!rows.length) { out.innerHTML = '<div class="empty">Nothing on this board yet.</div>'; return; }
 
-  out.innerHTML = `<div class="tablewrap"><table><thead><tr>
+  // The headline column is the one the board is sorted on, so it is the one
+  // worth drawing rather than only printing.
+  const key = cfg.cols[0][0], fmt0 = cfg.cols[0][2];
+  const top = rows[0]?.[key] || 0;
+  const total = rows.reduce((a, r) => a + (r[key] || 0), 0);
+  const share = v => (total > 0 ? (v / total) * 100 : 0);
+  const topTen = rows.slice(0, 10).reduce((a, r) => a + (r[key] || 0), 0);
+
+  // A podium, because a board's first three are the thing people came to see
+  // and reading them off row one of a table is not the same as seeing them.
+  const medal = ['1st', '2nd', '3rd'];
+  const podium = rows.slice(0, 3).map((r, i) => `<div class="ldp ldp${i + 1}">
+    <span class="ldpr">${medal[i]}</span>
+    <b class="ldpa">${acctLink(r.a)}</b>
+    <span class="ldpv">${esc(String(fmt0(r[key] || 0)))}</span>
+    <span class="ldps">${cfg.cols.slice(1, 3).map(c => `${esc(String(c[2](r[c[0]] || 0)))} ${esc(c[1].toLowerCase())}`).join(' · ')}</span>
+    <span class="ldpbar" style="--w:${share(r[key] || 0).toFixed(1)}%"></span>
+  </div>`).join('');
+
+  out.innerHTML = `
+    <div class="ldpodium">${podium}</div>
+    <p class="sub ldconc">The first ten hold <b>${share(topTen).toFixed(0)}%</b> of everything on this board,
+      and the largest alone holds <b>${share(top).toFixed(0)}%</b>. ${rows.length.toLocaleString()} accounts counted.</p>
+    <div class="tablewrap"><table><thead><tr>
       <th class="r" style="width:44px"></th><th>Account</th>
-      ${cfg.cols.map(c => `<th class="r">${esc(c[1])}</th>`).join('')}
+      ${cfg.cols.map((c, i) => `<th class="r">${esc(c[1])}${i === 0 ? ' <span class="dim">share</span>' : ''}</th>`).join('')}
     </tr></thead><tbody>${rows.map((r, i) => `<tr>
       <td class="rank">${i + 1}</td>
       <td class="mono">${acctLink(r.a)}</td>
-      ${cfg.cols.map(c => `<td class="r num${r[c[0]] ? '' : ' dim'}">${r[c[0]] ? esc(String(c[2](r[c[0]]))) : '—'}</td>`).join('')}
+      ${cfg.cols.map((c, ci) => {
+        const v = r[c[0]];
+        if (ci !== 0) return `<td class="r num${v ? '' : ' dim'}">${v ? esc(String(c[2](v))) : '—'}</td>`;
+        return `<td class="r num"><span class="ldbar" style="--w:${top > 0 ? Math.max(1, ((v || 0) / top) * 100).toFixed(1) : 0}%">
+          ${v ? esc(String(c[2](v))) : '—'}</span></td>`;
+      }).join('')}
     </tr>`).join('')}</tbody></table></div>`;
 
   // The name itself is the link; the row no longer needs its own binding.

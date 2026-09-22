@@ -90,10 +90,11 @@ export async function fusionState({ now = Date.now() } = {}) {
     cpuContract: g.current_cpu_contract,
     minStake: amt(g.minimum_stake_amount),
     minUnliquify: amt(g.minimum_unliquify_amount),
-    // The contract scales both by a million, but they are not the same kind of
-    // number: the shares are already percentages (85, 7, 8) and the fee is a
-    // fraction (0.05). Reading them the same way put the cap at 1,200%.
-    feePct: ((Number(g.protocol_fee_1e6) || 0) / 1e6) * 100,
+    // Every _1e6 field here is a percentage scaled by a million, the fee
+    // included: 50000 is 0.05%, not 5%. Measured on chain rather than argued
+    // about — 12.77369541 sWAX instantly redeemed returned 12.76730857 WAX,
+    // which is five hundredths of a percent.
+    feePct: (Number(g.protocol_fee_1e6) || 0) / 1e6,
     shares: {
       user: (Number(g.user_share_1e6) || 0) / 1e6,
       pol: (Number(g.pol_share_1e6) || 0) / 1e6,
@@ -176,7 +177,11 @@ export const buildFusionLiquify = ({ account, swax, auth = null }) => [{
 // And back. A minimum turns it into the exact variant, which refuses rather
 // than filling at a worse rate than you accepted.
 export function buildFusionUnliquify({ account, lswax, minSwax = null, auth = null }) {
-  const memo = minSwax != null ? `|unliquify_exact|${asset(minSwax, 8, 'SWAX')}|` : 'unliquify';
+  // The exact variant carries its minimum as raw units, not as an asset
+  // string: a real one reads |unliquify_exact|1277369541| for 12.77369541
+  // sWAX. Written any other way the contract has nothing to parse.
+  const floor = minSwax != null ? Math.floor(Number(minSwax) * 1e8) : null;
+  const memo = floor > 0 ? `|unliquify_exact|${floor}|` : 'unliquify';
   return [{
     account: LSWAX.contract, name: 'transfer', authorization: auth1(account, auth),
     data: { from: account, to: FUSION, quantity: asset(lswax, 8, 'LSWAX'), memo },
