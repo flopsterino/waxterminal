@@ -136,7 +136,8 @@ const pnlTitle = pl => {
   const put = UNIT === 'wax' ? `${qty(pl.inWax)} WAX put in` : `${usdRaw(pl.inUsd)} put in`;
   const took = UNIT === 'wax' ? `${qty(pl.outWax)} WAX taken back out` : `${usdRaw(pl.outUsd)} taken back out`;
   const other = UNIT === 'wax' ? `${signed(pl.usd, 'usd')} in dollars` : `${signed(pl.wax, 'wax')} in WAX`;
-  return `${put}, ${took}, and what is in it now — ${other}`;
+  const farm = pl.paidUsd > 0 ? `, ${usdRaw(pl.paidUsd)} of farm rewards at today's price` : '';
+  return `${put}, ${took}${farm}, and what is in it now — ${other}`;
 };
 // Four decimals, because two of them cannot show a number moving by a
 // thousandth of a cent a second — which is the whole point of showing it move.
@@ -6679,12 +6680,20 @@ function wireJoinFarm(root, account) {
 function earningPerDay(p, feeDay, farmDay) {
   const est = feeDay + farmDay;
   const days = p.pnl?.firstAt ? (Date.now() - p.pnl.firstAt) / 86400e3 : 0;
-  const realUsd = days >= 1 && p.led ? p.led.feesUsd / days : null;
-  const realWax = days >= 1 && p.led ? p.led.feesWax / days : null;
-  if (realUsd > 0) {
-    const shown = UNIT === 'wax' ? `${qty(realWax)} WAX` : usdRaw(realUsd);
-    return ['Fees / day', shown, '', `paid out over ${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}${
-      est > 0 ? ` &middot; ${usd(est)} at today's volume` : ''}`];
+  if (days >= 1 && p.led) {
+    // Fees were valued on the day each was collected; farm payouts at today's
+    // price, because they are tokens still in the wallet.
+    const farmUsd = p.paid?.usd || 0;
+    const feeUsd = p.led.feesUsd;
+    const perDayUsd = (feeUsd + farmUsd) / days;
+    const perDayWax = state.waxUsd > 0 ? (p.led.feesWax + farmUsd / state.waxUsd) / days : 0;
+    if (perDayUsd > 0) {
+      const shown = UNIT === 'wax' ? `${qty(perDayWax)} WAX` : usdRaw(perDayUsd);
+      const parts = [farmUsd > 0 ? `${usd(feeUsd / days)} fees + ${usd(farmUsd / days)} farm` : '',
+        `over ${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}`,
+        est > 0 ? `forecast ${usd(est)}` : ''];
+      return ['Paid / day', shown, '', parts.filter(Boolean).join(' &middot; ')];
+    }
   }
   return ['Earning / day', est > 0 ? usd(est) : '&mdash;', est > 0 ? '' : 'dim',
     est > 0 ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}` : ''];
@@ -6871,12 +6880,31 @@ async function lookupWallet(account) {
   // What each position cost and what it has paid back, from Alcor's own event
   // ledger. Without it the header shows value and nothing else; it is one
   // request and the page does not wait on anything else for it.
-  const ledger = await positionLedger(account).catch(() => null);
+  // The ledger knows fees and nothing about incentives, so the other half of
+  // what a position earns comes from the payouts themselves: every farm reward
+  // is a transfer from reward.alcor carrying the position id in its memo. One
+  // read. Valued at today's prices, which is what "worth" means for a token you
+  // are still holding, and stated as such on the card.
+  const [ledger, paidRows] = await Promise.all([
+    positionLedger(account).catch(() => null),
+    earningsHistory(account, { only: ['farm'] }).then(e => e.rows).catch(() => []),
+  ]);
+  const farmPaid = new Map();
+  for (const r of paidRows) {
+    if (!r.posId) continue;
+    const px2 = state.prices.get(r.tokenId)?.usd;
+    if (!(px2 > 0)) continue;
+    const m = farmPaid.get(r.posId) || { usd: 0, firstAt: r.at, lastAt: r.at };
+    m.usd += r.amount * px2;
+    m.firstAt = Math.min(m.firstAt, r.at); m.lastAt = Math.max(m.lastAt, r.at);
+    farmPaid.set(r.posId, m);
+  }
   for (const p of res.alcor) {
     p.led = ledger?.byPos.get(String(p.posId)) || null;
+    p.paid = farmPaid.get(String(p.posId)) || null;
     // Worth now counts the fees sitting in the position: they are yours, they
     // are just not in your wallet yet.
-    p.pnl = positionPnl(p.led, (p.valueUsd || 0) + (p.feesUsd || 0), state.waxUsd);
+    p.pnl = positionPnl(p.led, (p.valueUsd || 0) + (p.feesUsd || 0), state.waxUsd, p.paid?.usd || 0);
   }
 
   // Being an LP and being IN THE FARM are different things, and this page used
@@ -6905,12 +6933,13 @@ async function lookupWallet(account) {
   const sumPnl = list => list.reduce((t, pl) => {
     if (!pl) return t;
     t.usd += pl.usd; t.wax += pl.wax; t.inUsd += pl.inUsd; t.inWax += pl.inWax;
-    t.outUsd += pl.outUsd; t.outWax += pl.outWax; t.n += pl.n || 1;
+    t.outUsd += pl.outUsd; t.outWax += pl.outWax; t.paidUsd += pl.paidUsd || 0; t.n += pl.n || 1;
     return t;
-  }, { usd: 0, wax: 0, inUsd: 0, inWax: 0, outUsd: 0, outWax: 0, n: 0 });
+  }, { usd: 0, wax: 0, inUsd: 0, inWax: 0, outUsd: 0, outWax: 0, paidUsd: 0, n: 0 });
   const openIds = new Set(res.alcor.map(p => String(p.posId)));
   const closedPnl = ledger
-    ? sumPnl([...ledger.byPos].filter(([id]) => !openIds.has(id)).map(([, led]) => positionPnl(led, 0, state.waxUsd)))
+    ? sumPnl([...ledger.byPos].filter(([id]) => !openIds.has(id))
+      .map(([id, led]) => positionPnl(led, 0, state.waxUsd, farmPaid.get(id)?.usd || 0)))
     : null;
   const openPnl = sumPnl(res.alcor.map(p => p.pnl));
   const livePnl = ledger ? sumPnl([openPnl, closedPnl]) : null;

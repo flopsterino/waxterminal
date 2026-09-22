@@ -807,13 +807,18 @@ export async function positionLedger(account) {
 }
 
 // Profit for one position, given its ledger row. `valueUsd` is what it is worth
-// now including fees not yet collected; a closed position passes 0.
-export function positionPnl(led, valueUsd, waxUsdNow) {
+// now including fees not yet collected; a closed position passes 0. `paidUsd`
+// is what the farms paid it, which is not in Alcor's ledger at all — those are
+// plain transfers from reward.alcor — valued at today's price, since it is a
+// token the wallet is still holding. Claiming a reward and putting it back into
+// the position cancels out: income once, cost once.
+export function positionPnl(led, valueUsd, waxUsdNow, paidUsd = 0) {
   if (!led) return null;
-  const nowWax = waxUsdNow > 0 ? valueUsd / waxUsdNow : 0;
+  const nowWax = waxUsdNow > 0 ? (valueUsd + paidUsd) / waxUsdNow : 0;
   return {
-    usd: valueUsd + led.outUsd - led.inUsd,
+    usd: valueUsd + paidUsd + led.outUsd - led.inUsd,
     wax: nowWax + led.outWax - led.inWax,
+    paidUsd,
     inUsd: led.inUsd, outUsd: led.outUsd, inWax: led.inWax, outWax: led.outWax,
     feesUsd: led.feesUsd, feesWax: led.feesWax,
     firstAt: led.firstAt,

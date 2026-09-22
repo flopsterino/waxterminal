@@ -23,7 +23,7 @@
 // day as fee income.
 // =============================================================================
 
-import { hyperion } from './chain.js';
+import { hyperionDeep } from './chain.js';
 import { parseAsset, tokenId } from './math.js';
 
 const SOURCES = [
@@ -39,14 +39,20 @@ const INC = /incentiveId:\s*(\d+)/i;
 // One read per source. `limit=1000` is a full history for any normal account —
 // the busiest real one measured had 210 farm payouts — and the page says so
 // when it hits the ceiling rather than quietly reporting a truncated total.
-export async function earningsHistory(account, { limit = 1000 } = {}) {
+export async function earningsHistory(account, { limit = 1000, only = null } = {}) {
   const rows = [];
   const truncated = [];
 
-  await Promise.all(SOURCES.map(async src => {
+  // `only` narrows it to one kind. The LP tab wants what the farms have paid
+  // this wallet and nothing else, and one read is one read.
+  const sources = only ? SOURCES.filter(s => only.includes(s.kind)) : SOURCES;
+  await Promise.all(sources.map(async src => {
     let d;
     try {
-      d = await hyperion(`/v2/history/get_actions?account=${encodeURIComponent(account)}`
+      // Deepest host first: a node that only keeps a fortnight answers "no
+      // payouts" for a position that has been paid for a year, and nothing on
+      // the page could tell that apart from a farm that pays nothing.
+      d = await hyperionDeep(`/v2/history/get_actions?account=${encodeURIComponent(account)}`
         + `&act.name=transfer&transfer.from=${src.from}&limit=${limit}&sort=desc`);
     } catch { return; }
     const acts = d.actions || [];
