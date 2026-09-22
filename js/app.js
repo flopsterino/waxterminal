@@ -1121,14 +1121,14 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
-    <div class="section" id="ovPromoSec" hidden><h3>Promoted <span class="dim">— paid placement, not a ranking</span></h3>
+    <div class="section" id="ovPromoSec" hidden><h3>Promoted <span class="dim">&mdash; paid for, not ranked</span></h3>
       <div class="card"><div id="ovPromo"></div></div>
     </div>
     <div class="section" id="ovWatchSec" hidden><h3>Your watchlist <span class="dim">— what moved since you last looked</span></h3>
       <div class="card"><div id="ovWatch"></div></div>
     </div>
     <div class="ovgrid">
-      <div class="card ovpay"><h3>Biggest daily payouts <span class="dim">&mdash; what farms actually hand out, per day</span>
+      <div class="card ovpay"><h3>Biggest daily payouts
           <span style="margin-left:auto" class="switchwrap">
             <span class="switchlabel">risky</span>
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
@@ -1137,15 +1137,15 @@ function renderOverview() {
       <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
           <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
       <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
-      <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
-      <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
+      <div class="card"><h3>Most traded<span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
+      <div class="card"><h3>Best paid liquidity</h3><div id="ovPaid"></div></div>
       <div class="card ovwax"><h3>WAX <span class="dim" id="ovWaxPx"></span>
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
         <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
         <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
       <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
-      <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovEnding2"></div></div>
+      <div class="card"><h3>Ending soon</h3><div id="ovEnding2"></div></div>
     </div>`;
 
   // The front page is a set of ranked lists, and a ranked list of numbers is a
@@ -1232,10 +1232,11 @@ function renderOverview() {
 
   const toks = tokenTable().filter(t => t.depth1 >= 5);
   const byVol = [...toks].filter(t => t.vol24 > 0).sort((a, b) => b.vol24 - a.vol24).slice(0, 10);
+  // No 24h column: WAX prices nearly everything here, so the change is null
+  // for most tokens and the column was blank on almost every row.
   mini('#ovTraded', byVol.map(t => ({ tok: t.id, x: t })), [
     { h: 'Token', v: tokCell },
     { h: 'Price', r: true, v: t => px(t.price) },
-    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
     { h: 'Volume', r: true, v: t => usd(t.vol24) },
   ], 'Volume arrives with the next snapshot.');
 
@@ -1628,9 +1629,9 @@ async function renderAdsPromos() {
       : `<div class="chart-empty">Nothing is promoted right now &mdash; the first ${qty(t.perDay)} ${esc(t.token)} takes the top of the strip.</div>`}
     ${st.full ? `<p class="sub" style="margin:10px 0 0">All ${t.slots} strip slots are taken; the last visible one has spent ${qty(st.lastVisible)} ${esc(t.token)}.</p>` : ''}
   </div>`;
-  box.querySelectorAll('tr[data-promo]').forEach(tr => {
-    const [kind, id] = tr.dataset.promo.split('|');
-    tr.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
+  box.querySelectorAll('[data-promo]').forEach(card => {
+    const [kind, id] = card.dataset.promo.split('|');
+    card.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
   });
 }
 
@@ -1657,24 +1658,46 @@ async function renderPromoted() {
     const sub = pr.kind === 'f' ? `${[...new Set(subject.rewards.map(r => r.symbol))].slice(0, 3).join(', ')} · ${usd(subject.rewardRealDay)}/day`
       : pr.kind === 'p' ? `${venueName[subject.dex] || subject.dex} · ${(subject.feeBps / 100).toFixed(2)}% · ${usd(subject.tvlReal)} pooled`
       : `${subject.contract} · ${usd(subject.tvl)} pooled · ${subject.pools} pools`;
-    return { pr, name, sub };
+    const farm = pr.kind === 'p'
+      ? byFarm.get(`${subject.dex}:${subject.id}`) || [...byFarm.values()].find(g => `${g.dex}:${g.poolId}` === `${subject.dex}:${subject.id}`) || null
+      : null;
+    return { pr, name, sub, subject, kind: pr.kind, farm };
   }).filter(Boolean);
   if (!rows.length) { sec.hidden = true; return; }
   sec.hidden = false;
 
+  // Cards, not a table of receipts. What was paid and for how long is the
+  // operator's bookkeeping; what a reader wants is the same figures they would
+  // get from any other card on this page — and a paid slot that looks like the
+  // rest of the site is worth more than one that looks like an advert.
   const days = ms => Math.max(0, Math.round(ms / 86400000));
-  box.innerHTML = `<div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
-    <tbody>${rows.map(r => `<tr class="clickable" data-promo="${esc(r.pr.kind)}|${esc(r.pr.id)}">
-      <td><span class="badge warn">paid</span> <b>${esc(r.name)}</b> <span class="sub">${esc(r.sub)}</span></td>
-      <td class="r num dim">${qty(r.pr.paid)} ${esc(t.token)}${r.pr.payments > 1 ? ` <span class="sub">in ${r.pr.payments} payments</span>` : ''}</td>
-      <td class="r num dim">#${r.pr.rank}</td>
-      <td class="r num dim">${days(r.pr.until - Date.now())}d left</td>
-    </tr>`).join('')}</tbody></table></div>
-    <p class="sub" style="margin:10px 0 0">Paid slots, ordered by spend.${live.length > rows.length ? ` ${live.length - rows.length} more waiting below.` : ''}</p>`;
+  const fig = (k, v, cls = '') => `<div><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+  box.innerHTML = `<div class="promogrid">${rows.map(r => {
+    const { pr, subject, kind } = r;
+    const figs = kind === 'f'
+      ? fig('APR', subject.aprReal != null || subject.apr != null ? `<span class="apr">${pct(subject.aprReal ?? subject.apr)}</span>` : '—')
+        + fig('Pays', `${usd(subject.rewardRealDay)}<span class="dim">/day</span>`)
+        + fig('Staked', subject.stakedReal != null ? usd(subject.stakedReal) : '—')
+      : kind === 'p'
+        ? fig('Farm APR', r.farm ? `<span class="apr">${pct(r.farm.aprReal ?? r.farm.apr)}</span>` : '<span class="dim">no farm</span>')
+          + fig('Fee APR', feeApr(subject) > 0 ? `<span class="apr">${pct(feeApr(subject))}</span>` : '—')
+          + fig('Pooled', usd(subject.tvlReal))
+          + fig('24h', subject.vol24 > 0 ? usd(subject.vol24) : '—')
+        : fig('Price', px(subject.price))
+          + fig('24h', subject.change24 != null ? chgTxt(subject.change24) : '—', chgCls(subject.change24))
+          + fig('Volume', subject.vol24 > 0 ? usd(subject.vol24) : '—')
+          + fig('Pooled', usd(subject.tvl));
+    return `<article class="promocard" data-promo="${esc(pr.kind)}|${esc(pr.id)}">
+      <header><span class="badge warn">paid</span><b>${esc(r.name)}</b>
+        <span class="dim">${esc(r.sub)}</span>
+        <span class="promoleft">${days(pr.until - Date.now())}d left</span></header>
+      <div class="promofigs">${figs}</div>
+    </article>`;
+  }).join('')}</div>`;
 
-  box.querySelectorAll('tr[data-promo]').forEach(tr => {
-    const [kind, id] = tr.dataset.promo.split('|');
-    tr.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
+  box.querySelectorAll('[data-promo]').forEach(card => {
+    const [kind, id] = card.dataset.promo.split('|');
+    card.onclick = rowClick(() => (kind === 't' ? openToken(id) : kind === 'f' ? openFarm(id) : openPool(id)));
   });
 }
 
@@ -2015,8 +2038,11 @@ function renderTokens() {
 const payDay = g => {
   const face = g.rewardUsdDay || 0, real = g.rewardRealDay || 0;
   if (!(face > 0)) return '—';
+  // No colour on it: an amount in amber beside rates in green reads as a
+  // third kind of number. The asterisk carries the warning, and the tooltip
+  // says what it is.
   return real > 0 && real < face * 0.8
-    ? `<span class="warnish" title="Quoted at ${usd(face)} a day. Priced against what could actually be sold, it is ${usd(real)}.">${usd(face)}*</span>`
+    ? `<span title="Quoted at ${usd(face)} a day. Priced against what could actually be sold, it is ${usd(real)}.">${usd(face)}*</span>`
     : usd(face);
 };
 
