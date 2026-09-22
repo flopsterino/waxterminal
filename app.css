@@ -1993,8 +1993,6 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   border-right: 1px solid var(--line); color: var(--ink-2); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .tkitem:hover { background: var(--surface-2); color: var(--ink); }
 .tkrank { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 12px; text-align: right; }
-.tkmark { display: inline-flex; align-items: center; flex: none; }
-.tkmark img, .tkmark .tokmark { width: 15px; height: 15px; }
 .tkname { font-weight: 650; }
 .tkval { font-variant-numeric: tabular-nums; }
 .tkval.dim { color: var(--muted); }

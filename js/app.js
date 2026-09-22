@@ -4834,11 +4834,8 @@ async function renderTicker() {
     if (apr != null) facts.push([`${pct(apr)} APR`, 'apr']);
     const change = isFarm ? subject.pool?.change24 : subject.change24;
     if (change != null) facts.push([chgTxt(change), chgCls(change)]);
-    const mark = isPool ? `${subject.tokenA}|${subject.symA}|${subject.tokenB}|${subject.symB}`
-      : isFarm && subject.pool ? `${subject.pool.tokenA}|${subject.pool.symA}|${subject.pool.tokenB}|${subject.pool.symB}`
-      : !isFarm && !isPool ? `${subject.id}|${subject.symbol}` : '';
     return {
-      promoted: true, name, mark,
+      promoted: true, name,
       facts,
       id: pr.kind === 't' ? subject.id : null,
       poolKey: isPool ? `${subject.dex}:${subject.id}` : null,
@@ -4872,7 +4869,6 @@ async function renderTicker() {
   const cell = r => `<button class="tkitem paid" title="${esc(r.title)}"
     ${r.id ? `data-tokid="${esc(r.id)}"` : ''}${r.poolKey ? ` data-poolkey="${esc(r.poolKey)}"` : ''}${r.farmKey ? ` data-farmkey="${esc(r.farmKey)}"` : ''}>
     <span class="tkpaid">paid</span>
-    ${r.mark ? `<span class="tkmark" data-pm="${esc(r.mark)}"></span>` : ''}
     <span class="tkname">${esc(r.name)}</span>
     ${r.facts.map(([txt, cls]) => `<span class="tkval ${esc(cls)}">${txt}</span>`).join('')}
   </button>`;
@@ -4883,7 +4879,6 @@ async function renderTicker() {
   const once = rows.map(cell).join('');
   track.style.removeProperty('animation');
   track.innerHTML = `<div class="tkrun">${once}</div><div class="tkrun" aria-hidden="true">${once}</div>`;
-  fillMarks(track);
   // Long lists scroll slower, so the speed per item stays the same whether
   // there are four entries or twenty.
   track.style.setProperty('--tkdur', `${Math.max(24, rows.length * 4.5)}s`);
