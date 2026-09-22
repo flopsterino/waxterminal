@@ -403,3 +403,131 @@ export function buildDropPurchase({ account, drop, count = 1 }) {
     },
   ];
 }
+
+// ------------------------------------------------------------- BLENDS -------
+// The other half of waxdaomarket: burn NFTs (and sometimes tokens) for
+// something else. 595 blends are open right now, and the site that listed them
+// is gone.
+//
+// A blend is done the way a paid drop is — assert what you are about to do,
+// then send the ingredients in the same transaction, each one carrying its own
+// index so the contract knows which ingredient it is paying for:
+//
+//   waxdaomarket::assertblend  blend_ID, user, unique_id
+//   <token>::transfer          memo |blend_deposit|<blend>|<index>|
+//   atomicassets::transfer     memo |blend_deposit|<blend>|<index>|
+//
+// Read off cb2df31c… (blend 1826, August 2026): 105 UPMAX as ingredient 0, one
+// NFT as ingredient 1, another as ingredient 2, all burned, result minted back
+// to the blender.
+export const BLEND_MEMO = (blendId, index) => `|blend_deposit|${blendId}|${index}|`;
+
+const attrList = a => (a || []).map(x => `${x.key || x.attribute_name}: ${x.value || x.attribute_value}`).filter(Boolean);
+
+// One blend, in the shape the page needs: what it takes, what it gives, and
+// whether it is open.
+function blendRow(b, now) {
+  const ingredients = (b.blend_ingredients || []).map((g, index) => {
+    const fungible = g.ingredient_type === 'fungible';
+    const [precision, symbol] = String(g.fungible_token_symbol || '').split(',');
+    return {
+      index, type: g.ingredient_type, fungible,
+      symbol: symbol || '', contract: g.fungible_token_contract || '',
+      decimals: Number(precision) || 0,
+      amount: Number(g.fungible_token_amount) || 0,
+      collection: g.collection_name || '', schema: g.schema_name || '',
+      templateId: Number(g.template_id) || 0,
+      count: Number(g.non_fungible_quantity) || (fungible ? 0 : 1),
+      burn: !!g.burn_non_fungible,
+      // Which of collection / schema / template actually decides what counts.
+      filter: g.filter_by || (Number(g.template_id) > 0 ? 'template' : g.schema_name ? 'schema' : 'collection'),
+      attributes: attrList(g.required_attributes),
+    };
+  });
+  const results = (b.blend_results || []).map(r => ({
+    type: r.result_type,
+    collection: r.collection_name || '', schema: r.schema_name || '',
+    templateId: Number(r.template_id) || 0,
+    name: r.nft_name || '', image: r.nft_image || '',
+    count: Number(r.non_fungible_quantity) || 1,
+    symbol: String(r.fungible_token_symbol || '').split(',')[1] || '',
+    tokenContract: r.fungible_token_contract || '',
+    tokenAmount: Number(r.fungible_token_amount) || 0,
+    pools: r.preminted_pool_id || [],
+  }));
+  return {
+    id: Number(b.ID), creator: b.creator,
+    title: b.blend_title || `Blend #${b.ID}`,
+    description: b.blend_description || '', image: b.cover_image || '',
+    startsAt: Number(b.start_time) * 1000, endsAt: Number(b.end_time) * 1000,
+    max: Number(b.max_blends), left: Number(b.max_blends) ? Number(b.blends_remaining) : null,
+    perUser: Number(b.limit_per_user), cooldown: Number(b.cooldown_reset),
+    whitelist: b.whitelist_type, farm: b.whitelisted_farmname || '', minStake: Number(b.minimum_to_stake),
+    allowed: (b.whitelisted_accounts || []).filter(Boolean),
+    receivers: b.payment_receivers || [],
+    ingredients, results,
+    open: Number(b.start_time) * 1000 <= now && Number(b.end_time) * 1000 > now
+      && (!Number(b.max_blends) || Number(b.blends_remaining) > 0),
+  };
+}
+
+let blendCache = null;
+export async function waxdaoBlends({ now = Date.now(), openOnly = true, force = false } = {}) {
+  if (!blendCache || force || Date.now() - blendCache.at > 5 * 60 * 1000) {
+    let rows = [];
+    try { rows = await getAllRows(WAXDAO_MARKET, WAXDAO_MARKET, 'blends'); } catch { return blendCache?.rows ?? []; }
+    blendCache = { at: Date.now(), rows };
+  }
+  return blendCache.rows.map(b => blendRow(b, now)).filter(b => !openOnly || b.open).sort((a, b2) => b2.id - a.id);
+}
+
+// The NFTs an account holds that would satisfy one ingredient. AtomicAssets'
+// own index answers this in one request; reading it off the chain would mean
+// walking every asset the account owns.
+export async function blendCandidates(account, ing, { limit = 40 } = {}) {
+  if (!account || ing.fungible) return [];
+  const q = new URLSearchParams({ owner: account, limit: String(limit), order: 'asc', sort: 'asset_id' });
+  if (ing.templateId > 0) q.set('template_id', String(ing.templateId));
+  if (ing.collection) q.set('collection_name', ing.collection);
+  if (ing.schema) q.set('schema_name', ing.schema);
+  const r = await fetch(`https://wax.api.atomicassets.io/atomicassets/v1/assets?${q}`, { signal: AbortSignal.timeout(20000) });
+  if (!r.ok) throw new Error(`AtomicAssets ${r.status}`);
+  const d = await r.json();
+  return (d.data || []).map(a => ({
+    id: a.asset_id,
+    name: a.name || a.template?.immutable_data?.name || `#${a.asset_id}`,
+    image: a.data?.img || a.template?.immutable_data?.img || '',
+    templateId: Number(a.template?.template_id) || 0,
+    schema: a.schema?.schema_name || '', collection: a.collection?.collection_name || '',
+    mint: a.template_mint || null,
+  }));
+}
+
+// Assert, then send each ingredient with its own index. Tokens and NFTs are
+// the same shape to the contract: a transfer carrying |blend_deposit|id|index|.
+export function buildBlend({ account, blend, picks, auth = null }) {
+  const a = auth || [{ actor: account, permission: 'active' }];
+  const actions = [{
+    account: WAXDAO_MARKET, name: 'assertblend', authorization: a,
+    data: { blend_ID: Number(blend.id), user: account, unique_id: nonce() },
+  }];
+  for (const ing of blend.ingredients) {
+    if (ing.fungible) {
+      const units = BigInt(Math.round(ing.amount * 10 ** ing.decimals));
+      const s = units.toString().padStart(ing.decimals + 1, '0');
+      const amount = ing.decimals ? `${s.slice(0, -ing.decimals)}.${s.slice(-ing.decimals)}` : s;
+      actions.push({
+        account: ing.contract, name: 'transfer', authorization: a,
+        data: { from: account, to: WAXDAO_MARKET, quantity: `${amount} ${ing.symbol}`, memo: BLEND_MEMO(blend.id, ing.index) },
+      });
+      continue;
+    }
+    const ids = (picks?.[ing.index] || []).map(String);
+    if (ids.length !== ing.count) throw new Error(`Pick ${ing.count} NFT${ing.count === 1 ? '' : 's'} for ingredient ${ing.index + 1}.`);
+    actions.push({
+      account: 'atomicassets', name: 'transfer', authorization: a,
+      data: { from: account, to: WAXDAO_MARKET, asset_ids: ids, memo: BLEND_MEMO(blend.id, ing.index) },
+    });
+  }
+  return actions;
+}

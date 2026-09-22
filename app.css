@@ -1905,6 +1905,25 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fundesc { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .funfigs .s { font-size: 11px; color: var(--muted); }
 
+/* ---- blends ------------------------------------------------------------- */
+.blendflow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
+.blendflow > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.blendflow .k { font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.blendflow .v { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blendflow .arrow { color: var(--accent); font-size: 16px; align-items: center; }
+.blendneed { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 4px 0; }
+.blendpick { border-top: 1px dashed var(--line); padding-top: 6px; }
+.assetrow { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 6px; scrollbar-width: thin; }
+.assetchip { flex: none; width: 76px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 5px; cursor: pointer; color: var(--ink-2); }
+.assetchip img, .assetchip .ph { width: 64px; height: 64px; border-radius: 7px; object-fit: cover; background: var(--surface-3); }
+.assetchip .ph { display: inline-grid; place-items: center; font-size: 10px; color: var(--muted); }
+.assetchip .an { font-size: 9.5px; line-height: 1.15; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.assetchip .am { font-size: 9px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.assetchip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+.assetchip:hover { border-color: var(--accent); }
+
 /* ---- locking tokens away ----------------------------------------------- */
 .lockmake { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .lockmake summary { cursor: pointer; font-weight: 650; font-size: 13px; color: var(--ink-2); }

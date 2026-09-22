@@ -20,6 +20,7 @@ import { cap } from './limits.js';
 import { accountInfo, valueBalances, accountSwaps, tradeFlow, tradeList } from './account.js';
 import { accountValueHistory } from './acctvalue.js';
 import { waxfunTokens, waxfunToken, waxfunTrades, buildWaxfunBuy, buildWaxfunSell, waxdaoDrops, buildDropClaim, buildDropPurchase,
+  waxdaoBlends, blendCandidates, buildBlend,
   dropCost, dropReadiness, dropStock, WAXDAO_MARKET, WAXDAO_CUT, WAXFUN_CURVE, curvePrice, curveBuy, curveSell, curveProgress,
   curveWaxToSend, CURVE_FEE, DEX_GOAL_TOKENS } from './legacy.js';
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
@@ -3119,6 +3120,7 @@ async function renderLegacy(tab = 'waxfun') {
     <div class="subtabs" id="legacyTabs" role="tablist">
       <button role="tab" data-ltab="waxfun" aria-selected="true">wax.fun</button>
       <button role="tab" data-ltab="waxdao" aria-selected="false">WaxDAO drops</button>
+      <button role="tab" data-ltab="blends" aria-selected="false">WaxDAO blends</button>
     </div>
     <div class="lpane" data-lpane="waxfun">
       <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
@@ -3151,13 +3153,24 @@ async function renderLegacy(tab = 'waxfun') {
         </div>
         <div id="dropGrid"><div class="loading"><span class="spinner"></span><span>Reading drops&hellip;</span></div></div>
       </div>
+    </div>
+    <div class="lpane" data-lpane="blends" hidden>
+      <div class="section"><h3>WaxDAO blends <span class="dim">&mdash; burn NFTs, and sometimes tokens, for something else</span></h3>
+        <div class="toolbar">
+          <input class="search" id="blendSearch" type="search" placeholder="Search a blend, collection or creator&hellip;" autocomplete="off" spellcheck="false">
+          <button class="chip" id="blendMine" aria-pressed="false">Ones you can make</button>
+          <span class="dim" id="blendCount" style="font-size:12px"></span>
+        </div>
+        <div id="blendGrid"><div class="loading"><span class="spinner"></span><span>Reading blends&hellip;</span></div></div>
+      </div>
     </div>`;
-  let dropsLoaded = false;
+  let dropsLoaded = false, blendsLoaded = false;
   document.querySelectorAll('#legacyTabs button').forEach(b => b.onclick = () => {
     legacyTab(b.dataset.ltab);
     if (b.dataset.ltab === 'waxdao' && !dropsLoaded) { dropsLoaded = true; loadDrops(); }
+    if (b.dataset.ltab === 'blends' && !blendsLoaded) { blendsLoaded = true; loadBlends(); }
   });
-  legacyTab(tab === 'waxdao' ? 'waxdao' : 'waxfun');
+  legacyTab(['waxdao', 'blends'].includes(tab) ? tab : 'waxfun');
 
   // ---- wax.fun ------------------------------------------------------------
   let tokens = [];
@@ -3340,7 +3353,102 @@ async function renderLegacy(tab = 'waxfun') {
       affordOnly = true; mineBtn.setAttribute('aria-pressed', 'true'); paintDrops();
     };
   }
+
+  // ---- WaxDAO blends ------------------------------------------------------
+  // 595 of them are open, and every one is a trade: hand over these NFTs (and
+  // sometimes these tokens) and the contract burns them and gives you that.
+  // The list says what each one takes and gives; opening one asks AtomicAssets
+  // which of your NFTs would do, and nothing is read per blend until you open
+  // it.
+  let blends = [], bq = '', bMine = false, myAssets = null;
+  const ingText = ing => ing.fungible
+    ? `${qty(ing.amount)} ${ing.symbol}`
+    : `${ing.count} NFT${ing.count === 1 ? '' : 's'} from ${ing.templateId > 0 ? `template ${ing.templateId}` : ing.schema ? `${esc(ing.schema)}` : esc(ing.collection)}`;
+  const resText = r => r.type === 'fungible'
+    ? `${qty(r.tokenAmount)} ${esc(r.symbol)}`
+    : r.type === 'preminted' ? `${r.count} NFT${r.count === 1 ? '' : 's'} from a pool`
+    : `${r.count} &times; ${esc(r.name && r.name !== 'name' ? r.name : `template ${r.templateId}`)}`;
+
+  const blendCard = b => {
+    const open = b.endsAt > Date.now() + 3650 * 86400e3;
+    return `<article class="funcard" data-blend="${b.id}">
+      <header>${b.image ? `<img class="funimg" src="${esc(ipfs(b.image))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(b.image, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:'MIX'}))"))}">`
+        : '<span class="funimg gen">MIX</span>'}
+        <div class="fnname"><b>${esc(b.title)}</b><span class="sub">blend #${b.id} &middot; by ${esc(b.creator)}</span></div>
+        ${b.left != null && b.max && b.left / b.max < 0.1 ? '<span class="pill">Nearly gone</span>' : ''}</header>
+      <div class="blendflow">
+        <div><span class="k">Takes</span>${b.ingredients.map(i => `<span class="v">${ingText(i)}</span>`).join('')}</div>
+        <div class="arrow">&rarr;</div>
+        <div><span class="k">Gives</span>${b.results.map(r => `<span class="v">${resText(r)}</span>`).join('')}</div>
+      </div>
+      <div class="funfigs">
+        <div><span class="k">Left</span><span class="v">${b.left == null ? 'unlimited' : b.left.toLocaleString('en-US')}</span>${
+          b.left != null && b.max ? `<span class="s">of ${b.max.toLocaleString('en-US')}</span>` : ''}</div>
+        <div><span class="k">Ends</span><span class="v">${open ? 'open-ended' : forDays((b.endsAt - Date.now()) / 86400e3)}</span>${
+          b.perUser ? `<span class="s">${b.perUser} per wallet</span>` : ''}</div>
+      </div>
+      ${b.description ? `<p class="sub fundesc">${esc(b.description.replace(/[*_#]/g, '').slice(0, 150))}</p>` : ''}
+      <footer>
+        <button class="btn" data-blendgo="${b.id}">Blend</button>
+        <a class="plink" href="https://wax.atomichub.io/explorer/collection/wax-mainnet/${encodeURIComponent(b.ingredients.find(i => i.collection)?.collection || '')}" target="_blank" rel="noopener">Collection &nearr;</a>
+      </footer>
+      <div class="funpanel" hidden></div>
+    </article>`;
+  };
+
+  // "Ones you can make" is one read of everything the wallet owns, kept for
+  // the session: 595 blends asked one at a time would be 595 requests.
+  const canMake = b => {
+    if (!myAssets) return true;
+    return b.ingredients.every(i => {
+      if (i.fungible) return true;
+      const have = myAssets.filter(a => (!i.templateId || a.templateId === i.templateId)
+        && (!i.collection || a.collection === i.collection)
+        && (!i.schema || a.schema === i.schema)).length;
+      return have >= i.count;
+    });
+  };
+
+  const paintBlends = () => {
+    const grid = $('#blendGrid');
+    if (!grid) return;
+    const rows = blends
+      .filter(b => !bMine || canMake(b))
+      .filter(b => !bq || `${b.title} ${b.creator} ${b.description} ${b.ingredients.map(i => `${i.collection} ${i.schema} ${i.symbol}`).join(' ')}`.toLowerCase().includes(bq));
+    const count = $('#blendCount');
+    if (count) count.textContent = `${rows.length} blend${rows.length === 1 ? '' : 's'}${bMine ? ' you have the pieces for' : ''}`;
+    grid.innerHTML = rows.length
+      ? `<div class="fungrid">${rows.slice(0, 60).map(blendCard).join('')}</div>${
+        rows.length > 60 ? `<p class="sub" style="margin:10px 0 0">Showing the first 60 of ${rows.length}. Search to narrow it.</p>` : ''}`
+      : '<div class="empty">No open blend matches.</div>';
+    grid.querySelectorAll('[data-blendgo]').forEach(btn => btn.onclick = () => {
+      const b = blends.find(x => x.id === Number(btn.dataset.blendgo));
+      if (b) openBlendPanel(btn.closest('.funcard'), b);
+    });
+  };
+
+  async function loadBlends() {
+    try { blends = await waxdaoBlends(); } catch { blends = []; }
+    if (stale()) return;
+    paintBlends();
+    const bs = $('#blendSearch');
+    if (bs) bs.oninput = debounce(() => { bq = bs.value.trim().toLowerCase(); paintBlends(); }, 120);
+    const mine = $('#blendMine');
+    if (mine) mine.onclick = async () => {
+      if (bMine) { bMine = false; mine.setAttribute('aria-pressed', 'false'); paintBlends(); return; }
+      if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+      if (!myAssets) {
+        mine.disabled = true; mine.textContent = 'Reading your NFTs…';
+        try { myAssets = await ownedAssets(wallet.account()); } catch { myAssets = null; }
+        mine.disabled = false; mine.textContent = 'Ones you can make';
+        if (!myAssets) { mine.textContent = 'Your NFTs did not load'; return; }
+      }
+      bMine = true; mine.setAttribute('aria-pressed', 'true'); paintBlends();
+    };
+  }
+
   if (tab === 'waxdao') { dropsLoaded = true; loadDrops(); }
+  if (tab === 'blends') { blendsLoaded = true; loadBlends(); }
 }
 
 // ------------------------------------------------------ WAX.FUN TOKEN PAGE --
@@ -3933,6 +4041,129 @@ async function openDropPanel(card, d) {
       `${n === 1 ? 'The NFT is' : `All ${n} are`} in your wallet.`);
   };
 }
+
+// Every NFT an account holds, in as few requests as the index allows. Used by
+// the "ones you can make" filter, which has to answer for 595 blends at once —
+// asking per blend would be 595 requests, so it asks once.
+async function ownedAssets(account, { pages = 3, size = 1000 } = {}) {
+  const out = [];
+  for (let page = 1; page <= pages; page++) {
+    const q = new URLSearchParams({ owner: account, page: String(page), limit: String(size), order: 'asc', sort: 'asset_id' });
+    const r = await fetch(`${ATOMIC_API}/atomicassets/v1/assets?${q}`, { signal: AbortSignal.timeout(25000) });
+    if (!r.ok) throw new Error(`AtomicAssets ${r.status}`);
+    const d = await r.json();
+    const rows = d.data || [];
+    out.push(...rows.map(a => ({
+      id: a.asset_id,
+      name: a.name || a.template?.immutable_data?.name || `#${a.asset_id}`,
+      image: a.data?.img || a.template?.immutable_data?.img || '',
+      templateId: Number(a.template?.template_id) || 0,
+      schema: a.schema?.schema_name || '', collection: a.collection?.collection_name || '',
+      mint: a.template_mint || null,
+    })));
+    if (rows.length < size) break;
+  }
+  return out;
+}
+
+// One blend, opened: what it wants, which of your NFTs would do, and the
+// transaction that does it. The picker matters more than it looks — a blend
+// burns what you hand it, so which copy goes in is the holder's decision, not
+// ours. Mint numbers are shown for that reason.
+async function openBlendPanel(card, b) {
+  if (!card || !b) return;
+  const panel = card.querySelector('.funpanel');
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span><span>Looking through your wallet…</span></div>';
+  const me = wallet.account();
+  const nft = b.ingredients.filter(i => !i.fungible);
+  const fun = b.ingredients.filter(i => i.fungible);
+  let candidates = new Map(), balances = new Map();
+  try {
+    const [found, bals] = await Promise.all([
+      Promise.all(nft.map(i => (me ? blendCandidates(me, i).catch(() => []) : Promise.resolve([])))),
+      Promise.all(fun.map(i => (me ? balanceOf(me, i.contract, i.symbol).catch(() => null) : Promise.resolve(null)))),
+    ]);
+    nft.forEach((i, n) => candidates.set(i.index, found[n]));
+    fun.forEach((i, n) => balances.set(i.index, bals[n]));
+  } catch { /* an empty picker says the same thing as an error here */ }
+  if (panel.hidden) return;
+
+  const picks = new Map(nft.map(i => [i.index, []]));
+  const short = [];
+  for (const i of fun) {
+    const have = balances.get(i.index);
+    if (have != null && have < i.amount) short.push(`${qty(i.amount)} ${i.symbol} — you hold ${qty(have)}`);
+  }
+  for (const i of nft) {
+    const have = (candidates.get(i.index) || []).length;
+    if (me && have < i.count) short.push(`${i.count} NFT${i.count === 1 ? '' : 's'} ${i.templateId > 0 ? `of template ${i.templateId}` : `from ${esc(i.schema || i.collection)}`} — you have ${have}`);
+  }
+
+  panel.innerHTML = `
+    <div class="funtrade">
+      ${b.whitelist === 'farm' && b.farm ? `<p class="sub">Takes ${b.minStake || 1} NFT${b.minStake === 1 ? '' : 's'} staked in the <span class="mono">${esc(b.farm)}</span> farm.</p>` : ''}
+      ${!me ? '<p class="sub">Connect a wallet to see which of your NFTs fit.</p>' : ''}
+      ${short.length ? `<div class="err">You are short: ${short.join('; ')}.</div>` : ''}
+      ${fun.map(i => `<div class="blendneed"><span>${qty(i.amount)} <b>${esc(i.symbol)}</b> <span class="dim mono">${esc(i.contract)}</span></span>
+        <span class="dim">${balances.get(i.index) == null ? '' : `you hold ${qty(balances.get(i.index))}`}</span></div>`).join('')}
+      ${nft.map(i => {
+        const list = candidates.get(i.index) || [];
+        return `<div class="blendpick" data-ing="${i.index}">
+          <div class="blendneed"><span>Pick <b>${i.count}</b> ${i.templateId > 0 ? `of template ${i.templateId}` : `from ${esc(i.schema || i.collection)}`}</span>
+            <span class="dim" data-picked="${i.index}">0 of ${i.count}</span></div>
+          ${list.length ? `<div class="assetrow">${list.map(a => `
+            <button class="assetchip" data-pick="${i.index}" data-asset="${esc(a.id)}" title="${esc(a.name)}${a.mint ? ` · mint #${a.mint}` : ''}">
+              ${a.image ? `<img src="${esc(ipfs(a.image))}" alt="" loading="lazy" onerror="this.style.display='none'">` : '<span class="ph">NFT</span>'}
+              <span class="an">${esc(a.name.slice(0, 18))}</span>${a.mint ? `<span class="am">#${esc(String(a.mint))}</span>` : ''}
+            </button>`).join('')}</div>`
+            : `<p class="sub">${me ? 'Nothing in your wallet fits this one.' : 'Connect a wallet to pick.'}</p>`}
+        </div>`;
+      }).join('')}
+      <div class="buyresult"><span class="k">You get</span><b>${b.results.map(r => resultText(r)).join(' + ')}</b>
+        <span class="sub">${b.ingredients.some(i => !i.fungible && i.burn) ? 'The NFTs you hand over are burned.' : 'The NFTs you hand over are kept by the contract.'}</span></div>
+      <div id="blendOut"></div>
+      <button class="btn" id="blendSign">Review</button>
+    </div>`;
+
+  panel.querySelectorAll('[data-pick]').forEach(btn => btn.onclick = () => {
+    const ing = Number(btn.dataset.pick), id = btn.dataset.asset;
+    const want = b.ingredients[ing].count;
+    const cur = picks.get(ing);
+    const at = cur.indexOf(id);
+    if (at >= 0) cur.splice(at, 1);
+    else if (cur.length < want) cur.push(id);
+    else { cur.shift(); cur.push(id); }        // over the limit, the oldest pick gives way
+    panel.querySelectorAll(`[data-pick="${ing}"]`).forEach(x => x.setAttribute('aria-pressed', String(cur.includes(x.dataset.asset))));
+    const n = panel.querySelector(`[data-picked="${ing}"]`);
+    if (n) n.textContent = `${cur.length} of ${want}`;
+  });
+
+  const go = panel.querySelector('#blendSign');
+  if (go) go.onclick = async () => {
+    const box = panel.querySelector('#blendOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const missing = b.ingredients.filter(i => !i.fungible && (picks.get(i.index) || []).length !== i.count);
+    if (missing.length) { box.innerHTML = `<div class="err">Pick ${missing[0].count} NFT${missing[0].count === 1 ? '' : 's'} for each ingredient first.</div>`; return; }
+    let actions;
+    try { actions = buildBlend({ account: wallet.account(), blend: b, picks: Object.fromEntries(picks) }); }
+    catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Hand over ${b.ingredients.map(i => i.fungible ? `<b>${qty(i.amount)} ${esc(i.symbol)}</b>` : `<b>${i.count} NFT${i.count === 1 ? '' : 's'}</b>`).join(' and ')}
+      for ${b.results.map(r => `<b>${resultText(r)}</b>`).join(' + ')}.
+      <br><span class="dim">${b.ingredients.some(i => !i.fungible && i.burn) ? 'The NFTs are burned by the contract and cannot come back.' : 'The NFTs go to the contract.'}
+      Everything happens in one transaction, or none of it does.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="blendDo">Sign and blend</button></div></div>`;
+    panel.querySelector('#blendDo').onclick = () => runStakeTx(box, actions, 'Blended. What it gave you is in your wallet.');
+  };
+}
+
+const resultText = r => r.type === 'fungible'
+  ? `${qty(r.tokenAmount)} ${esc(r.symbol)}`
+  : r.type === 'preminted' ? `${r.count} NFT${r.count === 1 ? '' : 's'} from the creator's pool`
+  : `${r.count} &times; ${esc(r.name && r.name !== 'name' ? r.name : `template ${r.templateId}`)}`;
 
 // ---------------------------------------------------------------- RATINGS ---
 // Four verdicts, each one a small payment. The counts come off the chain, so
