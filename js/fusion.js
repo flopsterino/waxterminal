@@ -14,13 +14,13 @@
 //   unliquify    LSWAX back to dapp.fusion, memo "unliquify" (or
 //                |unliquify_exact|<minimum>| when you want a floor)
 //   claim        claimrewards (WAX), claimswax (restake it), claimaslswax
-//   redeem       reqredeem books a place in an epoch; redeem takes the WAX out
-//                during that epoch's 48-hour window; instaredeem skips the
-//                queue for the protocol's fee
+//   redeem       reqredeem books a request into an epoch; redeem withdraws
+//                during that epoch's 48-hour redemption period; instaredeem
+//                skips it for the protocol's fee
 //
-// Epochs run a week apart, each renting CPU for a fortnight, and a redemption
-// window opens 14 days after an epoch starts and closes two days later. Miss
-// it and you wait for the next one — which is exactly the sort of thing a dead
+// Epochs run a week apart, each renting CPU for a fortnight, and an epoch's
+// redemption period opens 14 days after it starts and closes two days later.
+// Miss it and you wait for the next one — exactly the sort of thing a dead
 // front end turns into lost money.
 //
 // The keeper actions (compound, createfarms, stakeallcpu, claimrefunds,
@@ -207,13 +207,13 @@ export const buildFusionReqRedeem = ({ account, swax, replace = false, auth = nu
   data: { user: account, swax_to_redeem: asset(swax, 8, 'SWAX'), accept_replacing_prev_requests: !!replace },
 }];
 
-// Take the WAX out, during the window the request was booked into.
+// Withdraw, during the redemption period the request was booked into.
 export const buildFusionRedeem = ({ account, auth = null }) => [{
   account: FUSION, name: 'redeem', authorization: auth1(account, auth), data: { user: account },
 }];
 
-// Skip the queue, for the protocol's fee, out of whatever is in the redemption
-// bucket right now.
+// Skip the wait, for the protocol's fee, out of whatever is held for
+// redemptions right now.
 export const buildFusionInstaRedeem = ({ account, swax, auth = null }) => [{
   account: FUSION, name: 'instaredeem', authorization: auth1(account, auth),
   data: { user: account, swax_to_redeem: asset(swax, 8, 'SWAX') },
@@ -235,7 +235,7 @@ export const KEEPER = [
   { name: 'updatetop21', args: () => ({}), title: 'Refresh the producer list',
     what: 'Points the protocol’s votes at the current top 21 block producers, which is where its voting rewards come from.' },
   { name: 'clearexpired', args: account => ({ user: account }), title: 'Clear your expired request',
-    what: 'Removes a redemption request of yours whose window has passed, freeing the sWAX it was holding.' },
+    what: 'Removes a redemption request of yours whose redemption period has passed, freeing the sWAX it was holding.' },
 ];
 
 export function buildFusionKeeper({ account, name, auth = null }) {

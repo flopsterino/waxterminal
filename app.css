@@ -2031,12 +2031,12 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fuwindow { margin-bottom: 12px; }
 .furail { position: relative; height: 54px; margin: 16px 0 4px; }
 .furailbg { position: absolute; left: 0; right: 0; top: 22px; height: 6px; border-radius: 99px; background: var(--surface-3); }
-.fudoor { position: absolute; top: 16px; height: 18px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent); }
-.fudoor.open { background: var(--good-soft); border-color: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
-.fudoor.past { background: var(--surface-3); border-color: var(--line); }
-.fudoorlab { position: absolute; top: 38px; transform: translateX(-50%); font-size: 9.5px; color: var(--muted); white-space: nowrap; }
-.fudoorlab.open { color: var(--good); font-weight: 700; }
-.fudoorlab.past { opacity: .5; }
+.fuperiod { position: absolute; top: 16px; height: 18px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent); }
+.fuperiod.open { background: var(--good-soft); border-color: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.fuperiod.past { background: var(--surface-3); border-color: var(--line); }
+.fuperiodlab { position: absolute; top: 38px; transform: translateX(-50%); font-size: 9.5px; color: var(--muted); white-space: nowrap; }
+.fuperiodlab.open { color: var(--good); font-weight: 700; }
+.fuperiodlab.past { opacity: .5; }
 .funow { position: absolute; top: 8px; width: 2px; height: 34px; background: var(--ink); transform: translateX(-1px); }
 .funowlab { position: absolute; top: 0; transform: translateX(-50%); font-size: 9.5px; font-weight: 700; color: var(--ink); }
 .fulegend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }

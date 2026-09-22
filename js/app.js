@@ -4263,8 +4263,9 @@ const resultText = r => r.type === 'fungible'
   : `${r.count} &times; ${esc(r.name && r.name !== 'name' ? r.name : `template ${r.templateId}`)}`;
 
 // The redemption calendar as a rail rather than a table: three weeks either
-// side of now, every 48-hour door drawn where it falls, and a marker for where
-// we are. The one thing on this page that costs money is missing a door.
+// side of now, every epoch's redemption period drawn where it falls, and a
+// marker for where we are. The one thing on this page that costs money is
+// missing the period your request was booked into.
 function fusionTimeline(st) {
   const now = Date.now();
   const from = now - 8 * 86400e3, to = now + 22 * 86400e3;
@@ -4275,9 +4276,9 @@ function fusionTimeline(st) {
       const open = e.windowFrom <= now && now < e.windowTo;
       const past = e.windowTo <= now;
       const left = at(e.windowFrom), width = Math.max(1.2, at(e.windowTo) - at(e.windowFrom));
-      return `<div class="fudoor ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%;width:${width}%"
-        title="Epoch of ${new Date(e.startsAt).toISOString().slice(0, 10)} — open ${new Date(e.windowFrom).toLocaleString()} to ${new Date(e.windowTo).toLocaleString()}"></div>
-        <span class="fudoorlab ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%">${new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
+      return `<div class="fuperiod ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%;width:${width}%"
+        title="Epoch that started ${new Date(e.startsAt).toISOString().slice(0, 10)} — its redemption period runs ${new Date(e.windowFrom).toLocaleString()} to ${new Date(e.windowTo).toLocaleString()}"></div>
+        <span class="fuperiodlab ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%">${new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
     }).join('');
   return `<div class="furail">
     <div class="furailbg"></div>
@@ -4285,7 +4286,7 @@ function fusionTimeline(st) {
     <div class="funow" style="left:${at(now)}%" title="Now"></div>
     <span class="funowlab" style="left:${at(now)}%">now</span>
   </div>
-  <div class="fulegend"><span><i class="d open"></i> open now</span><span><i class="d"></i> a door you can book</span><span><i class="d past"></i> closed</span></div>`;
+  <div class="fulegend"><span><i class="d open"></i> redemption period open now</span><span><i class="d"></i> upcoming redemption period</span><span><i class="d past"></i> closed</span></div>`;
 }
 
 // ------------------------------------------------------------ WAXFUSION -----
@@ -4310,10 +4311,10 @@ async function renderFusion() {
   const inUsd = wax => (waxUsd ? usd(wax * waxUsd) : `${qty(wax)} WAX`);
   const win = st.openEpoch || st.nextEpoch;
   const windowLine = st.openEpoch
-    ? `<b class="pos">A redemption window is open</b> until ${new Date(st.openEpoch.windowTo).toLocaleString()} &mdash; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
+    ? `<b class="pos">A redemption period is open</b> until ${new Date(st.openEpoch.windowTo).toLocaleString()} &mdash; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
     : st.nextEpoch
-      ? `The next redemption window opens ${new Date(st.nextEpoch.windowFrom).toLocaleString()} &mdash; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}, and stays open ${forDays(st.windowSeconds / 86400)}`
-      : 'No redemption window is scheduled in what the contract still holds.';
+      ? `The next redemption period opens ${new Date(st.nextEpoch.windowFrom).toLocaleString()} &mdash; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}, and lasts ${forDays(st.windowSeconds / 86400)}`
+      : 'No redemption period is scheduled in what the contract still holds.';
 
   // The shape of the thing, drawn once so the words underneath have something
   // to point at: WAX goes in and becomes sWAX, sWAX pays you, and LSWAX is the
@@ -4325,7 +4326,7 @@ async function renderFusion() {
     <div class="fuarrow two"><span>liquify</span><i></i><span class="back">unliquify</span></div>
     <div class="fustep alt"><span class="k">Or hold</span><b>LSWAX</b><span class="s">1 = ${st.lswaxInSwax.toFixed(4)} sWAX, and rising</span></div>
     <div class="fuarrow"><span>redeem</span><i></i></div>
-    <div class="fustep"><span class="k">You get back</span><b>WAX</b><span class="s">in a window, or now for ${st.feePct}%</span></div>
+    <div class="fustep"><span class="k">You get back</span><b>WAX</b><span class="s">in a redemption period, or now for ${st.feePct}%</span></div>
   </div>`;
 
   // Where the money it earns goes. Three numbers that are usually buried in a
@@ -4348,18 +4349,18 @@ async function renderFusion() {
           <span class="sub">from the reward rate now${st.aprCapPct ? `, capped at ${st.aprCapPct}%` : ''}</span></div>
         <div class="stat"><span class="v">${st.lswaxInSwax.toFixed(6)}</span><span class="k">sWAX per LSWAX</span>
           <span class="sub">only goes up &mdash; LSWAX compounds instead of paying</span></div>
-        <div class="stat"><span class="v">${qty(st.forRedemption)} WAX</span><span class="k">ready to redeem</span>
-          <span class="sub">${inUsd(st.forRedemption)} in the bucket right now</span></div>
+        <div class="stat"><span class="v">${qty(st.forRedemption)} WAX</span><span class="k">held for redemptions</span>
+          <span class="sub">${inUsd(st.forRedemption)} available right now</span></div>
         <div class="stat"><span class="v">${qty(st.revenueDistributed)} WAX</span><span class="k">paid out so far</span>
           <span class="sub">${qty(st.rewardsClaimed)} WAX of it claimed</span></div>
         <div class="stat"><span class="v">${qty(st.availableForRentals)} WAX</span><span class="k">out on CPU rental</span>
           <span class="sub">at ${pxNum(st.rentPricePerWax)} WAX per WAX &middot; ${esc(st.cpuContract)}</span></div>
       </div>
 
-      <div class="card fuwindow"><h3>The clock <span class="dim">&mdash; an epoch a week, each one opening its door a fortnight later</span></h3>
+      <div class="card fuwindow"><h3>Epochs and redemption periods <span class="dim">&mdash; a new epoch every week, each with a redemption period a fortnight later</span></h3>
         <p class="sub" style="margin:0 0 10px">${windowLine}.
-          Redeeming takes two steps: ask for a place in an epoch, then take the WAX out during that epoch's window.
-          ${st.feePct ? `Or skip the queue with an instant redeem, which costs ${st.feePct}%.` : ''}</p>
+          Redeeming takes two steps: request a redemption, which is booked into an epoch, then withdraw during that epoch's redemption period.
+          ${st.feePct ? `Or skip the wait with an instant redeem, which costs ${st.feePct}%.` : ''}</p>
         ${fusionTimeline(st)}
       </div>
 
@@ -4541,7 +4542,7 @@ async function paintFusionUser(st, stale) {
       ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${qty(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
     </dl>
     ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
-      <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Window</th><th></th></tr></thead>
+      <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Redemption period</th><th></th></tr></thead>
       <tbody>${u.requests.map(r => {
         const e = st.epochs.find(x => x.id === r.epochId);
         const open = e && e.windowFrom <= Date.now() && Date.now() < e.windowTo;
@@ -4549,7 +4550,7 @@ async function paintFusionUser(st, stale) {
         return `<tr><td class="dim">${e ? new Date(e.startsAt).toISOString().slice(0, 10) : r.epochId}</td>
           <td class="r num">${qty(r.amount)} WAX</td>
           <td>${e ? `${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}` : '—'}</td>
-          <td>${open ? '<span class="badge good">take it now</span>' : missed ? '<span class="badge bad">window passed</span>' : '<span class="dim">waiting</span>'}</td></tr>`;
+          <td>${open ? '<span class="badge good">withdraw now</span>' : missed ? '<span class="badge bad">period passed</span>' : '<span class="dim">waiting</span>'}</td></tr>`;
       }).join('')}</tbody></table></div>` : ''}
     <div class="toolbar" style="margin:10px 0 0">
       ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${qty(u.claimable)} WAX</button>
@@ -4584,7 +4585,7 @@ function drawFusionDesk(st, u) {
       stake: { unit: 'WAX', have: u.wax, note: `WAX to <span class="mono">dapp.fusion</span> with the memo <span class="mono">stake</span>. You get sWAX one for one, and it starts earning immediately. Minimum ${qty(st.minStake)} WAX.` },
       liquify: { unit: 'sWAX', have: u.swax, note: 'Turns sWAX that pays you into LSWAX that compounds for you. It is tradeable; sWAX is not.' },
       unliquify: { unit: 'LSWAX', have: u.lswax, note: `Back the other way, at ${st.lswaxInSwax.toFixed(6)} sWAX per LSWAX. Minimum ${qty(st.minUnliquify)} LSWAX.` },
-      redeem: { unit: 'sWAX', have: u.swax, note: `Ask for a place in an epoch and take the WAX out during its window, or redeem instantly for ${st.feePct}% out of the ${qty(st.forRedemption)} WAX in the bucket.` },
+      redeem: { unit: 'sWAX', have: u.swax, note: `Request a redemption — it is booked into an epoch, and you withdraw during that epoch's redemption period — or redeem instantly for ${st.feePct}% out of the ${qty(st.forRedemption)} WAX held for redemptions.` },
     }[mode];
     desk.innerHTML = `
       <h3>Stake, liquify or redeem <span class="dim">&mdash; you hold ${qty(u.wax)} WAX</span></h3>
@@ -4600,9 +4601,9 @@ function drawFusionDesk(st, u) {
       ${mode === 'redeem' ? `<label class="pwtop"><input type="checkbox" id="fusionReplace"><span>Replace a request I already have</span></label>` : ''}
       <div id="fusionOutBox"></div>
       ${mode === 'redeem'
-        ? `<button class="btn" id="fusionGo">Ask for a place in the queue</button>
+        ? `<button class="btn" id="fusionGo">Request a redemption</button>
            <button class="btn ghost" id="fusionInsta">Redeem instantly &mdash; ${st.feePct}% fee</button>
-           ${st.openEpoch && u.requests.some(r => r.epochId === st.openEpoch.id) ? '<button class="btn" id="fusionTake">Take the WAX out now</button>' : ''}`
+           ${st.openEpoch && u.requests.some(r => r.epochId === st.openEpoch.id) ? '<button class="btn" id="fusionTake">Withdraw now</button>' : ''}`
         : '<button class="btn" id="fusionGo">Review</button>'}`;
 
     const amt = () => Math.max(0, Number($('#fusionAmt')?.value) || 0);
@@ -4614,7 +4615,7 @@ function drawFusionDesk(st, u) {
       el.textContent = mode === 'stake' ? `${qty(v)} sWAX`
         : mode === 'liquify' ? `${qty(v / st.lswaxInSwax)} LSWAX`
         : mode === 'unliquify' ? `${qty(v * st.lswaxInSwax)} sWAX`
-        : `${qty(v * (1 - st.feePct / 100))} WAX instantly, or ${qty(v)} WAX through the queue`;
+        : `${qty(v * (1 - st.feePct / 100))} WAX instantly, or ${qty(v)} WAX through a redemption period`;
     };
     $('#fusionAmt')?.addEventListener('input', quote);
     const max = $('#fusionMax');
@@ -4646,8 +4647,8 @@ function drawFusionDesk(st, u) {
       }
       const replace = !!$('#fusionReplace')?.checked;
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-        Ask to redeem <b>${qty(v)} sWAX</b>. The contract books it into an epoch; you then have to come back during that epoch's
-        48-hour window and take the WAX out, or the request expires and the sWAX stays staked.
+        Request a redemption of <b>${qty(v)} sWAX</b>. The contract books it into an epoch; you then have to come back during that
+        epoch's 48-hour redemption period and withdraw, or the request expires and the sWAX stays staked.
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionReq">Sign and request</button></div></div>`;
       $('#fusionReq').onclick = () => run(buildFusionReqRedeem({ account: me, swax: v, replace }), 'Requested — come back when its window opens.');
     };
@@ -4656,7 +4657,7 @@ function drawFusionDesk(st, u) {
       const box = $('#fusionOutBox');
       const v = amt();
       if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
-      if (v > st.forRedemption) { box.innerHTML = `<div class="err">Only ${qty(st.forRedemption)} WAX is in the bucket right now, so an instant redeem of ${qty(v)} would fail. Ask for a place in the queue instead.</div>`; return; }
+      if (v > st.forRedemption) { box.innerHTML = `<div class="err">Only ${qty(st.forRedemption)} WAX is held for redemptions right now, so an instant redeem of ${qty(v)} would fail. Request one for the next redemption period instead.</div>`; return; }
       if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
         Redeem <b>${qty(v)} sWAX</b> now for about <b>${qty(v * (1 - st.feePct / 100))} WAX</b> — the protocol keeps ${st.feePct}%.
