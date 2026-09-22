@@ -8,7 +8,7 @@ import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pend
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
-import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart, deviationBars } from './charts.js';
+import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart, deviationArea } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -4272,15 +4272,23 @@ function fusionTimeline(st) {
   const now = Date.now();
   const from = now - 8 * 86400e3, to = now + 22 * 86400e3;
   const at = t => Math.max(0, Math.min(100, ((t - from) / (to - from)) * 100));
+  // A date under every period, and the one that is open (or next) carries the
+  // hour it opens and the hour it shuts — which is the whole question a
+  // timeline of 48-hour doors is asked.
+  const clock = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const marked = st.openEpoch || st.nextEpoch;
   const doors = st.epochs
     .filter(e => e.windowTo > from && e.windowFrom < to)
     .map(e => {
       const open = e.windowFrom <= now && now < e.windowTo;
       const past = e.windowTo <= now;
+      const isMarked = marked && e.id === marked.id;
       const left = at(e.windowFrom), width = Math.max(1.2, at(e.windowTo) - at(e.windowFrom));
-      return `<div class="fuperiod ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%;width:${width}%"
-        title="Epoch that started ${new Date(e.startsAt).toISOString().slice(0, 10)} — its redemption period runs ${new Date(e.windowFrom).toLocaleString()} to ${new Date(e.windowTo).toLocaleString()}"></div>
-        <span class="fuperiodlab ${open ? 'open' : past ? 'past' : ''}" style="left:${left}%">${new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
+      const cls = open ? 'open' : past ? 'past' : '';
+      return `<div class="fuperiod ${cls}" style="left:${left}%;width:${width}%"
+        title="Epoch that started ${new Date(e.startsAt).toISOString().slice(0, 10)} — its redemption period runs ${clock(e.windowFrom)} to ${clock(e.windowTo)}"></div>
+        <span class="fuperiodlab ${cls}${isMarked ? ' full' : ''}" style="left:${(left + width / 2).toFixed(2)}%">${
+          isMarked ? `${clock(e.windowFrom)} &rarr; ${clock(e.windowTo)}` : new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
     }).join('');
   return `<div class="furail">
     <div class="furailbg"></div>
@@ -4452,7 +4460,10 @@ async function drawFusionPrice(st) {
     </div>`;
     const holder = document.createElement('div');
     box.appendChild(holder);
-    holder.appendChild(deviationBars(shown, { height: 170, fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`, label: 'LSWAX against its backing, by day' }));
+    holder.appendChild(deviationArea(shown, {
+      height: 190, width: box.clientWidth || null,
+      fmt: v => `${v.toFixed(2)}%`, label: 'LSWAX against its backing, by day',
+    }));
     box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:6px 0 0">Zero is the backing: ${st.lswaxInSwax.toFixed(6)} sWAX per LSWAX.
       Above it, selling beats unliquifying; below it, the other way round.</p>`);
     box.querySelectorAll('[data-fudays]').forEach(b => b.onclick = () => { days = Number(b.dataset.fudays); draw(); });

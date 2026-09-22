@@ -1027,53 +1027,102 @@ export function priceBandChart(points, {
   return wrap;
 }
 
-// ------------------------------------------------------- deviation bars ----
-// One bar a day around a zero line: above it green, below it red. For the
-// questions that are really "how far off is it" — a liquid staking token
-// against its backing, a quote against a mid — where the price itself is a
-// flat line with the whole story hidden in its last decimal.
-export function deviationBars(points, { height = 170, fmt = v => `${v.toFixed(2)}%`, label = 'deviation' } = {}) {
+// ------------------------------------------------------ deviation area ----
+// How far off a reference something traded, day by day: a filled curve around
+// a zero line, green where it sat above and red where it sat below.
+//
+// It was bars first, and bars of a number that mostly hovers near zero are a
+// row of spikes with gaps between them — jagged, and no easier to read for it.
+// The shape of a premium is a shape; drawing it as one is the point.
+export function deviationArea(points, {
+  height = 190, width = null, fmt = v => `${v.toFixed(2)}%`, label = 'deviation from the reference',
+} = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart devchart';
   const pts = (points || []).filter(p => p && isFinite(p.y)).sort((a, b) => a.x - b.x);
   if (pts.length < 2) { wrap.innerHTML = '<div class="chart-empty">Not enough days recorded yet.</div>'; return wrap; }
 
-  const W = chartW(), H = height, padL = 46, padR = 10, padT = 10, padB = 18;
+  // Drawn at the width it will actually occupy: a 720-wide viewBox stretched
+  // across a full-width card widens every glyph with it.
+  const W = Math.max(320, Math.round(width || chartW()));
+  const H = height, padL = 52, padR = 58, padT = 12, padB = 20;
   const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
-  const max = Math.max(0.0001, ...pts.map(p => Math.abs(p.y)));
-  const Y = v => y0 + ((max - v) / (2 * max)) * (y1 - y0);
+  const max = Math.max(0.05, ...pts.map(p => Math.abs(p.y))) * 1.15;
+  const X = t => x0 + ((t - pts[0].x) / ((pts.at(-1).x - pts[0].x) || 1)) * (x1 - x0);
+  const Y = v => y0 + ((max - Math.max(-max, Math.min(max, v))) / (2 * max)) * (y1 - y0);
   const zero = Y(0);
-  const step = (x1 - x0) / pts.length;
-  const bw = Math.max(1.5, Math.min(14, step * 0.7));
 
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'devsvg', role: 'img', 'aria-label': label });
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'devsvg', role: 'img', 'aria-label': label });
   svg.style.width = '100%';
   svg.style.height = `${H}px`;
 
-  for (const v of [max, 0, -max]) {
+  const uid = `dev${Math.random().toString(36).slice(2, 8)}`;
+  const defs = el('defs');
+  // Two halves of the same area, each clipped to its own side of the line.
+  for (const [name, y, h] of [['up', y0, zero - y0], ['down', zero, y1 - zero]]) {
+    const cp = el('clipPath', { id: `${uid}-${name}` });
+    cp.appendChild(el('rect', { x: 0, y, width: W, height: Math.max(0, h) }));
+    defs.appendChild(cp);
+  }
+  svg.appendChild(defs);
+
+  // A curve rather than a zigzag: each segment meets the next at their midpoint.
+  const curve = pts.map((p, i) => [X(p.x), Y(p.y)]);
+  let d = `M${curve[0][0].toFixed(1)},${curve[0][1].toFixed(1)}`;
+  for (let i = 1; i < curve.length; i++) {
+    const [px2, py] = curve[i - 1], [cx2, cy] = curve[i];
+    const mx = (px2 + cx2) / 2;
+    d += `Q${px2.toFixed(1)},${py.toFixed(1)} ${mx.toFixed(1)},${((py + cy) / 2).toFixed(1)}`;
+  }
+  d += `T${curve.at(-1)[0].toFixed(1)},${curve.at(-1)[1].toFixed(1)}`;
+  const area = `${d}L${curve.at(-1)[0].toFixed(1)},${zero.toFixed(1)}L${curve[0][0].toFixed(1)},${zero.toFixed(1)}Z`;
+
+  for (const v of [max, max / 2, 0, -max / 2, -max]) {
     const y = Y(v);
     svg.appendChild(el('line', { x1: x0, y1: y, x2: x1, y2: y, class: v === 0 ? 'devzero' : 'devgrid' }));
-    const t = el('text', { x: x0 - 6, y: y + 3.5, class: 'devlabel', 'text-anchor': 'end' });
-    t.textContent = fmt(v);
-    svg.appendChild(t);
+    if (v === max || v === 0 || v === -max) {
+      const t = el('text', { x: x0 - 8, y: y + 3.5, class: 'devlabel', 'text-anchor': 'end' });
+      t.textContent = v === 0 ? 'backing' : fmt(v);
+      svg.appendChild(t);
+    }
   }
 
-  pts.forEach((p, i) => {
-    const cx = x0 + step * (i + 0.5);
-    const top = Math.min(zero, Y(p.y)), h = Math.max(1, Math.abs(Y(p.y) - zero));
-    const bar = el('rect', { x: (cx - bw / 2).toFixed(1), y: top.toFixed(1), width: bw.toFixed(1), height: h.toFixed(1), rx: 1.5,
-      class: `devbar ${p.y >= 0 ? 'up' : 'down'}` });
-    bar.appendChild(el('title')).textContent = `${new Date(p.x).toISOString().slice(0, 10)} — ${fmt(p.y)}`;
-    svg.appendChild(bar);
-  });
+  svg.appendChild(el('path', { d: area, class: 'devfill up', 'clip-path': `url(#${uid}-up)` }));
+  svg.appendChild(el('path', { d: area, class: 'devfill down', 'clip-path': `url(#${uid}-down)` }));
+  svg.appendChild(el('path', { d, class: 'devline up', 'clip-path': `url(#${uid}-up)` }));
+  svg.appendChild(el('path', { d, class: 'devline down', 'clip-path': `url(#${uid}-down)` }));
+
+  // Where it stands now, named at the end of its own line.
+  const last = pts.at(-1);
+  svg.appendChild(el('circle', { cx: X(last.x), cy: Y(last.y), r: 3.5, class: `devdot ${last.y >= 0 ? 'up' : 'down'}` }));
+  const lt = el('text', { x: X(last.x) + 7, y: Y(last.y) + 3.5, class: `devlabel now ${last.y >= 0 ? 'up' : 'down'}` });
+  lt.textContent = `${last.y >= 0 ? '+' : ''}${fmt(last.y)}`;
+  svg.appendChild(lt);
 
   const day = t => new Date(t).toISOString().slice(0, 10);
-  [[pts[0].x, 'start'], [pts[Math.floor(pts.length / 2)].x, 'middle'], [pts.at(-1).x, 'end']].forEach(([t, anchor], i) => {
-    const x = x0 + step * (i === 0 ? 0.5 : i === 2 ? pts.length - 0.5 : pts.length / 2);
-    const tx = el('text', { x: x.toFixed(1), y: y1 + 13, class: 'devlabel', 'text-anchor': anchor });
+  [[pts[0].x, 'start'], [pts[Math.floor(pts.length / 2)].x, 'middle'], [pts.at(-1).x, 'end']].forEach(([t, anchor]) => {
+    const tx = el('text', { x: X(t).toFixed(1), y: y1 + 14, class: 'devlabel', 'text-anchor': anchor });
     tx.textContent = day(t);
     svg.appendChild(tx);
   });
+
+  // One hover line for the whole plot, which is how every other chart here
+  // answers "what was it on that day".
+  const cross = el('line', { y1: y0, y2: y1, class: 'devcross', opacity: 0 });
+  const dot = el('circle', { r: 3.5, class: 'devhoverdot', opacity: 0 });
+  svg.append(cross, dot);
+  const hit = el('rect', { x: 0, y: 0, width: W, height: H, fill: 'transparent' });
+  svg.appendChild(hit);
+  hit.addEventListener('pointermove', e => {
+    const box = svg.getBoundingClientRect();
+    const vx = ((e.clientX - box.left) / box.width) * W;
+    let best = pts[0], bd = Infinity;
+    for (const p of pts) { const dd = Math.abs(X(p.x) - vx); if (dd < bd) { bd = dd; best = p; } }
+    cross.setAttribute('x1', X(best.x)); cross.setAttribute('x2', X(best.x)); cross.setAttribute('opacity', 1);
+    dot.setAttribute('cx', X(best.x)); dot.setAttribute('cy', Y(best.y)); dot.setAttribute('opacity', 1);
+    showTip(`<b>${best.y >= 0 ? '+' : ''}${fmt(best.y)}</b><span>${day(best.x)}</span>`, e.clientX, e.clientY);
+  });
+  hit.addEventListener('pointerleave', () => { cross.setAttribute('opacity', 0); dot.setAttribute('opacity', 0); hideTip(); });
 
   wrap.appendChild(svg);
   return wrap;

@@ -1925,15 +1925,24 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .ldbar { display: inline-block; position: relative; padding: 1px 7px; border-radius: 5px; font-variant-numeric: tabular-nums;
   background: linear-gradient(90deg, var(--accent-soft) var(--w), transparent var(--w)); }
 
-/* ---- deviation bars ------------------------------------------------------ */
+/* ---- deviation area ------------------------------------------------------ */
 .devchart { margin: 6px 0 2px; }
 .devsvg { display: block; overflow: visible; }
 .devgrid { stroke: var(--line); stroke-width: 1; }
-.devzero { stroke: var(--ink-2); stroke-width: 1; opacity: .8; }
+.devzero { stroke: var(--ink-2); stroke-width: 1.2; stroke-dasharray: 5 4; opacity: .85; }
 .devlabel { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
-.devbar.up { fill: var(--good); }
-.devbar.down { fill: var(--bad); }
-.devbar:hover { opacity: .75; }
+.devlabel.now { font-weight: 700; }
+.devlabel.now.up { fill: var(--good); }
+.devlabel.now.down { fill: var(--bad); }
+.devfill.up { fill: var(--good); opacity: .16; }
+.devfill.down { fill: var(--bad); opacity: .16; }
+.devline { fill: none; stroke-width: 1.8; stroke-linejoin: round; }
+.devline.up { stroke: var(--good); }
+.devline.down { stroke: var(--bad); }
+.devdot.up { fill: var(--good); }
+.devdot.down { fill: var(--bad); }
+.devcross { stroke: var(--line-2, var(--line)); stroke-width: 1; }
+.devhoverdot { fill: var(--ink); }
 
 /* ---- ticker -------------------------------------------------------------- */
 /* The one strip that is on every page, which is what makes a paid slot in it
@@ -2048,12 +2057,15 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 
 /* The redemption calendar as a rail. */
 .fuwindow { margin-bottom: 12px; }
-.furail { position: relative; height: 54px; margin: 16px 0 4px; }
+.furail { position: relative; height: 62px; margin: 16px 0 6px; }
 .furailbg { position: absolute; left: 0; right: 0; top: 22px; height: 6px; border-radius: 99px; background: var(--surface-3); }
 .fuperiod { position: absolute; top: 16px; height: 18px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent); }
 .fuperiod.open { background: var(--good-soft); border-color: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
 .fuperiod.past { background: var(--surface-3); border-color: var(--line); }
 .fuperiodlab { position: absolute; top: 38px; transform: translateX(-50%); font-size: 9.5px; color: var(--muted); white-space: nowrap; }
+.fuperiodlab.full { font-size: 10.5px; font-weight: 650; color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; top: 36px; }
+.fuperiodlab.full.open { color: var(--good); border-color: var(--good); background: var(--good-soft); }
 .fuperiodlab.open { color: var(--good); font-weight: 700; }
 .fuperiodlab.past { opacity: .5; }
 .funow { position: absolute; top: 8px; width: 2px; height: 34px; background: var(--ink); transform: translateX(-1px); }
