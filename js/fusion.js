@@ -225,17 +225,17 @@ export const buildFusionInstaRedeem = ({ account, swax, auth = null }) => [{
 // schedule any more.
 export const KEEPER = [
   { name: 'compound', args: () => ({}), title: 'Compound',
-    what: 'Turns the revenue that has arrived into more sWAX behind LSWAX. Everybody holding LSWAX gets a little richer; whoever presses it pays the CPU.' },
+    what: 'Turns arrived revenue into more sWAX behind LSWAX.' },
   { name: 'createfarms', args: () => ({}), title: 'Fund the farms',
-    what: 'Moves the ecosystem share into the Alcor incentives the protocol pays for, so the LSWAX pools keep rewarding liquidity.' },
+    what: 'Hands the ecosystem share to the Alcor incentives it funds.' },
   { name: 'stakeallcpu', args: () => ({}), title: 'Put idle WAX to work',
-    what: 'Stakes WAX sitting in the contract to the CPU rental wallets, where it earns for stakers instead of doing nothing.' },
+    what: 'Stakes idle WAX to the CPU wallets so it earns.' },
   { name: 'claimrefunds', args: () => ({}), title: 'Collect refunds',
-    what: 'Pulls back WAX that finished unstaking from the CPU contracts so it can be used again.' },
+    what: 'Pulls back WAX that finished unstaking.' },
   { name: 'updatetop21', args: () => ({}), title: 'Refresh the producer list',
-    what: 'Points the protocol’s votes at the current top 21 block producers, which is where its voting rewards come from.' },
+    what: 'Points its votes at the current top 21 producers.' },
   { name: 'clearexpired', args: account => ({ user: account }), title: 'Clear your expired request',
-    what: 'Removes a redemption request of yours whose redemption period has passed, freeing the sWAX it was holding.' },
+    what: 'Frees the sWAX behind a request whose period has passed.' },
 ];
 
 export function buildFusionKeeper({ account, name, auth = null }) {

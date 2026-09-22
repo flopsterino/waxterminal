@@ -1026,3 +1026,55 @@ export function priceBandChart(points, {
   }
   return wrap;
 }
+
+// ------------------------------------------------------- deviation bars ----
+// One bar a day around a zero line: above it green, below it red. For the
+// questions that are really "how far off is it" — a liquid staking token
+// against its backing, a quote against a mid — where the price itself is a
+// flat line with the whole story hidden in its last decimal.
+export function deviationBars(points, { height = 170, fmt = v => `${v.toFixed(2)}%`, label = 'deviation' } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart devchart';
+  const pts = (points || []).filter(p => p && isFinite(p.y)).sort((a, b) => a.x - b.x);
+  if (pts.length < 2) { wrap.innerHTML = '<div class="chart-empty">Not enough days recorded yet.</div>'; return wrap; }
+
+  const W = chartW(), H = height, padL = 46, padR = 10, padT = 10, padB = 18;
+  const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
+  const max = Math.max(0.0001, ...pts.map(p => Math.abs(p.y)));
+  const Y = v => y0 + ((max - v) / (2 * max)) * (y1 - y0);
+  const zero = Y(0);
+  const step = (x1 - x0) / pts.length;
+  const bw = Math.max(1.5, Math.min(14, step * 0.7));
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'devsvg', role: 'img', 'aria-label': label });
+  svg.style.width = '100%';
+  svg.style.height = `${H}px`;
+
+  for (const v of [max, 0, -max]) {
+    const y = Y(v);
+    svg.appendChild(el('line', { x1: x0, y1: y, x2: x1, y2: y, class: v === 0 ? 'devzero' : 'devgrid' }));
+    const t = el('text', { x: x0 - 6, y: y + 3.5, class: 'devlabel', 'text-anchor': 'end' });
+    t.textContent = fmt(v);
+    svg.appendChild(t);
+  }
+
+  pts.forEach((p, i) => {
+    const cx = x0 + step * (i + 0.5);
+    const top = Math.min(zero, Y(p.y)), h = Math.max(1, Math.abs(Y(p.y) - zero));
+    const bar = el('rect', { x: (cx - bw / 2).toFixed(1), y: top.toFixed(1), width: bw.toFixed(1), height: h.toFixed(1), rx: 1.5,
+      class: `devbar ${p.y >= 0 ? 'up' : 'down'}` });
+    bar.appendChild(el('title')).textContent = `${new Date(p.x).toISOString().slice(0, 10)} — ${fmt(p.y)}`;
+    svg.appendChild(bar);
+  });
+
+  const day = t => new Date(t).toISOString().slice(0, 10);
+  [[pts[0].x, 'start'], [pts[Math.floor(pts.length / 2)].x, 'middle'], [pts.at(-1).x, 'end']].forEach(([t, anchor], i) => {
+    const x = x0 + step * (i === 0 ? 0.5 : i === 2 ? pts.length - 0.5 : pts.length / 2);
+    const tx = el('text', { x: x.toFixed(1), y: y1 + 13, class: 'devlabel', 'text-anchor': anchor });
+    tx.textContent = day(t);
+    svg.appendChild(tx);
+  });
+
+  wrap.appendChild(svg);
+  return wrap;
+}

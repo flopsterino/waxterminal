@@ -8,7 +8,7 @@ import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pend
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
 import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, buildRedeposit, buildOneShot, buildClaimAndSwap, buildRestake, planZap, buildZapSwap, buildZapDeposit, buildPowerupVia, readBalances, harvestedFrom, buildVoteClaim, buildStakeBack, buildAddLiquidity, buildRemoveLiquidity, buildPromotion, buildPowerup, buildUnstake, buildRefund, buildVote, asset } from './tx.js';
-import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart } from './charts.js';
+import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart, deviationBars } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
@@ -34,7 +34,7 @@ import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions, promotionStanding } from './promote.js';
-import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, VOTES } from './ratings.js';
+import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, myVote, VOTES } from './ratings.js';
 import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT, bannerCalendar, buildBannerRent, buildBannerEdit, RENT_LEAD_SEC, JOIN_LEAD_SEC } from './cheese.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity, liquidityForAmounts, concentration } from './math.js';
 
@@ -187,6 +187,14 @@ const ago = t => {
 // 33,550,000 NONWAX is the thing the wallet will ask them to sign.
 const plain = (v, decimals = 0) => (v == null || !isFinite(v) ? '—'
   : v.toLocaleString('en-US', { maximumFractionDigits: Math.min(8, decimals) }));
+
+// How long until something frees up, in the unit that reads at that distance.
+const forHours = ms => {
+  const h = (ms || 0) / 3600e3;
+  if (h <= 0) return 'a moment';
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  return `${Math.round(h)}h`;
+};
 
 const forDays = d => d == null ? '—'
   : d < 1 ? `${Math.max(1, Math.round(d * 24))}h`
@@ -1120,16 +1128,15 @@ function renderOverview() {
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
           </span></h3><div id="ovPay"></div></div>
       <div class="ovbanner inview-banner" data-banner-host hidden></div>
+      <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
+          <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
       <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded <span class="dim">&mdash; 24h</span><span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity <span class="dim">&mdash; fees to LPs, 7 days</span></h3><div id="ovPaid"></div></div>
-      <div class="card"><h3>Movers <span class="dim">&mdash; 24h, tokens with a real market</span></h3><div id="ovMovers"></div></div>
       <div class="card ovwax"><h3>WAX <span class="dim" id="ovWaxPx"></span>
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
         <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
         <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
-      <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
-          <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
       <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
       <div class="card"><h3>Ending soon <span class="dim">&mdash; yield with a date on it</span></h3><div id="ovEnding2"></div></div>
@@ -1243,22 +1250,9 @@ function renderOverview() {
     { h: 'Liquidity', r: true, v: x => usd(x.p.tvlReal) },
   ], 'No trading fees recorded this week.');
 
-  // Movers among tokens with a real market. A token with forty dollars behind
-  // it moves 30% on one trade, and a gainers list made of those is noise.
-  const movers = toks.filter(t => t.change24 != null && isFinite(t.change24) && t.tvl >= 100 && Math.abs(t.change24) >= 0.05);
-  // One card rather than two: a day with two gainers left a card that was mostly
-  // empty and pushed its neighbour onto a row of its own. Up to five each way,
-  // the other side filling in when one runs short.
-  const ups = [...movers].filter(t => t.change24 > 0).sort((a, b) => b.change24 - a.change24);
-  const downs = [...movers].filter(t => t.change24 < 0).sort((a, b) => a.change24 - b.change24);
-  const nUp = Math.min(ups.length, Math.max(5, 10 - downs.length));
-  const moved = [...ups.slice(0, nUp), ...downs.slice(0, 10 - nUp)].sort((a, b) => b.change24 - a.change24);
-  mini('#ovMovers', moved.map(t => ({ tok: t.id, x: t })), [
-    { h: 'Token', v: tokCell },
-    { h: 'Price', r: true, v: t => px(t.price) },
-    { h: '24h', r: true, v: t => chgTxt(t.change24), cls: t => chgCls(t.change24) },
-    { h: 'Volume', r: true, v: t => t.vol24 > 0 ? usd(t.vol24) : '—', cls: t => t.vol24 > 0 ? '' : 'dim' },
-  ], 'Nothing with a real market moved 5% today.');
+  // The movers card is gone. WAX prices almost everything on this chain, so a
+  // quiet day leaves every token within a percent of where it was and the card
+  // was empty far more often than it was useful.
 
   // Yield with a date on it: a rate you can still take, and then cannot.
   const now2 = Date.now();
@@ -4328,13 +4322,13 @@ async function renderFusion() {
   // to point at: WAX goes in and becomes sWAX, sWAX pays you, and LSWAX is the
   // same sWAX with the rewards folded back in instead.
   const flow = `<div class="fuflow">
-    <div class="fustep"><span class="k">You bring</span><b>WAX</b><span class="s">${qty(st.minStake)} minimum</span></div>
+    <div class="fustep"><span class="k">bring</span><b>WAX</b></div>
     <div class="fuarrow"><span>stake</span><i></i></div>
-    <div class="fustep on"><span class="k">You hold</span><b>sWAX</b><span class="s">${st.aprPct != null ? `${st.aprPct.toFixed(2)}% a year, paid in WAX` : 'paid in WAX'}</span></div>
+    <div class="fustep on"><span class="k">hold</span><b>sWAX</b><span class="s">${st.aprPct != null ? `${st.aprPct.toFixed(2)}% a year` : 'pays WAX'}</span></div>
     <div class="fuarrow two"><span>liquify</span><i></i><span class="back">unliquify</span></div>
-    <div class="fustep alt"><span class="k">Or hold</span><b>LSWAX</b><span class="s">1 = ${st.lswaxInSwax.toFixed(4)} sWAX, and rising</span></div>
+    <div class="fustep alt"><span class="k">or hold</span><b>LSWAX</b><span class="s">1 = ${st.lswaxInSwax.toFixed(4)} sWAX</span></div>
     <div class="fuarrow"><span>redeem</span><i></i></div>
-    <div class="fustep"><span class="k">You get back</span><b>WAX</b><span class="s">in a redemption period, or now for ${st.feePct}%</span></div>
+    <div class="fustep"><span class="k">back to</span><b>WAX</b><span class="s">${st.feePct}% to skip the wait</span></div>
   </div>`;
 
   // Where the money it earns goes. Three numbers that are usually buried in a
@@ -4351,33 +4345,30 @@ async function renderFusion() {
       ${flow}
 
       <div class="stats">
-        <div class="stat"><span class="v">${qty(st.staked)} WAX</span><span class="k">staked with it</span>
-          <span class="sub">${waxUsd ? `${usd(st.staked * waxUsd)} &middot; ` : ''}${qty(st.earning)} sWAX earning, ${qty(st.backing)} behind LSWAX</span></div>
+        <div class="stat lead"><span class="v">${qty(st.forRedemption)} WAX</span><span class="k">left to redeem instantly</span>
+          <span class="sub">= ${qty(st.forRedemption)} sWAX or ${qty(st.forRedemption / st.lswaxInSwax)} LSWAX${waxUsd ? ` &middot; ${usd(st.forRedemption * waxUsd)}` : ''}</span></div>
         <div class="stat"><span class="v">${st.aprPct != null ? `${st.aprPct.toFixed(2)}%` : '—'}</span><span class="k">staking rate</span>
-          <span class="sub">from the reward rate now${st.aprCapPct ? `, capped at ${st.aprCapPct}%` : ''}</span></div>
+          <span class="sub">capped at ${st.aprCapPct ?? 12}%</span></div>
         <div class="stat"><span class="v">${st.lswaxInSwax.toFixed(6)}</span><span class="k">sWAX per LSWAX</span>
-          <span class="sub">only goes up &mdash; LSWAX compounds instead of paying</span></div>
-        <div class="stat"><span class="v">${qty(st.forRedemption)} WAX</span><span class="k">redeemable instantly</span>
-          <span class="sub">right now, without waiting for a period &mdash; ${qty(st.forRedemption)} sWAX
-            or ${qty(st.forRedemption / st.lswaxInSwax)} LSWAX${waxUsd ? `, ${usd(st.forRedemption * waxUsd)}` : ''}</span></div>
+          <span class="sub">rises every compound</span></div>
+        <div class="stat"><span class="v">${qty(st.staked)} WAX</span><span class="k">staked with it</span>
+          <span class="sub">${qty(st.earning)} sWAX earning &middot; ${qty(st.backing)} behind LSWAX</span></div>
         <div class="stat"><span class="v">${qty(st.revenueDistributed)} WAX</span><span class="k">paid out so far</span>
-          <span class="sub">${qty(st.rewardsClaimed)} WAX of it claimed</span></div>
+          <span class="sub">${qty(st.rewardsClaimed)} claimed</span></div>
         <div class="stat"><span class="v">${qty(st.availableForRentals)} WAX</span><span class="k">free to rent out</span>
-          <span class="sub">waiting for a renter at ${pxNum(st.rentPricePerWax)} WAX per WAX &middot; ${esc(st.cpuContract)}</span></div>
+          <span class="sub">at ${pxNum(st.rentPricePerWax)} WAX per WAX</span></div>
       </div>
 
-      <div class="card fuwindow"><h3>Epochs and redemption periods <span class="dim">&mdash; a new epoch every week, each with a redemption period a fortnight later</span></h3>
-        <p class="sub" style="margin:0 0 10px">${windowLine}.
-          Redeeming takes two steps: request a redemption, which is booked into an epoch, then withdraw during that epoch's redemption period.
-          ${st.feePct ? `Or skip the wait with an instant redeem, which costs ${st.feePct}%.` : ''}</p>
+      <div class="card fuwindow"><h3>Redemption periods <span class="dim">&mdash; one a week, 48 hours each</span></h3>
+        <p class="sub" style="margin:0 0 4px">${windowLine}.</p>
         ${fusionTimeline(st)}
       </div>
 
-      <div class="card" style="margin-bottom:12px"><h3>Where the revenue goes <span class="dim">&mdash; ${qty(st.revenueDistributed)} WAX so far</span></h3>
+      <div class="card" style="margin-bottom:12px"><h3>Revenue split <span class="dim">&mdash; ${qty(st.revenueDistributed)} WAX paid out so far</span></h3>
         ${split}</div>
 
       <div class="card" id="fusionPriceCard" style="margin-bottom:12px" hidden>
-        <h3>LSWAX: what it is backed by, and what it trades for <span class="dim" id="fusionPriceSub"></span></h3>
+        <h3>LSWAX against its backing <span class="dim" id="fusionPriceSub"></span></h3>
         <div id="fusionPrice"></div>
       </div>
 
@@ -4391,9 +4382,7 @@ async function renderFusion() {
           <div class="card" id="fusionYou"></div>
           <div class="card">
             <h3>Keeping it running <span class="dim">&mdash; anyone may press these, and somebody has to</span></h3>
-            <p class="sub">The protocol does not run itself: revenue only becomes LSWAX when somebody calls compound, idle WAX only starts
-              earning when somebody stakes it, and the farms it pays for only get funded when somebody funds them. With the site gone,
-              that somebody is whoever is looking. You pay the CPU; the benefit goes to everyone holding.</p>
+            <p class="sub">Nobody is pressing these on a schedule any more. You pay the CPU; everyone holding gets the benefit.</p>
             <div class="keepergrid" id="keeperGrid">${KEEPER.map(k => `<div class="keeper">
               <div><b>${esc(k.title)}</b><span class="sub">${esc(k.what)}</span>
                 <span class="keepwhen" data-keepwhen="${esc(k.name)}"></span></div>
@@ -4447,35 +4436,25 @@ async function drawFusionPrice(st) {
   if (nowPrice == null && !series.length) return;
   card.hidden = false;
   const gap = nowPrice != null ? (nowPrice / st.lswaxInSwax - 1) * 100 : null;
-  if (sub) sub.innerHTML = '&mdash; the gap between them, day by day';
+  if (sub) sub.innerHTML = '&mdash; premium or discount, day by day';
+  // The price itself is a flat line with the whole story in its last decimal.
+  // What anyone is actually asking is how far off the backing it traded, so
+  // that is what is drawn: one bar a day, above the line or below it.
   let days = 90;
   const draw = () => {
     const cut = Date.now() - days * 86400e3;
     const rows = series.filter(r => r.x >= cut);
-    const shown = rows.length > 2 ? rows : series;
-    const from = shown.length ? new Date(shown[0].x).toISOString().slice(0, 10) : null;
-    box.innerHTML = `<div class="toolbar" style="margin:0 0 6px">
+    const shown = (rows.length > 2 ? rows : series).map(r => ({ x: r.x, y: (r.y / st.lswaxInSwax - 1) * 100 }));
+    box.innerHTML = `<div class="toolbar" style="margin:0 0 4px">
       ${[[30, '30 days'], [90, '3 months'], [400, 'All of it']].map(([d, lbl]) =>
         `<button class="chip" data-fudays="${d}" aria-pressed="${String(d === days)}">${lbl}</button>`).join('')}
-      <span class="dim" style="font-size:11.5px">${shown.length ? `${shown.length} daily readings since ${from}` : 'no daily record yet'}</span>
+      <span class="dim" style="font-size:11.5px">${gap == null ? '' : `${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} backing now`}</span>
     </div>`;
     const holder = document.createElement('div');
     box.appendChild(holder);
-    holder.appendChild(priceBandChart(shown, {
-      // No band and no handles: the dashed line is the backing, and the line
-      // is the market against it.
-      lower: null, upper: null, price: st.lswaxInSwax,
-      fmt: v => (v >= 0.01 ? v.toFixed(4) : pxNum(v)), height: 190,
-      label: 'WAX per LSWAX on the market, against what it is backed by',
-    }));
-    box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:8px 0 0">
-      The dashed line is today's backing: <b>${st.lswaxInSwax.toFixed(6)}</b> sWAX behind every LSWAX, which rises every time somebody compounds.
-      The solid line is what ${esc(pool.symA)}/${esc(pool.symB)} on ${esc(venueName[pool.dex] || pool.dex)} actually traded at${
-        nowPrice != null ? `, <b>${nowPrice.toFixed(6)}</b> WAX now` : ''} &mdash; so the gap between them is the discount or premium of the day.
-      ${gap == null ? '' : gap < -0.25
-        ? 'Below the backing, unliquifying returns more than selling — minus whatever the queue costs you in time.'
-        : gap > 0.25 ? 'Above the backing, selling returns more than unliquifying.'
-        : ''}</p>`);
+    holder.appendChild(deviationBars(shown, { height: 170, fmt: v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`, label: 'LSWAX against its backing, by day' }));
+    box.insertAdjacentHTML('beforeend', `<p class="sub" style="margin:6px 0 0">Zero is the backing: ${st.lswaxInSwax.toFixed(6)} sWAX per LSWAX.
+      Above it, selling beats unliquifying; below it, the other way round.</p>`);
     box.querySelectorAll('[data-fudays]').forEach(b => b.onclick = () => { days = Number(b.dataset.fudays); draw(); });
   };
   draw();
@@ -4699,18 +4678,22 @@ function ratingBar(subject, { compact = false } = {}) {
   const terms = ratingTerms();
   const total = t ? t.voters : 0;
   const allTotal = t?.all?.voters || 0;
-  const mine = t?.mine?.get(wallet.account() || '') || null;
+  // A vote is worth a day. After that the button is free again — and it says
+  // so, because a permanently lit button reads as "you have rated this", not
+  // "you rated this today".
+  const mine = myVote(t, wallet.account() || '');
   return `<div class="ratebar${compact ? ' compact' : ''}" data-rate="${esc(subject)}">
     ${VOTES.map(v => {
       const n = t ? t[v.key] : 0;
       const ever = t?.all?.[v.key] || 0;
       const share = total > 0 ? n / total : 0;
-      return `<button class="ratebtn${mine === v.key ? ' mine' : ''}" data-vote="${v.key}"
-        title="${esc(v.label)} — ${n} vote${n === 1 ? '' : 's'} in the last 24 hours${ever > n ? `, ${ever} in 90 days` : ''}${mine === v.key ? ', including yours' : ''}. Costs ${terms.price} ${esc(terms.symbol)}, paid on chain."
+      return `<button class="ratebtn${mine?.vote === v.key ? ' mine' : ''}" data-vote="${v.key}"
+        title="${esc(v.label)} — ${n} vote${n === 1 ? '' : 's'} in the last 24 hours${ever > n ? `, ${ever} in 90 days` : ''}${mine?.vote === v.key ? `, including yours — yours frees up in ${forHours(mine.msLeft)}` : ''}. Costs ${terms.price} ${esc(terms.symbol)}, paid on chain."
         style="--share:${(share * 100).toFixed(0)}%"><span class="em">${v.emoji}</span><span class="n">${n}</span></button>`;
     }).join('')}
     <span class="ratenote dim" title="A vote is a ${terms.price} ${esc(terms.symbol)} transfer, and only the last 24 hours count — so nobody buys a reputation once and keeps it.">${
-      total ? `${total} today` : `rate it &middot; ${terms.price} ${esc(terms.symbol)}`}${allTotal > total ? ` &middot; ${allTotal} in 90d` : ''}</span>
+      mine ? `yours resets in ${forHours(mine.msLeft)}` : total ? `${total} today` : `rate it &middot; ${terms.price} ${esc(terms.symbol)}`}${
+      allTotal > total ? ` &middot; ${allTotal} in 90d` : ''}</span>
   </div>`;
 }
 

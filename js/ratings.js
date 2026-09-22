@@ -121,7 +121,9 @@ export async function loadRatings({ maxAgeMs = 4 * 60 * 1000 } = {}) {
     if (at >= cutoff && !dayBallots.has(ballot)) {
       dayBallots.add(ballot);
       t[vote]++; t.voters++;
-      t.mine.set(x.from, vote);
+      // With the time on it, so the page can say when it frees up rather than
+      // leaving a button lit and looking permanent.
+      t.mine.set(x.from, { vote, at });
     }
     if (!allBallots.has(ballot)) {
       allBallots.add(ballot);
@@ -144,14 +146,28 @@ export function applyLocalVote(subject, vote, account) {
   const t = cache.get(subject) || { rocket: 0, fire: 0, poo: 0, flag: 0, voters: 0, all: { rocket: 0, fire: 0, poo: 0, flag: 0, voters: 0 }, last: 0, mine: new Map() };
   t.mine = t.mine || new Map();
   t.all = t.all || { rocket: 0, fire: 0, poo: 0, flag: 0, voters: 0 };
-  const had = t.mine.get(account);
+  const prev = myVote(t, account);
+  const had = prev?.vote;
   if (had === vote) return t;
   if (had) { t[had] = Math.max(0, t[had] - 1); t.all[had] = Math.max(0, t.all[had] - 1); } else { t.voters++; t.all.voters++; }
   t[vote]++; t.all[vote]++;
-  t.mine.set(account, vote);
+  t.mine.set(account, { vote, at: Date.now() });
   t.last = Date.now();
   cache.set(subject, t);
   return t;
 }
 
 export const ratingsFor = subject => (cache ? cache.get(subject) || null : null);
+
+// One account's standing vote on a subject, if it still counts. A vote is
+// worth a day: after that the subject is open for that account again, which is
+// the whole point of a rolling window — sentiment people renew, not a badge
+// somebody bought once.
+export function myVote(t, account) {
+  if (!t || !account) return null;
+  const v = t.mine?.get(account);
+  if (!v) return null;
+  const rec = typeof v === 'string' ? { vote: v, at: t.last || Date.now() } : v;
+  const left = rec.at + DAY_MS - Date.now();
+  return left > 0 ? { ...rec, msLeft: left } : null;
+}

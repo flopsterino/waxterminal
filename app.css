@@ -1925,6 +1925,16 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .ldbar { display: inline-block; position: relative; padding: 1px 7px; border-radius: 5px; font-variant-numeric: tabular-nums;
   background: linear-gradient(90deg, var(--accent-soft) var(--w), transparent var(--w)); }
 
+/* ---- deviation bars ------------------------------------------------------ */
+.devchart { margin: 6px 0 2px; }
+.devsvg { display: block; overflow: visible; }
+.devgrid { stroke: var(--line); stroke-width: 1; }
+.devzero { stroke: var(--ink-2); stroke-width: 1; opacity: .8; }
+.devlabel { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.devbar.up { fill: var(--good); }
+.devbar.down { fill: var(--bad); }
+.devbar:hover { opacity: .75; }
+
 /* ---- ticker -------------------------------------------------------------- */
 /* The one strip that is on every page, which is what makes a paid slot in it
    worth paying for. Promoted entries sit in front and are marked as paid. */
@@ -1995,6 +2005,10 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .bchgrip { fill: var(--accent); opacity: .18; }
 .bchandle:hover .bchgrip, .bchandle:focus .bchgrip { opacity: .38; }
 .bchit { fill: transparent; }
+
+.stat.lead { background: var(--accent-soft); border-color: var(--accent); }
+.stat.lead .v { color: var(--ink); }
+.stat.lead .k { color: var(--accent); }
 
 /* ---- WaxFusion ---------------------------------------------------------- */
 /* The protocol as a strip: what you bring, what you hold, what you get back. */
