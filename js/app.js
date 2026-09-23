@@ -6689,14 +6689,16 @@ function earningPerDay(p, feeDay, farmDay) {
     const perDayWax = state.waxUsd > 0 ? (p.led.feesWax + farmUsd / state.waxUsd) / days : 0;
     if (perDayUsd > 0) {
       const shown = UNIT === 'wax' ? `${qty(perDayWax)} WAX` : usdRaw(perDayUsd);
-      const parts = [farmUsd > 0 ? `${usd(feeUsd / days)} fees + ${usd(farmUsd / days)} farm` : '',
+      const parts = [farmUsd > 0 ? `${usd(feeUsd / days)} fees + ${usd(farmUsd / days)} farm` : 'fees only, no farm paid',
         `over ${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}`,
         est > 0 ? `forecast ${usd(est)}` : ''];
       return ['Paid / day', shown, '', parts.filter(Boolean).join(' &middot; ')];
     }
   }
+  // A sub-line that repeats the figure above it ("42.66 WAX / 42.66 WAX fees")
+  // reads as a sum with a part missing. Say what it is instead.
   return ['Earning / day', est > 0 ? usd(est) : '&mdash;', est > 0 ? '' : 'dim',
-    est > 0 ? `${usd(feeDay)} fees${farmDay > 0 ? ` + ${usd(farmDay)} farm` : ''}` : ''];
+    est > 0 ? (farmDay > 0 ? `${usd(feeDay)} fees + ${usd(farmDay)} farm` : 'fees only, at today\'s volume') : ''];
 }
 
 function positionCard(p, mine = false) {
