@@ -330,6 +330,10 @@ export function farmGap(position, farms, joinedIds = []) {
   return {
     live, missing,
     inFarm: live.filter(f => joined.has(String(f.id))),
+    // Still staked in an incentive that is no longer live. Without this a farm
+    // that ran out yesterday just vanished from the card, and "no farm" read as
+    // "this pool never had one" — pool 314 paid 100,000 WAX over 60 days.
+    endedJoined: [...joined].filter(id => !live.some(f => String(f.id) === id)),
     aprLive: sumApr(live),
     aprMissing: sumApr(missing),
     // What the missing farms would pay this position per day once it joins.

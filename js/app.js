@@ -6730,7 +6730,8 @@ function positionCard(p, mine = false) {
     `<span class="pill ${p.inRange ? 'good' : 'bad'}">${p.inRange ? 'In range' : 'Out of range'}</span>`,
     p.feesUsd > 0 ? `<span class="pill accent">${usd(p.feesUsd)} uncollected</span>` : '',
     f && f.missing.length ? `<span class="pill warn">Not in ${f.missing.length === f.live.length ? 'the farm' : `${f.missing.length} of ${f.live.length} farms`}</span>`
-      : f && f.inFarm.length ? `<span class="pill good">Farming${f.aprLive != null ? ` &middot; ${pct(f.aprLive)} APR` : ''}</span>` : '',
+      : f && f.inFarm.length ? `<span class="pill good">Farming${f.aprLive != null ? ` &middot; ${pct(f.aprLive)} APR` : ''}</span>`
+      : f && f.endedJoined?.length ? '<span class="pill" title="The farm you are staked in has run out. Anything it owes you can still be claimed; a new one on this pool shows up here once it starts.">Farm ended</span>' : '',
   ].filter(Boolean).join('');
 
   const fig = (k, v, cls = '', sub = '') => `<div class="fig"><span class="k">${k}</span><span class="v ${cls}">${v}</span>${sub ? `<span class="figsub">${sub}</span>` : ''}</div>`;
