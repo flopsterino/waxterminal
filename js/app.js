@@ -1995,9 +1995,7 @@ function renderTokens() {
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
     { k: 'vol30d', label: 'Vol 30d', r: true, s: true },
-    { k: 'depth1', label: 'Trade depth', r: true, s: true },
     { k: 'taxBps', label: 'Transfer tax', r: true, s: true },
-    { k: 'backing', label: 'Backed by', s: false },
     { k: 'pools', label: 'Pools', r: true, s: true },
     { k: 'bornAt', label: 'First seen', r: true, s: true },
   ];
@@ -2041,18 +2039,9 @@ function renderTokens() {
         t.tvlNominal > t.tvl * 1.05 ? `<span class="nominal">${usd(t.tvlNominal)} face</span>` : ''}</td>
       <td class="r num ${t.vol7d > 0 ? '' : 'dim'}">${t.vol7d > 0 ? usd(t.vol7d) : '—'}</td>
       <td class="r num ${t.vol30d > 0 ? '' : 'dim'}">${t.vol30d > 0 ? usd(t.vol30d) : '—'}</td>
-      <td class="r num" title="Summed across the ${t.pools} pools holding it: what you could trade in one go, splitting the order, before moving the price 1%">${t.depth1 > 0 ? usd(t.depth1) : '<span class="dim">—</span>'}</td>
       <td class="r num ${t.taxBps > 0 ? 'neg' : 'dim'}" title="${t.taxBps > 0
         ? `Every transfer of ${esc(t.symbol)} costs ${(t.taxBps / 100).toFixed(2)}%${t.burnBps > 0 ? `, of which ${(t.burnBps / 100).toFixed(2)}% is burned` : ''}. A route through it pays this at each hop.`
         : 'No transfer tax found in this contract\'s tables.'}">${t.taxBps > 0 ? (t.taxBps / 100).toFixed(2) + '%' : '—'}</td>
-      <td class="dim" style="font-size:11.5px">${(() => {
-        const d = state.depth.get(t.id);
-        if (!d?.topPartner) return '—';
-        const sym = d.topPartner.token.split('@')[0];
-        const pctv = (d.topPartner.share * 100).toFixed(0);
-        const heavy = d.topPartner.share > 0.5;
-        return `<span class="${heavy ? 'warnish' : ''}" title="${pctv}% of the value standing opposite ${esc(t.symbol)} is ${esc(sym)}${d.selfBacked ? ', and most of what backs it comes from the same issuer' : ''}">${esc(sym)} ${pctv}%</span>`;
-      })()}</td>
       <td class="r num dim">${t.pools}</td>
       <td class="r num dim">${age(t.bornAt)}</td>
     </tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No tokens match.</td></tr>`;
