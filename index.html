@@ -87,15 +87,16 @@
       <button class="chip" data-lens="losers">Losers</button>
       <button class="chip" data-lens="new">New</button>
       <button class="chip" data-lens="volume">Top volume</button>
+      <button class="chip" data-lens="unlocks">Unlocking soon</button>
     </div>
     <p class="vs" id="tokLensNote" hidden style="margin-top:-4px"></p>
-    <div class="toolbar">
+    <div class="toolbar" id="tokToolbar">
       <input class="search" id="tokSearch" placeholder="Search a token…" autocomplete="off">
       <button class="chip" id="fTokSolid" aria-pressed="true">Tradeable only</button>
       <span class="dim" id="tokCount" style="font-size:12px"></span>
     </div>
-    <div class="tablewrap flow"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
-    <div class="section" id="unlockSection" hidden><h3>Unlocking soon <span class="dim">&mdash; supply arriving on a date</span></h3>
+    <div class="tablewrap flow" id="tokTableWrap"><table id="tokTable"><thead></thead><tbody></tbody></table></div>
+    <div class="section" id="unlockSection" hidden>
       <div class="card"><div id="unlockTable"></div></div></div>
   </section>
 

@@ -2207,3 +2207,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   .funpage > .funcol:first-child { position: static; }
 }
 .funbarnote .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A toolbar is display:flex, which beats [hidden]; the Unlocking tab hides the
+   token search it has nothing to search. */
+.toolbar[hidden] { display: none; }

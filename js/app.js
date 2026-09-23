@@ -605,7 +605,6 @@ async function boot() {
     if (b.dataset.view === 'wallet') autoWallet();
     if (b.dataset.view === 'leaders') renderLeaders();
     // One extra table read, and only for someone who opened the tokens page.
-    if (b.dataset.view === 'tokens') renderUnlocks().catch(() => {});
     if (b.dataset.view === 'staking') renderStaking().catch(() => {});
     if (b.dataset.view === 'legacy') renderLegacy().catch(() => {});
   });
@@ -1859,8 +1858,20 @@ const LENSES = {
   new:      { sort: 'bornAt',   where: t => t.bornAt != null,
               note: 'Newest first, by the day the first pool for it appeared.' },
   volume:   { sort: 'vol24',    where: t => t.vol24 > 0 },
+  // Not a filter over the token table but a different table: what unlocks and
+  // when. It used to hang under every lens, so on a short Gainers list it read
+  // as more gainers.
+  unlocks:  { sort: 'vol24', own: true },
 };
 let tokRows = null;
+
+function showTokLens() {
+  const own = !!LENSES[tokFilters.lens]?.own;
+  $('#tokToolbar').hidden = own;
+  $('#tokTableWrap').hidden = own;
+  $('#unlockSection').hidden = !own;
+  if (own) { $('#tokLensNote').hidden = true; renderUnlocks().catch(() => {}); } else renderTokens();
+}
 
 function wireTokens() {
   wireCsv('#view-tokens .toolbar', '#tokCount', 'wax-tokens', 'tokens');
@@ -1871,7 +1882,7 @@ function wireTokens() {
     tokFilters.sort = l.sort;
     tokFilters.dir = l.dir ?? -1;
     document.querySelectorAll('#tokLens [data-lens]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    renderTokens();
+    showTokLens();
   });
   $('#fTokSolid').onclick = e => {
     tokFilters.solidOnly = !tokFilters.solidOnly;
@@ -1924,6 +1935,7 @@ async function renderUnlocks() {
 }
 
 function renderTokens() {
+  if (LENSES[tokFilters.lens]?.own) return;       // the unlock calendar is showing instead
   if (!tokRows || tokRows._at !== state.loadedAt) { tokRows = tokenTable(); tokRows._at = state.loadedAt; }
   let rows = tokRows.filter(t => {
     // Tradeable means someone can buy or sell it: it has a price this terminal
