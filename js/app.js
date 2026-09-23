@@ -645,7 +645,7 @@ async function boot() {
   $('#tokBack').onclick = goBack('tokens');
   $('#stakeBack').onclick = goBack('staking');
   // A wax.fun token has no tab of its own to fall back to: its list is a tab
-  // inside Old projects, so the fallback goes there rather than to the list
+  // inside Apps, so the fallback goes there rather than to the list
   // the browser has never seen.
   $('#funBack').onclick = () => {
     if (history.state && history.length > 1) history.back();
@@ -1045,10 +1045,10 @@ function keepScroll(fn) {
 const BASE = new URL(import.meta.url).pathname.replace(/js\/app\.js$/, '');
 const VIEW_PATHS = { overview: '', farms: 'markets', pools: 'markets', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', pool: 'market', farm: 'market', token: 'token',
-  stake: 'farm', account: 'wallet', ads: 'advertise', legacy: 'old', funtoken: 'waxfun' };
+  stake: 'farm', account: 'wallet', ads: 'advertise', legacy: 'apps', funtoken: 'waxfun' };
 const PATH_VIEWS = { '': 'overview', markets: 'farms', pools: 'farms', tokens: 'tokens', staking: 'staking',
   wallet: 'wallet', activity: 'activity', leaders: 'leaders', market: 'pool', token: 'token', farm: 'stake',
-  account: 'wallet', overview: 'overview', farms: 'farms', advertise: 'ads', old: 'legacy', waxfun: 'funtoken' };
+  account: 'wallet', overview: 'overview', farms: 'farms', advertise: 'ads', apps: 'legacy', old: 'legacy', waxfun: 'funtoken' };
 // @ and : are legal in a path and are half of what a WAX id looks like:
 // /token/CHEESE@cheeseburger reads, /token/CHEESE%40cheeseburger does not.
 const encPath = v => encodeURIComponent(v).replace(/%40/g, '@').replace(/%3A/gi, ':');
@@ -3262,15 +3262,14 @@ async function renderLegacy(tab = 'waxfun') {
   if (!out) return;
   const gen = ++legacyGen;
   const stale = () => gen !== legacyGen;
-  out.innerHTML = `<p class="vs">A WAX contract keeps running after the website in front of it stops paying for itself. These still work; their own sites do not.</p>
-    <div class="subtabs" id="legacyTabs" role="tablist">
+  out.innerHTML = `<div class="subtabs" id="legacyTabs" role="tablist">
       <button role="tab" data-ltab="waxfun" aria-selected="true">wax.fun</button>
       <button role="tab" data-ltab="waxdao" aria-selected="false">WaxDAO drops</button>
       <button role="tab" data-ltab="blends" aria-selected="false">WaxDAO blends</button>
       <button role="tab" data-ltab="fusion" aria-selected="false">WaxFusion</button>
     </div>
     <div class="lpane" data-lpane="waxfun">
-      <div class="section"><h3>wax.fun <span class="dim">&mdash; bonding-curve tokens, still trading on <span class="mono">main.waxfun</span></span></h3>
+      <div class="section">
         <div class="toolbar"><input class="search" id="funSearch" type="search" placeholder="Search a wax.fun token by name, symbol or creator…" autocomplete="off" spellcheck="false">
           <div class="seg" id="funSort" role="radiogroup" aria-label="Order">
             <button role="radio" data-fsort="cap" aria-checked="true">Biggest</button>
@@ -3283,7 +3282,7 @@ async function renderLegacy(tab = 'waxfun') {
       </div>
     </div>
     <div class="lpane" data-lpane="waxdao" hidden>
-      <div class="section"><h3>WaxDAO drops <span class="dim">&mdash; NFTs on <span class="mono">waxdaomarket</span>, priced in whatever token their creator picked</span></h3>
+      <div class="section">
         <div class="toolbar">
           <input class="search" id="dropSearch" type="search" placeholder="Search a collection, token, creator or drop number&hellip;" autocomplete="off" spellcheck="false">
           <div class="seg" id="dropWhich" role="radiogroup" aria-label="Which drops">
@@ -3305,7 +3304,7 @@ async function renderLegacy(tab = 'waxfun') {
       <div id="fusionOut"><div class="loading"><span class="spinner"></span><span>Reading the protocol&hellip;</span></div></div>
     </div>
     <div class="lpane" data-lpane="blends" hidden>
-      <div class="section"><h3>WaxDAO blends <span class="dim">&mdash; burn NFTs, and sometimes tokens, for something else</span></h3>
+      <div class="section">
         <div class="toolbar">
           <input class="search" id="blendSearch" type="search" placeholder="Search a blend, collection or creator&hellip;" autocomplete="off" spellcheck="false">
           <button class="chip" id="blendMine" aria-pressed="false">Ones you can make</button>
