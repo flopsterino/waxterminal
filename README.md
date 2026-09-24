@@ -1,4 +1,4 @@
-# WAX Terminal
+# WaxEDGE
 
 Pools, farms and liquidity across the WAX blockchain, in one page.
 

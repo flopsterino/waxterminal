@@ -19,19 +19,30 @@
 })();
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WAX Terminal</title>
-<meta name="description" content="Pools, farms and liquidity across the WAX blockchain. Reads Alcor and TacoSwap directly from chain — no backend.">
+<title>WaxEDGE</title>
+<meta name="description" content="WaxEDGE — the DeFi terminal for WAX. Pools, farms, tokens and your own positions, read straight from chain.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="WaxEDGE">
+<meta property="og:title" content="WaxEDGE — DeFi terminal for WAX">
+<meta property="og:description" content="Pools, farms, tokens and your own positions across WAX, read straight from chain.">
+<meta property="og:image" content="https://flopsterino.github.io/waxterminal/brand/og.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://flopsterino.github.io/waxterminal/brand/og.png">
+<meta name="theme-color" content="#0B0E11">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="app.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23E8A33D'/><rect x='7' y='9' width='18' height='4' rx='1' fill='%23171104'/><rect x='7' y='16' width='11' height='4' rx='1' fill='%23171104'/><rect x='7' y='23' width='15' height='4' rx='1' fill='%23171104'/></svg>">
+<link rel="icon" type="image/svg+xml" href="brand/mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="brand/icon-32.png">
+<link rel="apple-touch-icon" href="brand/icon-180.png">
 </head>
 <body>
 
 <header class="top">
-  <div class="brand"><span class="mark" id="brandMark">◩</span><span id="brandName">WAX Terminal</span></div>
+  <div class="brand"><img class="mark" id="brandMark" src="brand/mark.svg" alt="" width="28" height="28"><span id="brandName" aria-label="WaxEDGE"><span class="wm-em">W</span><span class="wm-soft">ax</span><span class="wm-em">EDGE</span></span></div>
   <nav class="tabs" id="tabs" role="tablist">
     <button role="tab" data-view="overview" aria-selected="true">Overview</button>
     <button role="tab" data-view="tokens"   aria-selected="false">Tokens</button>

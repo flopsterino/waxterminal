@@ -1,9 +1,22 @@
 {
   "identity": {
-    "name": "WAX Terminal",
-    "tagline": "Pools, farms and liquidity across WAX",
-    "wordmark": null,
-    "favicon": "\u25e9"
+    "name": "WaxEDGE",
+    "wordmark": [
+      [
+        "W",
+        true
+      ],
+      [
+        "ax",
+        false
+      ],
+      [
+        "EDGE",
+        true
+      ]
+    ],
+    "tagline": "DeFi terminal for WAX",
+    "logo": "brand/mark.svg"
   },
   "links": [
     {

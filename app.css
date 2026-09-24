@@ -27,11 +27,12 @@ button { font: inherit; color: inherit; }
   background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: -.01em; font-size: 15px; }
-.brand .mark {
-  width: 24px; height: 24px; border-radius: var(--r-sm);
-  background: var(--accent); color: var(--on-accent);
-  display: grid; place-items: center; font-size: 13px; font-weight: 700;
-}
+.brand .mark { width: 28px; height: 28px; display: block; flex: none; }
+/* W and EDGE carry the weight so the wedge reads through the word; "ax" steps
+   back without disappearing. */
+#brandName { font-size: 16px; letter-spacing: -.035em; }
+#brandName .wm-em { font-weight: 800; color: var(--ink); }
+#brandName .wm-soft { font-weight: 600; color: var(--muted); }
 nav.tabs { display: flex; gap: 2px; margin-left: 8px; }
 nav.tabs button {
   background: none; border: 0; cursor: pointer; padding: 7px 13px;
@@ -1082,7 +1083,7 @@ p.vs { font-size: 12.5px; margin-bottom: 12px; }
 /* --- top bar ----------------------------------------------------------- */
 .top { height: 52px; gap: 12px; padding: 0 16px; background: var(--ground); border-bottom: 1px solid var(--line); }
 .brand { font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
-.brand .mark { width: 22px; height: 22px; border-radius: 5px; font-size: 12px; }
+.brand .mark { width: 26px; height: 26px; }
 nav.tabs { gap: 2px; margin-left: 6px; }
 nav.tabs button { padding: 6px 11px; border-radius: var(--r); font-size: 13px; font-weight: 500; color: var(--muted); }
 nav.tabs button:hover { color: var(--ink); background: transparent; }
@@ -2211,3 +2212,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 /* A toolbar is display:flex, which beats [hidden]; the Unlocking tab hides the
    token search it has nothing to search. */
 .toolbar[hidden] { display: none; }
+
+/* The mascot on an empty screen: small, above the sentence, never louder than it. */
+.empty.withmascot { padding-top: 26px; }
+.emptymascot { display: block; margin: 0 auto 12px; width: 96px; height: auto; opacity: .95; }

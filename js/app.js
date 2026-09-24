@@ -119,6 +119,9 @@ const fixed = (v, digits) => {
   }
   return sign + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
+// The mascot, on the few empty screens where somebody expected to see something
+// of their own — not on every "nothing matches".
+const MASCOT = '<img class="emptymascot" src="brand/mascot.svg" alt="" width="96" height="88">';
 const usdExact = v => fixed(v, 2);
 // Profit, in the unit on screen — computed in that unit, never converted into
 // it. WAX was $0.0037 when a position opened and $0.0055 today, so the same
@@ -585,9 +588,19 @@ async function boot() {
     CFG = await (await fetch('theme.json')).json();
     configurePromotion(CFG.commercial);
     configureRatings(CFG.commercial);
-    $('#brandName').textContent = CFG.identity?.name ?? 'WAX Terminal';
-    if (CFG.identity?.favicon) $('#brandMark').textContent = CFG.identity.favicon;
-    document.title = CFG.identity?.name ?? 'WAX Terminal';
+    // The name is a wordmark, not a string: WaxEDGE is set so that W and EDGE
+    // stand out and spell the wedge in the logo. A partner build names its own
+    // parts in theme.json, or just gives a plain name.
+    const idn = CFG.identity || {};
+    const wm = $('#brandName');
+    if (wm) {
+      wm.innerHTML = Array.isArray(idn.wordmark)
+        ? idn.wordmark.map(([t, em]) => `<span class="${em ? 'wm-em' : 'wm-soft'}">${esc(t)}</span>`).join('')
+        : esc(idn.name ?? 'WaxEDGE');
+      wm.setAttribute('aria-label', idn.name ?? 'WaxEDGE');
+    }
+    if (idn.logo) $('#brandMark').src = idn.logo;
+    document.title = idn.name ?? 'WaxEDGE';
     applyTheme(CFG);
   } catch { CFG = { content: {}, features: {} }; }
 
@@ -1139,10 +1152,10 @@ function renderOverview() {
 
   const box = $('#ovCharts');
   box.innerHTML = `
-    <div class="section" id="ovPromoSec" hidden><h3>Promoted <span class="dim">&mdash; paid for, not ranked</span></h3>
+    <div class="section" id="ovPromoSec" hidden><h3>Promoted</h3>
       <div class="card"><div id="ovPromo"></div></div>
     </div>
-    <div class="section" id="ovWatchSec" hidden><h3>Your watchlist <span class="dim">— what moved since you last looked</span></h3>
+    <div class="section" id="ovWatchSec" hidden><h3>Your watchlist</h3>
       <div class="card"><div id="ovWatch"></div></div>
     </div>
     <div class="ovgrid">
@@ -1154,14 +1167,14 @@ function renderOverview() {
       <div class="ovbanner inview-banner" data-banner-host hidden></div>
       <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
           <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
-      <div class="card ovapr"><h3>Top farm APR <span class="dim">&mdash; read it next to the liquidity</span><span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
+      <div class="card ovapr"><h3>Top farm APR<span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded<span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
       <div class="card"><h3>Best paid liquidity</h3><div id="ovPaid"></div></div>
       <div class="card ovwax"><h3>WAX <span class="dim" id="ovWaxPx"></span>
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('ovWax')}</span></h3>
         <div id="ovWax"><div class="loading"><span class="spinner"></span><span>Reading history…</span></div></div>
         <p class="sub chartspan" id="ovWaxNote" style="margin:8px 0 0">&nbsp;</p></div>
-      <div class="card"><h3>Value locked <span class="dim">&mdash; one point a day</span></h3><div id="ovHist"></div></div>
+      <div class="card"><h3>Value locked</h3><div id="ovHist"></div></div>
       <div class="card"><h3>Deepest pools</h3><div id="ovDeep"></div></div>
       <div class="card"><h3>Ending soon</h3><div id="ovEnding2"></div></div>
     </div>`;
@@ -1630,7 +1643,7 @@ async function renderAdsPromos() {
   });
 
   box.innerHTML = `<div class="card" style="margin-bottom:14px">
-    <h3>Promoted tokens and markets <span class="dim">&mdash; the strip at the top of every page</span></h3>
+    <h3>Promoted tokens and markets</h3>
     <p class="sub" style="margin:0 0 10px">${qty(t.perDay)} ${esc(t.token)} buys a day. The strip shows the ${t.slots} highest by total spend
       and each one is marked as paid; anything below that sits in the promoted block on the front page instead. It buys a place on the page and
       nothing else &mdash; no ranking, filter, total or average on this site moves for it. To take a slot, open the token, market or farm you want
@@ -2598,8 +2611,7 @@ async function renderTradeFlow(account) {
 
   const netUsd = rows.reduce((a, r) => a + (r.netUsd || 0), 0);
   const sinceDays = Math.max(1, Math.round((Date.now() - Math.min(...swaps.map(s => s.ts))) / 86400e3));
-  box.innerHTML = `<div class="section"><h3>What they have been trading
-      <span class="dim">&mdash; ${swaps.length.toLocaleString()} swap legs over ${sinceDays} day${sinceDays === 1 ? '' : 's'}</span></h3>
+  box.innerHTML = `<div class="section"><h3>What they have been trading</h3>
     <div class="card">
       <div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
         <thead><tr><th>Token</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">Net</th><th class="r">Worth now</th><th></th></tr></thead>
@@ -2625,7 +2637,7 @@ async function renderTradeFlow(account) {
         Both legs of each swap, so a token bought with another shows on both rows.</p>
     </div></div>
 
-    <div class="section"><h3>Recent trades <span class="dim">&mdash; the last ${trades.length}</span></h3>
+    <div class="section"><h3>Recent trades</h3>
     <div class="card" id="tradeListCard"><div class="tablewrap livetape wtrades" style="max-height:520px;border:0"><table>
       <thead><tr><th>Age</th><th>Type</th><th>Market</th><th class="r">Amount</th><th class="r">For</th><th class="r">Price</th><th class="r">USD</th><th>Route</th><th></th></tr></thead>
       <tbody>${trades.map(walletTradeRow).join('')}</tbody></table></div>
@@ -3074,13 +3086,22 @@ async function renderBanner() {
   let got = null;
   try { got = await currentBanners(); } catch {}
   // A shared position alternates between its two buyers; a coin per page load
-  // is the same thing over enough visits.
+  // is the same thing over enough visits. A spot rented as shared whose other
+  // half nobody has bought runs half the time too — it was showing on every
+  // load, which is the whole spot sold at the shared price — and the other
+  // half of the loads say that half is for rent.
+  let openHalves = 0;
   const sold = (got?.banners || []).slice(0, 2)
-    .map(b => b.shared?.img && Math.random() < 0.5 ? { ...b, ...b.shared } : b);
+    .map(b => {
+      if (b.shared?.img) return Math.random() < 0.5 ? { ...b, ...b.shared } : b;
+      if (b.rentalShared && Math.random() < 0.5) { openHalves++; return null; }
+      return b;
+    })
+    .filter(Boolean);
   // Which of two sold banners leads is also a coin: a phone shows only the
   // first, and both buyers paid for the same slot.
   if (sold.length === 2 && Math.random() < 0.5) sold.reverse();
-  const free = got?.free || 0;
+  const free = (got?.free || 0) + openHalves;
   if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
   const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
   const tiles = sold.map(b => `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
@@ -3090,7 +3111,8 @@ async function renderBanner() {
   // mostly advertising, least of all for advertising.
   bannerMarkup = `<div class="card bannerslot${tiles.length ? '' : ' empty'}">
     <div class="bannerhead"><span class="sponsored">Sponsored</span>
-      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}` : 'this CheeseHub banner spot is free today'}</span>
+      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}`
+        : openHalves ? 'half of this CheeseHub spot is free today' : 'this CheeseHub banner spot is free today'}</span>
       <a class="more" href="${routePath('ads')}" data-ads>${tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
     ${tiles.length ? `<div class="bannertiles">${tiles.join('')}</div>` : ''}</div>`;
   paintBanners();
@@ -3122,8 +3144,9 @@ async function renderAds() {
   const status = sl => {
     if (!sl) return { k: 'none', label: 'No slot' };
     const mine = me && (sl.user === me || sl.sharedUser === me);
-    if (mine) return { k: 'mine', label: 'Yours' };
-    if (sl.time <= nowS) return { k: 'live', label: sl.user ? 'Running now' : 'Running unsold' };
+    if (mine) return { k: 'mine', label: sl.shared ? 'Yours · shared' : 'Yours' };
+    if (sl.time <= nowS) return { k: 'live', label: !sl.user ? 'Running unsold'
+      : sl.shared ? (sl.sharedUser ? 'Running · shared' : 'Running · half free') : 'Running now' };
     if (!sl.user) return sl.time >= nowS + RENT_LEAD_SEC ? { k: 'free', label: 'Free' } : { k: 'soon', label: 'Closed · under 48h' };
     if (sl.shared && !sl.sharedUser && sl.time >= nowS + JOIN_LEAD_SEC) return { k: 'join', label: 'Join shared' };
     return { k: 'taken', label: sl.shared ? (sl.sharedUser ? 'Shared, full' : 'Shared') : 'Taken' };
@@ -3173,7 +3196,7 @@ async function renderAds() {
       <div id="adsSteps"></div>
     </div>
 
-    ${me ? `<div class="card" style="margin-top:12px"><h3>Your spots <span class="dim">&mdash; set the banner and where it links</span></h3>
+    ${me ? `<div class="card" style="margin-top:12px"><h3>Your spots</h3>
       ${mySlots.length ? `<div class="adsmine">${mySlots.map(x => {
         const secondary = x.sharedUser === me && x.user !== me;
         const img = secondary ? x.sharedImg : x.img;
@@ -3683,7 +3706,7 @@ async function renderFunToken(symbol) {
     <div class="funpage">
       <div class="funcol">
         <div class="card fundesk">
-          <h3>Trade <span class="dim">&mdash; straight at the curve on <span class="mono">main.waxfun</span></span></h3>
+          <h3>Trade</h3>
           <div class="seg" id="ftSide" role="radiogroup" aria-label="Side">
             <button role="radio" data-side="buy" aria-checked="true">Buy</button>
             <button role="radio" data-side="sell" aria-checked="false">Sell</button>
@@ -3714,7 +3737,7 @@ async function renderFunToken(symbol) {
 
       <div class="funcol">
         <div class="card" id="ftPriceCard" hidden>
-          <h3>Price <span class="dim">&mdash; every price the curve itself logged</span></h3>
+          <h3>Price</h3>
           <div id="ftPrice"></div>
         </div>
 
@@ -3736,17 +3759,17 @@ async function renderFunToken(symbol) {
         </div>
 
         <div class="card">
-          <h3>Who holds it <span class="dim">&mdash; of what has been sold</span></h3>
+          <h3>Who holds it</h3>
           <div id="ftHold"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div>
         </div>
 
         <div class="card">
-          <h3>How it moves between them <span class="dim">&mdash; wallets sized by holding, lines are transfers</span></h3>
+          <h3>How it moves between them</h3>
           <div id="ftMap"><div class="loading"><span class="spinner"></span><span>Following the transfers…</span></div></div>
         </div>
 
         <div class="card">
-          <h3>Trades <span class="dim">&mdash; from the contract's own log</span></h3>
+          <h3>Trades</h3>
           <div id="ftTrades"><div class="loading"><span class="spinner"></span><span>Reading the log…</span></div></div>
         </div>
 
@@ -4401,7 +4424,7 @@ async function renderFusion() {
   </div>`;
 
   out.innerHTML = `
-    <div class="section"><h3>WaxFusion <span class="dim">&mdash; liquid staking on <span class="mono">dapp.fusion</span>, still running without its site</span></h3>
+    <div class="section"><h3>WaxFusion</h3>
 
       ${flow}
 
@@ -4420,7 +4443,7 @@ async function renderFusion() {
           <span class="sub">at ${pxNum(st.rentPricePerWax)} WAX per WAX</span></div>
       </div>
 
-      <div class="card fuwindow"><h3>Redemption periods <span class="dim">&mdash; one a week, 48 hours each</span></h3>
+      <div class="card fuwindow"><h3>Redemption periods</h3>
         <p class="sub" style="margin:0 0 4px">${windowLine}.</p>
         ${fusionTimeline(st)}
       </div>
@@ -4442,7 +4465,7 @@ async function renderFusion() {
         <div class="funcol">
           <div class="card" id="fusionYou"></div>
           <div class="card">
-            <h3>Keeping it running <span class="dim">&mdash; anyone may press these, and somebody has to</span></h3>
+            <h3>Keeping it running</h3>
             <p class="sub">Nobody is pressing these on a schedule any more. You pay the CPU; everyone holding gets the benefit.</p>
             <div class="keepergrid" id="keeperGrid">${KEEPER.map(k => `<div class="keeper">
               <div><b>${esc(k.title)}</b><span class="sub">${esc(k.what)}</span>
@@ -5047,7 +5070,7 @@ async function renderWalletResources(account) {
       <button class="rt-act" data-jump="${jump}">${verb} &rarr;</button>
     </div>`;
   };
-  out.innerHTML = `<div class="section"><h3>Resources <span class="dim">&mdash; what lets this account transact</span></h3>
+  out.innerHTML = `<div class="section"><h3>Resources</h3>
     <div class="restiles">
       ${r.cpu.max < 0 ? tile('CPU', 0, 'Unlimited', 'a system account', 'resPw', 'Power up')
         : tile('CPU', useFraction(r.cpu), `~${cpuTransactions(r.cpu.available).toLocaleString()} transactions`, `left &middot; refills over 24h &middot; ${qty(r.staked.cpu)} WAX staked`, 'resPw', 'Power up')}
@@ -5100,7 +5123,7 @@ async function renderWalletResources(account) {
   </div>`;
   // Under the staked-WAX card (its claim and restake), in a pane of its own.
   const mgmt = $('#walletStakeMgmt');
-  if (mgmt) mgmt.innerHTML = `<div class="section"><h3>Manage the stake <span class="dim">&mdash; its vote, taking it out, and what is on its way back</span></h3>
+  if (mgmt) mgmt.innerHTML = `<div class="section"><h3>Manage the stake</h3>
     <div class="card stakebox">
       <div class="sb-col"><h4>Vote</h4>
         ${r.voter && (r.voter.proxy || r.voter.producers.length) ? `
@@ -5380,7 +5403,7 @@ async function renderWalletResources(account) {
       const orders = await ordersOf(account, mine.map(m => m.id));
       if (!orders.length) { box.innerHTML = ''; return; }
       const byId = new Map(all.map(m => [m.id, m]));
-      box.innerHTML = `<div class="section"><h3>Open orders <span class="dim">&mdash; resting on Alcor's book until filled or cancelled</span></h3>
+      box.innerHTML = `<div class="section"><h3>Open orders</h3>
         <div class="card"><div class="tablewrap" style="max-height:none;border:0"><table style="font-size:12.5px">
           <thead><tr><th></th><th>Market</th><th class="r">Price</th><th class="r">Size</th><th class="r">Placed</th></tr></thead>
           <tbody>${orders.map(o => {
@@ -5650,7 +5673,7 @@ async function renderFarmAccrual(account, positions, joined) {
   const ended = rows.filter(r => Date.now() >= r.endsAt).length;
 
   out.innerHTML = `<div class="card accrual">
-    <h3>Farm rewards waiting <span class="dim">&mdash; accruing as you watch</span></h3>
+    <h3>Farm rewards waiting</h3>
     <div class="acc-head">
       <span class="acc-total" id="accTotal">—</span>
       <span class="acc-rate" id="accRate"></span>
@@ -5749,7 +5772,7 @@ async function renderEarned(account) {
   if (!stillWallet(account)) return;
 
   if (!hist.rows.length) {
-    out.innerHTML = `<div class="empty">No LP fees, farm rewards or WaxDAO claims found for <span class="mono">${esc(account)}</span>.</div>`;
+    out.innerHTML = `<div class="empty withmascot">${MASCOT}No LP fees, farm rewards or WaxDAO claims found for <span class="mono">${esc(account)}</span>.</div>`;
     return;
   }
 
@@ -5930,7 +5953,7 @@ async function renderWalletLocks(account) {
 
   out.innerHTML = (!l.ready.length && !l.waiting.length && !l.given.length && !mine) ? '' : `
     <div class="card">
-      <h3>Locked tokens <span class="dim">&mdash; held by <span class="mono">waxdaolocker</span> until a date</span></h3>
+      <h3>Locked tokens</h3>
       ${l.ready.length ? `<div class="cta" style="margin:0 0 10px">
         <div><b>${l.ready.length} lock${l.ready.length === 1 ? '' : 's'} ready to collect${readyUsd > 0 ? ` &mdash; ${usd(readyUsd)}` : ''}</b>
           <span class="sub">The date has passed. The contract keeps them until you ask for them.</span></div>
@@ -6160,10 +6183,10 @@ function renderWalletAll(account) {
     </div>
     <div class="grid g2 avrow">
       <div class="card"><h3>Waiting on you</h3><div id="avTodo"></div></div>
-      <div class="card"><h3>Earning <span class="dim">&mdash; at today&rsquo;s rates</span></h3><div id="avEarn"></div></div>
+      <div class="card"><h3>Earning</h3><div id="avEarn"></div></div>
     </div>
     <div class="inview-banner" data-banner-host hidden></div>
-    <div class="card avrow"><h3>Holdings <span class="dim">&mdash; wallet, pools and stake together</span></h3><div id="acctTop"></div></div>`;
+    <div class="card avrow"><h3>Holdings</h3><div id="acctTop"></div></div>`;
   paintWalletAll();
   paintBanners();
 }
@@ -6418,7 +6441,7 @@ async function renderWalletFarmStakes(account) {
     <div id="fSteps"></div>
     <div class="fgrid">${items.map(card).join('')}</div>
     <div class="empty filternone" hidden>No farm matches.</div>
-    ${pending.length ? `<div class="card" style="margin-top:12px"><h3>Unstaking <span class="dim">&mdash; PepperStake cooldowns</span></h3>
+    ${pending.length ? `<div class="card" style="margin-top:12px"><h3>Unstaking</h3>
       <div class="todolist">${pending.map(u => {
         const left = u.readyAt - Date.now();
         return `<div class="todo static"><span class="dot"></span><span class="todotx"><b>${u.assets.length ? `${u.assets.length} NFT${u.assets.length === 1 ? '' : 's'}` : esc(u.quantity)}</b> from pool #${u.poolId}
@@ -6875,7 +6898,7 @@ async function lookupWallet(account) {
     fees: res.alcor.reduce((s2, p) => s2 + (p.feesUsd || 0), 0),
   });
   if (!all.length) {
-    out.innerHTML = `<div class="empty">No liquidity found for <span class="mono">${esc(account)}</span>.<br>
+    out.innerHTML = `<div class="empty withmascot">${MASCOT}No liquidity found for <span class="mono">${esc(account)}</span>.<br>
       <span class="dim">Checked ${res.poolsChecked} Alcor pool${res.poolsChecked === 1 ? '' : 's'} and its Taco LP.</span></div>`;
     return;
   }
@@ -6972,7 +6995,7 @@ async function lookupWallet(account) {
 
   html += `<div class="grid g2" style="margin-bottom:16px">
       <div class="card"><h3>Where your money is</h3><div id="walDonut"></div></div>
-      <div class="card"><h3>Rewards to be collected <span class="dim">&mdash; fees and farm rewards</span></h3><div id="walRewards"></div></div>
+      <div class="card"><h3>Rewards to be collected</h3><div id="walRewards"></div></div>
     </div>`;
 
   // Compounding is the thing this page exists to make easy, and it was a grey
@@ -7722,7 +7745,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   let custom = { lower: null, upper: null };
   let balA = null, balB = null;
 
-  box.innerHTML = `<div class="${fixedPool ? 'card' : 'section'}"><h3>Open a position${fixedPool ? ' <span class="dim">— both tokens, your own band</span>' : ''}</h3>
+  box.innerHTML = `<div class="${fixedPool ? 'card' : 'section'}"><h3>Open a position</h3>
     <div class="card npcard">
       <div class="filters" style="display:grid;gap:8px;margin:0${fixedPool ? ';display:none' : ''}">
         <label>Pool<select id="npPool">${(poolId && !pools.some(p => String(p.id) === String(poolId))
@@ -8090,7 +8113,7 @@ function renderAddLiquidity(box, pos, account) {
   const pxA = pool.priceUsdA, pxB = pool.priceUsdB;
 
   box.innerHTML = `<div class="card" style="margin-top:11px;background:var(--surface-2)">
-    <h3>Add to ${pairName(pool)} <span class="dim">&mdash; ticks ${pos.tickLower}…${pos.tickUpper}</span></h3>
+    <h3>Add to ${pairName(pool)}</h3>
     <div class="lpsides">
       <div><span class="k">In this position</span><b>${qty(pos.amountA)} ${esc(pool.symA)}</b><b>${qty(pos.amountB)} ${esc(pool.symB)}</b><span class="s">${usd(pos.valueUsd)}</span></div>
       <div><span class="k">In your wallet</span><b id="addBalA">…</b><b id="addBalB">…</b><span class="s" id="addBalUsd"></span></div>
@@ -8347,7 +8370,7 @@ async function renderLeaders() {
       if (!r.ok) throw new Error(`leaders.json ${r.status}`);
       ldData = await r.json();
     } catch (e) {
-      out.innerHTML = `<div class="empty">The leaderboards have not been built yet.<br>
+      out.innerHTML = `<div class="empty withmascot">${MASCOT}The leaderboards have not been built yet.<br>
         <span class="dim">Built nightly.</span></div>`;
       $('#ldStats').innerHTML = '';
       return;
@@ -8388,7 +8411,7 @@ async function renderLeaders() {
     + (ldWaxOnly && hasWax ? ' Counting only positions in pools paired against WAX — token-to-token pairs are left out.' : '')
     + (sc.hidden ? ` ${sc.hidden} withheld, still counted.` : '');
 
-  if (!rows.length) { out.innerHTML = '<div class="empty">Nothing on this board yet.</div>'; return; }
+  if (!rows.length) { out.innerHTML = '<div class="empty withmascot">' + MASCOT + 'Nothing on this board yet.</div>'; return; }
 
   // The headline column is the one the board is sorted on, so it is the one
   // worth drawing rather than only printing.
@@ -8407,7 +8430,7 @@ async function renderLeaders() {
 
   out.innerHTML = `
     <div class="ldsplit">
-      <div class="card ldpie"><h3>${esc(cfg.label)} by share <span class="dim">&mdash; top ${Math.min(8, rows.length)} of ${rows.length.toLocaleString()}</span></h3>
+      <div class="card ldpie"><h3>${esc(cfg.label)} by share</h3>
         <div id="ldDonut"></div></div>
       <div class="card ldfacts">
         <h3>How concentrated it is</h3>
@@ -8516,11 +8539,11 @@ async function renderActivity() {
       <div class="stat"><span class="v">${routes.length.toLocaleString()}</span><span class="k">distinct routes</span><span class="sub">${cycles.length} of them arbitrage cycles</span></div>
     </div>
     <div class="grid g2" style="margin-bottom:12px">
-      <div class="card"><h3>Volume by pool <span class="dim">— share of window</span></h3><div id="actDonut"></div></div>
-      <div class="card"><h3>Most active traders <span class="dim">&mdash; a full day, not this page</span></h3><div id="actBars"></div></div>
+      <div class="card"><h3>Volume by pool</h3><div id="actDonut"></div></div>
+      <div class="card"><h3>Most active traders</h3><div id="actBars"></div></div>
     </div>
     <div class="card" style="margin-bottom:12px">
-      <h3>Routes traded <span class="dim">&mdash; swaps sharing a transaction are one trade, in order</span></h3>
+      <h3>Routes traded</h3>
       <p class="note">${multi.length.toLocaleString()} of these took more than one hop.</p>
       <div id="actRouteCsv" style="margin-bottom:8px"></div>
       <div class="tablewrap"><table><thead><tr>
@@ -8795,7 +8818,7 @@ async function openToken(id) {
 
     ${liveTapeHere ? '<div class="card pulsecard" id="tokPulse" style="margin-bottom:12px"></div>' : ''}
     ${deepest ? `<div class="section"><h3>Price</h3>
-      <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span> <span class="dim">&mdash; rebuilt from pool state changes</span>
+      <div class="card"><h3><span id="tokPair">${esc(deepest.symA)}/${esc(deepest.symB)}</span>
         <span style="margin-left:auto;display:flex;gap:4px">
           <button class="chip" id="tokFlip" title="Show the price the other way round">&#8646;</button>
           ${intervalChips('tokPrice')}
@@ -8806,17 +8829,16 @@ async function openToken(id) {
     ${tradePools.length ? `<div class="section"><h3>Trading</h3>
       ${liveTapeHere
         ? `<div class="card"><h3><span class="livedot" id="tokLiveDot"></span>Live trades
-            <span class="dim">&mdash; ${tapePools.length > 1 ? `across its ${tapePools.length} busiest markets` : `${esc(tapePools[0].symA)}/${esc(tapePools[0].symB)}`}</span>
             <span class="dim" id="tokLiveState" style="margin-left:auto;font-weight:400;font-size:11px"></span></h3>
             <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Reading trades…</span></div></div></div>`
-        : `<div class="card"><h3>Trades <span class="dim">&mdash; newest first, read out of the pool rows</span></h3>
+        : `<div class="card"><h3>Trades</h3>
             <div id="tokTape"><div class="loading"><span class="spinner"></span><span>Building the tape…</span></div></div></div>`}
       <div class="grid g2" style="margin-top:10px">
-        <div class="card"><h3>Volume, hour by hour <span class="dim">&mdash; each trade sized from the pool it moved</span>
+        <div class="card"><h3>Volume, hour by hour
           <span style="margin-left:auto;display:flex;gap:4px">${intervalChips('tokVol', 3600, { skip: [300] })}</span></h3>
           <div id="tokVolChart"><div class="loading"><span class="spinner"></span><span>Reading trades out of the pool rows…</span></div></div>
           <p class="sub" id="tokVolNote" style="margin:10px 0 0">&nbsp;</p></div>
-        <div class="card"><h3>Who trades it <span class="dim">&mdash; and the route they took</span></h3>
+        <div class="card"><h3>Who trades it</h3>
           <div id="tokTraders"><div class="loading"><span class="spinner"></span><span>Reading swap memos…</span></div></div></div>
       </div>
     </div>` : `<div class="section"><h3>Trading</h3>
@@ -8844,28 +8866,28 @@ async function openToken(id) {
         <div id="tokTax" hidden></div></div>
     </div>
 
-    <div class="section"><h3>Order book <span class="dim">&mdash; resting orders the pools do not show</span></h3>
+    <div class="section"><h3>Order book</h3>
       <div class="card"><div id="tokBook"><div class="loading"><span class="spinner"></span><span>Reading the book…</span></div></div></div>
     </div>
 
     <div class="section"><h3>Ownership</h3>
       <div class="grid g2">
-        <div class="card"><h3>Largest holders <span class="dim">&mdash; wallet plus what they hold inside pools</span></h3>
+        <div class="card"><h3>Largest holders</h3>
           <div id="tokHolders"><div class="loading"><span class="spinner"></span><span>Reading holders…</span></div></div></div>
-        <div class="card"><h3>Holder map <span class="dim">&mdash; lines mean they have moved ${esc(t.symbol)} to each other</span></h3>
+        <div class="card"><h3>Holder map</h3>
           <div id="tokBubbles"><div class="loading"><span class="spinner"></span><span>Tracing transfers…</span></div></div></div>
       </div>
     </div>
 
     <div class="section"><h3>Where the supply sits</h3>
       <div class="card"><h3>Share of supply</h3><div id="tokDist"><div class="loading"><span class="spinner"></span><span>Waiting on holders…</span></div></div></div>
-      <div class="card" style="margin-top:10px"><h3>Movement <span class="dim">&mdash; transfers, which is not the same question as trades</span></h3>
+      <div class="card" style="margin-top:10px"><h3>Movement</h3>
         <div id="tokMoves"><div class="loading"><span class="spinner"></span><span>Reading transfers…</span></div></div></div>
     </div>
 
     <div class="section"><h3>Liquidity</h3>
       <div class="grid g2">
-        <div class="card"><h3>Biggest liquidity providers <span class="dim">&mdash; ${esc(t.symbol)} supplied to pools</span></h3>
+        <div class="card"><h3>Biggest liquidity providers</h3>
           <div id="tokLps"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>
         <div class="card"><h3>Where it trades</h3><div id="tokPools"></div>
           <p class="sub" style="margin:10px 0 0">${d?.topPartner
@@ -8879,7 +8901,7 @@ async function openToken(id) {
       <div class="card"><div id="tokFarms"></div></div></div>` : ''}
 
     <div class="section"><h3>Tracked over time</h3>
-      <div class="card"><h3>Pooled value and daily volume <span class="dim">&mdash; one point per day from the snapshot job</span></h3>
+      <div class="card"><h3>Pooled value and daily volume</h3>
         <div id="tokHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
     </div>
     ${promoteBox('t', id, t.symbol)}`;
@@ -9375,7 +9397,7 @@ async function openToken(id) {
 
       <div class="grid g2" style="margin-top:12px">
         <div>
-          <h3 style="font-size:12px;margin:0 0 6px">Who moved the most ${esc(t.symbol)} <span class="dim">&mdash; received against sent</span></h3>
+          <h3 style="font-size:12px;margin:0 0 6px">Who moved the most ${esc(t.symbol)}</h3>
           <div class="tablewrap" style="max-height:320px;border:0"><table style="font-size:12px">
             <thead><tr><th>Account</th><th class="r">In</th><th class="r">Out</th><th class="r">Net</th><th class="r">Moves</th></tr></thead>
             <tbody>${movers.sort((a2, b2) => Math.abs(b2.net) - Math.abs(a2.net)).slice(0, 14).map(m => `<tr>
@@ -9969,7 +9991,7 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
 
   // Embedded inside the farm page's own "Open a position" card, this panel
   // does not bring a second card and a second heading saying the same thing.
-  box.innerHTML = `<div class="${embedded ? '' : 'card'}">${embedded ? '' : '<h3>Open a position <span class="dim">&mdash; one token, straight in</span></h3>'}
+  box.innerHTML = `<div class="${embedded ? '' : 'card'}">${embedded ? '' : '<h3>Open a position</h3>'}
     <div class="toolbar" style="margin:0 0 6px">
       <span class="sub">Range</span>
       ${[['full', 'Full'], ['50', '\u00b150%'], ['20', '\u00b120%'], ['10', '\u00b110%'], ['5', '\u00b15%'], ['2', '\u00b12%']].map(([v, l]) =>
@@ -10133,14 +10155,13 @@ async function renderFarmParts(g, out) {
       ${rows.some(f => !f.rewardUsdDay) ? '<p class="sub" style="margin:9px 0 0">An unpriced reward is real but not counted in the totals above.</p>' : ''}
     </div>
 
-    <div class="card" style="margin-bottom:14px"><h3>Is this rate normal?
-      <span class="dim">&mdash; one point per daily snapshot</span></h3>
+    <div class="card" style="margin-bottom:14px"><h3>Is this rate normal?</h3>
       <div id="farmHist"></div></div>
 
     <div class="card" style="margin-bottom:14px"><h3>Getting in</h3>
       <div id="farmMine"></div>
     </div>
-    <div class="card"><h3>Open a position <span class="dim">&mdash; two ways in</span></h3>
+    <div class="card"><h3>Open a position</h3>
       <div class="toolbar" style="margin:0 0 10px">
         <span class="sub">I have</span>
         <button class="chip" data-how="one" aria-pressed="true">One token</button>
@@ -10860,7 +10881,7 @@ async function openPool(key) {
       <span class="dim">&mdash; ${esc(p.symB)} per ${esc(p.symA)}</span></h3>
       <div id="poolDepth"><div class="loading"><span class="spinner"></span><span>Reading ticks…</span></div></div>
       <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
-    <div class="card" style="margin-top:12px"><h3>This pool over time <span class="dim">&mdash; one point per daily snapshot</span></h3>
+    <div class="card" style="margin-top:12px"><h3>This pool over time</h3>
       <div id="poolHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
     ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
@@ -10945,7 +10966,7 @@ async function openPool(key) {
     // markets on this site have no farm, so without this the page's primary
     // button scrolled to an empty div on most of them.
     const box = $('#farmParts');
-    box.innerHTML = `<div class="card"><h3>Open a position <span class="dim">&mdash; two ways in</span></h3>
+    box.innerHTML = `<div class="card"><h3>Open a position</h3>
       <div class="toolbar" style="margin:0 0 10px">
         <span class="sub">I have</span>
         <button class="chip" data-how="one" aria-pressed="true">One token</button>

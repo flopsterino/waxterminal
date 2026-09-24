@@ -46,7 +46,7 @@ async function kitOnce() {
   }
 
   kit = new SessionKit({
-    appName: 'WAX Terminal',
+    appName: 'WaxEDGE',
     chains: [{ id: WAX_CHAIN.id, url: WAX_CHAIN.url }],
     ui: new WebRenderer(),
     walletPlugins: wallets,

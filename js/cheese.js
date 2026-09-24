@@ -77,6 +77,9 @@ export async function currentBanners({ now = Date.now() } = {}) {
       position: Number(r.position), user: r.user,
       img: r.ipfs_hash, url: r.website_url || '',
       shared: r.shared_user ? { user: r.shared_user, img: r.shared_ipfs_hash, url: r.shared_website_url } : null,
+      // Rented as half a spot. Until somebody takes the other half it is
+      // still half a spot, not a whole one at the half price.
+      rentalShared: Number(r.rental_type) === 1,
     }))
     .sort((a, b) => a.position - b.position);
   return { slot: slot * 1000, banners, free: here.length - banners.length };
