@@ -380,17 +380,27 @@ const farmRows = state.farms.filter(f => !f.ended).map(f => ({
   sr: round(f.stakedReal, 2), rr: round(f.rewardRealDay, 6), ar: round(f.aprReal, 3), so: f.rewardSolid ? 1 : 0,
 }));
 
-// The previous run's prices, read out of the file this one is about to replace.
-// That makes a 24h change exact rather than reconstructed, and costs no calls.
-let prev = null, prevAt = null;
+// The baseline for the "24h" change. It used to be the previous run's prices,
+// which was a day ago when this ran once a day — and two hours ago once it ran
+// every two, so a column headed 24h showed a two-hour move and nearly every
+// token read +0.1%. Every run now adds its prices to a small ring kept for a
+// little over a day, and the baseline is the entry closest to 24 hours back.
+// The ring stays out of pools.json, which every visitor downloads.
+const DAY = 86400e3;
+const RING = new URL('price-ring.json', OUT);
+let ring = [];
+try { ring = JSON.parse(await readFile(RING, 'utf8')) || []; } catch { /* first run */ }
 try {
+  // Seed from the file this run replaces, so the first day after this change
+  // is not a day without any baseline at all.
   const old = JSON.parse(await readFile(new URL('pools.json', OUT), 'utf8'));
-  if (old?.prices?.length && old.at) {
-    prev = old.prices.map(r => [r[0], r[1]]);
-    prevAt = old.at;
-  }
+  if (old?.prices?.length && old.at && !ring.some(e => e.at === old.at)) ring.push({ at: old.at, prices: old.prices.map(r => [r[0], r[1]]) });
 } catch { /* first run has nothing to compare against */ }
-console.log(prev ? `previous prices: ${prev.length} from ${new Date(prevAt).toISOString()}` : 'no previous snapshot to compare against');
+const nowMs = Date.now();
+ring = ring.filter(e => e?.at && nowMs - e.at <= DAY * 1.5).sort((a, b) => a.at - b.at);
+const base = ring.length ? ring.reduce((b, e) => (Math.abs(nowMs - e.at - DAY) < Math.abs(nowMs - b.at - DAY) ? e : b)) : null;
+const prev = base ? base.prices : null, prevAt = base ? base.at : null;
+console.log(prev ? `baseline prices: ${prev.length} from ${new Date(prevAt).toISOString()} (${((nowMs - prevAt) / 3600e3).toFixed(1)}h back)` : 'no previous snapshot to compare against');
 
 await writeFile(new URL('pools.json', OUT), JSON.stringify({
   at: Date.now(),
@@ -409,6 +419,9 @@ await writeFile(new URL('pools.json', OUT), JSON.stringify({
   },
   pools, prices, farms: farmRows,
 }));
+// This run joins the ring for the runs after it.
+ring.push({ at: nowMs, prices: prices.map(r => [r[0], r[1]]) });
+await writeFile(RING, JSON.stringify(ring.filter(e => nowMs - e.at <= DAY * 1.5)));
 console.log(`wrote pools.json — ${pools.length} pools, ${farmRows.length} live farms, ${prices.length} priced tokens`);
 
 // --- the history line -------------------------------------------------------

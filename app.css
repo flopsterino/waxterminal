@@ -2216,3 +2216,10 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 /* The mascot on an empty screen: small, above the sentence, never louder than it. */
 .empty.withmascot { padding-top: 26px; }
 .emptymascot { display: block; margin: 0 auto 12px; width: 96px; height: auto; opacity: .95; }
+
+/* Zoom on the range chart: out to set a wider band than the history shows. */
+.bandchart { position: relative; }
+.bczoom { position: absolute; top: 4px; right: 64px; display: flex; gap: 4px; }
+.bczoom button { background: var(--surface-2); border: 1px solid var(--line-2); color: var(--ink-2); border-radius: var(--r-sm);
+  min-width: 26px; height: 24px; padding: 0 7px; font: 600 13px var(--font-ui); cursor: pointer; line-height: 1; }
+.bczoom button:hover { color: var(--ink); border-color: var(--accent); }

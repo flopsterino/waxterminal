@@ -881,7 +881,7 @@ export function depthChart(bands, { price, fmtPrice = v => v, fmt = v => v, heig
 // linear one.
 export function priceBandChart(points, {
   lower, upper, price, height = 200, fmt = v => String(v), onChange = null, label = 'price with the chosen range',
-  xLabels = true,
+  xLabels = true, zoom = 1, onZoom = null,
 } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'chart bandchart';
@@ -894,9 +894,15 @@ export function priceBandChart(points, {
   const seriesLo = pts.length ? Math.min(...pts.map(p => p.y)) : price;
   const seriesHi = pts.length ? Math.max(...pts.map(p => p.y)) : price;
   const wide = !(lower > 0) || !(upper > 0) || upper / lower > 400;
-  const lo = Math.min(seriesLo, price, wide ? Infinity : lower) * 0.92;
-  const hi = Math.max(seriesHi, price, wide ? 0 : upper) * 1.08;
   const lg = v => Math.log(Math.max(v, 1e-30));
+  // Zoom widens (or narrows) the price axis around its middle, on the log
+  // scale the chart is drawn in. Without it the axis ended at the band and the
+  // history, so a wider range could not be set by dragging: the handle stopped
+  // at the edge of a chart that only knew about the range you already had.
+  const fitLo = Math.min(seriesLo, price, wide ? Infinity : lower) * 0.92;
+  const fitHi = Math.max(seriesHi, price, wide ? 0 : upper) * 1.08;
+  const mid = (lg(fitLo) + lg(fitHi)) / 2, half = ((lg(fitHi) - lg(fitLo)) / 2 || 0.5) * zoom;
+  const lo = Math.exp(mid - half), hi = Math.exp(mid + half);
   const span = lg(hi) - lg(lo) || 1;
   const Y = v => y1 - ((lg(Math.max(v, 1e-30)) - lg(lo)) / span) * (y1 - y0);
   const V = y => Math.exp(lg(lo) + ((y1 - y) / (y1 - y0)) * span);
@@ -992,6 +998,27 @@ export function priceBandChart(points, {
 
   wrap.appendChild(svg);
 
+  if (onZoom) {
+    const clampZ = z => Math.min(60, Math.max(0.3, z));
+    const bar = document.createElement('div');
+    bar.className = 'bczoom';
+    bar.innerHTML = `<button type="button" data-z="out" title="Show a wider price range" aria-label="Zoom out">&minus;</button>`
+      + `<button type="button" data-z="in" title="Show a narrower price range" aria-label="Zoom in">+</button>`
+      + (Math.abs(zoom - 1) > 0.01 ? '<button type="button" data-z="fit" title="Back to the price history and the range">Fit</button>' : '');
+    bar.addEventListener('click', e => {
+      const b = e.target.closest('[data-z]'); if (!b) return;
+      onZoom(b.dataset.z === 'fit' ? 1 : clampZ(zoom * (b.dataset.z === 'out' ? 1.6 : 1 / 1.6)));
+    });
+    wrap.appendChild(bar);
+    // A wheel or a trackpad pinch over the chart zooms it too; the page does
+    // not scroll while the pointer is on the price axis.
+    svg.addEventListener('wheel', e => {
+      if (!e.deltaY) return;
+      e.preventDefault();
+      onZoom(clampZ(zoom * (e.deltaY > 0 ? 1.15 : 1 / 1.15)));
+    }, { passive: false });
+  }
+
   if (onChange && !wide) {
     const rectOf = () => svg.getBoundingClientRect();
     const drag = (key, ev) => {
@@ -999,7 +1026,9 @@ export function priceBandChart(points, {
       const move = e => {
         const r = rectOf();
         const yPx = ((e.touches ? e.touches[0].clientY : e.clientY) - r.top) * (H / r.height);
-        const v = V(Math.max(y0, Math.min(y1, yPx)));
+        // Past the edge the value keeps going, on the same scale — the chart is
+        // redrawn around the new band, so the axis follows the finger.
+        const v = V(Math.max(y0 - 3 * H, Math.min(y1 + 3 * H, yPx)));
         const next = key === 'upper'
           ? { lower, upper: Math.max(v, lower * 1.0005) }
           : { lower: Math.min(v, upper * 0.9995), upper };

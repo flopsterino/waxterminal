@@ -964,7 +964,7 @@ let lastView = 'pools';
 function capNote(total, shown, noun, { filterable = true } = {}) {
   if (!(total > shown)) return `${total.toLocaleString()} ${noun}`;
   // Only tables that actually have a search box may advise using one.
-  const lift = filterable ? ' <span class="dim">&mdash; narrow it with search or filters</span>' : '';
+  const lift = '';
   return `showing top ${shown.toLocaleString()} of ${total.toLocaleString()} ${noun}${lift}`;
 }
 
@@ -1145,10 +1145,10 @@ function renderOverview() {
 
   $('#ovStats').innerHTML = `
     <div class="stat"><span class="v">${usd(realisable)}</span><span class="k">pooled value</span><span class="sub">${usd(nominal)} at face value &middot; ${nominal > 0 ? (selfBackedVal / nominal * 100).toFixed(0) + '% of that in tokens that mostly back each other' : 'nothing priced yet'}</span></div>
-    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span><span class="sub">across every venue</span></div>
+    <div class="stat"><span class="v">${usd(state.pools.reduce((s, p) => s + (p.vol24 || 0), 0))}</span><span class="k">traded in 24h</span></div>
     <div class="stat"><span class="v">${groups.length.toLocaleString()}</span><span class="k">farmed pools</span><span class="sub">${state.farms.filter(f => !f.ended).length.toLocaleString()} incentives</span></div>
     <div class="stat"><span class="v">${usd(rewardsReal)}</span><span class="k">real rewards daily</span><span class="sub">${usd(rewardsNom)} counted at face value</span></div>
-    <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span><span class="sub">routed to a bridged dollar</span></div>`;
+    <div class="stat"><span class="v">$${state.waxUsd ? state.waxUsd.toFixed(5) : '—'}</span><span class="k">WAX</span></div>`;
 
   const box = $('#ovCharts');
   box.innerHTML = `
@@ -1165,7 +1165,7 @@ function renderOverview() {
             <button class="switch" id="riskyToggle" role="switch" aria-checked="${showRisky}" aria-label="Show farms that emit more per day than their pool is worth"><span class="knob"></span></button>
           </span></h3><div id="ovPay"></div></div>
       <div class="ovbanner inview-banner" data-banner-host hidden></div>
-      <div class="card ovrated"><h3>Best rated <span class="dim" id="ovRatedNote">&mdash; votes paid in HOLE</span>
+      <div class="card ovrated"><h3>Best rated
           <span class="subtabs inline" id="ovRatedWin" style="margin-left:auto"></span></h3><div id="ovRated"></div></div>
       <div class="card ovapr"><h3>Top farm APR<span class="more" data-go="farms">All markets &rarr;</span></h3><div id="ovFarms"></div></div>
       <div class="card"><h3>Most traded<span class="more" data-go="tokens">All tokens &rarr;</span></h3><div id="ovTraded"></div></div>
@@ -1232,8 +1232,6 @@ function renderOverview() {
       const el2 = $('#ovRated');
       if (!el2) return;
       const rows = rowsFor(win);
-      const note = $('#ovRatedNote');
-      if (note) note.innerHTML = `&mdash; votes paid in ${esc(terms.symbol)}, ${win === 'day' ? 'last 24 hours' : 'last 90 days'}`;
       el2.innerHTML = rows.length
         ? `<div class="minitabwrap"><table class="minitab ratedtab"><thead><tr><th>Name</th>${VOTES.map(v => `<th class="r" title="${esc(v.label)}"><span class="em">${v.emoji}</span></th>`).join('')}<th class="r">Score</th></tr></thead><tbody>${
           rows.map(r => `<tr class="clickable" ${r.info.attr}><td>${r.info.cell}</td>${
@@ -1368,8 +1366,7 @@ function renderOverview() {
         await candleChart(el, got.candles, { height: 260, precision: precisionFor(got.candles.at(-1)?.close), fmt: pxNum, visible: 140 })
           .catch(() => { el.innerHTML = '<div class="chart-empty">Chart library unavailable.</div>'; });
         const note = $('#ovWaxNote');
-        if (note) note.textContent = `${got.candles.length.toLocaleString()} candles, back to ${new Date(got.candles[0].time * 1000).toISOString().slice(0, 10)}`
-          + (got.source === 'alcor' ? ' — the whole life of the pool.' : '.');
+        if (note) note.textContent = '';
       } catch { const e2 = $('#ovWax'); if (e2) e2.innerHTML = '<div class="chart-empty">History unavailable right now.</div>'; }
       finally { waxBusy = false; }
     };
@@ -1545,11 +1542,8 @@ function promoteBox(kind, id, name) {
             <button class="tkitem" type="button" tabindex="-1"><span class="tkrank">1</span><span class="tkname">&hellip;</span><span class="tkval">&nbsp;</span></button>
           </div></div></div>
       </div>
-      <p class="sub" style="margin:10px 0 0">${qty(t.perDay)} ${esc(t.token)} a day puts
-        ${esc(name)} in the strip at the top of <b>every page</b>, marked as paid, and in the promoted block on the front page.
-        Tokens, markets and farms all take the same slot. The strip holds the ${t.slots} highest by total spend, so the top of it is
-        bought by paying more rather than by starting earlier; paying again extends your run.
-        It never changes a ranking, a filter or an average anywhere on this site.</p>
+      <p class="sub" style="margin:10px 0 0">In the strip on <b>every page</b> and in the promoted block on the front page, marked as paid.
+        ${t.slots} spots, highest total spend first.</p>
       <p class="sub" id="promoStand" style="margin:6px 0 0"></p>
     </div></div>`;
 }
@@ -1878,6 +1872,15 @@ const LENSES = {
 };
 let tokRows = null;
 
+// What the change column actually measures. The baseline is the snapshot
+// closest to a day back, but on the first day, or after a missed run, it is
+// closer than that — and a header saying 24h over a six-hour move is the kind
+// of small lie that makes every number beside it suspect.
+function changeSpan() {
+  const hrs = state.prevAt ? (state.loadedAt - state.prevAt) / 3600e3 : null;
+  return hrs == null || (hrs >= 20 && hrs <= 28) ? '24h' : `${Math.max(1, Math.round(hrs))}h`;
+}
+
 function showTokLens() {
   const own = !!LENSES[tokFilters.lens]?.own;
   $('#tokToolbar').hidden = own;
@@ -1996,14 +1999,14 @@ function renderTokens() {
   $('#tokStats').innerHTML = `
     <div class="stat"><span class="v">${rows.length.toLocaleString()}</span><span class="k">tokens shown</span><span class="sub">of ${tokRows.length.toLocaleString()} seen in pools</span></div>
     <div class="stat"><span class="v">${usd(tvlFace)}</span><span class="k">pooled behind them</span><span class="sub">${usd(tvl)} of it could be sold</span></div>
-    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span><span class="sub">each trade counted once, across all four venues</span></div>
+    <div class="stat"><span class="v">${usd(vol)}</span><span class="k">traded in 24h</span></div>
     <div class="stat"><span class="v">${poolsBehind.toLocaleString()}</span><span class="k">pools holding them</span></div>`;
 
   const cols = [
     { k: 'rank', label: '' },
     { k: 'symbol', label: 'Token' },
     { k: 'price', label: 'Price', r: true, s: true },
-    { k: 'change24', label: '24h', r: true, s: true },
+    { k: 'change24', label: changeSpan(), r: true, s: true },
     { k: 'vol24', label: 'Vol 24h', r: true, s: true },
     { k: 'tvl', label: 'Pooled value', r: true, s: true },
     { k: 'vol7d', label: 'Vol 7d', r: true, s: true },
@@ -2791,9 +2794,9 @@ async function renderStaking() {
   const dayTotal = live.reduce((a, r) => a + (r.usdDay || 0), 0);
   $('#stakeStats').innerHTML = `
     <div class="stat"><span class="v">${live.length}</span><span class="k">farms paying now</span><span class="sub">${stakeRows.length} on both contracts</span></div>
-    <div class="stat"><span class="v">${usd(dayTotal)}</span><span class="k">paid out a day</span><span class="sub">where the reward has a price</span></div>
+    <div class="stat"><span class="v">${usd(dayTotal)}</span><span class="k">paid out a day</span></div>
     <div class="stat"><span class="v">${live.filter(r => r.kind === 'nft').length}</span><span class="k">take NFTs</span><span class="sub">${live.filter(r => r.kind === 'token').length} take a token</span></div>
-    <div class="stat"><span class="v">${live.filter(r => r.endsAt < Date.now() + 30 * 86400e3).length}</span><span class="k">end within a month</span><span class="sub">at today's schedule</span></div>`;
+    <div class="stat"><span class="v">${live.filter(r => r.endsAt < Date.now() + 30 * 86400e3).length}</span><span class="k">end within a month</span></div>`;
 
   // Fifty farms in a table of eight columns was a wall: the same "NFT" badge on
   // forty-two rows, the venue repeated on every one, and the thing that
@@ -5783,10 +5786,10 @@ async function renderEarned(account) {
   out.innerHTML = `
     <div class="stats">
       <div class="stat"><span class="v">${usdExact(s.usd)}</span><span class="k">collected all time</span><span class="sub">${s.claims.toLocaleString()} payouts over ${span} days</span></div>
-      <div class="stat srcstat farm"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span><span class="sub">paid by incentives you staked into</span></div>
-      <div class="stat srcstat fee"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span><span class="sub">paid by trades through your ranges</span></div>
+      <div class="stat srcstat farm"><span class="v">${usdExact(kind('farm'))}</span><span class="k">farm rewards</span></div>
+      <div class="stat srcstat fee"><span class="v">${usdExact(kind('fees'))}</span><span class="k">LP fees</span></div>
       ${kind('waxdao') + kind('pepperstake') > 0 ? `<div class="stat"><span class="v">${usdExact(kind('waxdao') + kind('pepperstake'))}</span><span class="k">WaxDAO &amp; PepperStake</span></div>` : ''}
-      <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span><span class="sub">over the whole period</span></div>
+      <div class="stat"><span class="v">${usd(s.perDay)}</span><span class="k">a day, averaged</span></div>
     </div>
 
     <p class="vs">Today's prices${s.unpriced ? ` &middot; ${s.unpriced} unpriced, left out` : ''}${hist.truncated.length ? ` &middot; <b>first 1,000 ${hist.truncated.join(' and ')} only</b>, so the real total is higher` : ''}.</p>
@@ -6981,7 +6984,7 @@ async function lookupWallet(account) {
       <div class="stat"><span class="v">${usdExact(totalUsd)}</span><span class="k">liquidity value</span><span class="sub">${all.length} position${all.length === 1 ? '' : 's'} across ${new Set(all.map(p => p.pool.dex)).size} venue${new Set(all.map(p => p.pool.dex)).size === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v" id="rwStat">${usdExact(feesUsd)}</span><span class="k">rewards waiting</span><span class="sub" id="rwStatSub">fees, and farm rewards once read</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usdExact(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
-      <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span><span class="sub">at each pool's 24h volume</span></div>
+      <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span></div>
       ${openPnl && pnlBasis(openPnl) > 0 ? `<div class="stat"><span class="v ${pnlNum(openPnl) >= 0 ? 'pos' : 'neg'}" title="${esc(pnlTitle(openPnl))}">${pnlText(openPnl)}</span><span class="k">profit on these positions</span><span class="sub">${
         [`${(pnlNum(openPnl) / pnlBasis(openPnl) * 100).toFixed(1)}% on what went in`,
           closedPnl && pnlBasis(closedPnl) > 0 ? `${pnlText(closedPnl)} on ${closedPnl.n} closed &mdash; ${pnlText(livePnl)} all told` : '',
@@ -7872,6 +7875,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
   // demands, how hard the money works inside it, what share of the pool that
   // buys, and what the pool's own last 24 hours would have paid a position
   // that size.
+  let bandZoom = 1;              // how far the range chart is zoomed out; kept across repaints
   const paint = () => {
     const p = pool;
     if (!p) return;
@@ -7899,6 +7903,7 @@ function renderNewPosition(account, poolId = null, box = $('#newPos')) {
       lower: band === 'full' ? null : lo, upper: band === 'full' ? null : hi, price: now,
       fmt: v => sigfig(v), height: 190,
       label: `${p.symB} per ${p.symA} with the chosen range`,
+      zoom: bandZoom, onZoom: z => { bandZoom = z; paint(); },
       onChange: (nlo, nhi) => {
         band = 'custom';
         custom = {
@@ -8380,9 +8385,9 @@ async function renderLeaders() {
   const d = ldData, sc = d.scope || {};
   $('#ldStats').innerHTML = `
     <div class="stat"><span class="v">${(sc.accounts || 0).toLocaleString()}</span><span class="k">liquidity providers</span><span class="sub">across ${(sc.pools || 0).toLocaleString()} pools</span></div>
-    <div class="stat"><span class="v">${(sc.positions || 0).toLocaleString()}</span><span class="k">positions read</span><span class="sub">each one's fees rebuilt from chain</span></div>
+    <div class="stat"><span class="v">${(sc.positions || 0).toLocaleString()}</span><span class="k">positions read</span></div>
     <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts${sc.swapsUnvalued ? ` &middot; ${sc.swapsUnvalued.toLocaleString()} more this terminal will not price` : ''}</span></div>
-    <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span><span class="sub">rebuilt nightly</span></div>`;
+    <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span></div>`;
 
   // Positions at the burn account are still left off the boards — the builder
   // drops them — but the page no longer opens with a paragraph about them.
@@ -9070,7 +9075,7 @@ async function openToken(id) {
       busy = true;
       try {
         const got = await candlesFor(deepest, iv,
-          d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} of this pool…</span></div>`; });
+          d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading this pool&rsquo;s history…</span></div>`; });
         if (stale()) return;
         if (!got.candles.length) { box.innerHTML = '<div class="chart-empty">No price history for this pool.</div>'; return; }
         const shown = flipped ? invertCandles(got.candles) : got.candles;
@@ -9082,8 +9087,7 @@ async function openToken(id) {
           const n = document.createElement('p'); n.className = 'sub chartspan'; n.style.marginTop = '8px'; box.after(n); return n;
         })();
         const [num2, den2] = flipped ? [deepest.symA, deepest.symB] : [deepest.symB, deepest.symA];
-        const base = `${den2} priced in ${num2} · ${shown.length.toLocaleString()} candles, back to ${new Date(shown[0].time * 1000).toISOString().slice(0, 10)}`
-          + (got.source === 'alcor' ? ' — the whole life of the pool, from Alcor.' : ' — rebuilt from pool state changes, which the history node only keeps so far back.');
+        const base = `${den2} priced in ${num2}`;
         note.textContent = base;
         // Your trades in this token, from every market it trades in. Read from
         // the token's side; with the chart flipped the priced token is the
@@ -9905,6 +9909,7 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
   // Every paint takes a ticket and drops its result if it is no longer the
   // latest — otherwise typing "25" briefly shows the answer for "2".
   let gen = 0;
+  let zapZoom = 1;
   const paint = async () => {
     const mine = ++gen;
     const { lower: tickLower, upper: tickUpper } = bandTicks(pool, band, zapCustom);
@@ -9917,6 +9922,7 @@ function renderZap(box, pool, { incentiveIds = [], account, embedded = false } =
         lower: band === 'full' ? null : lo, upper: band === 'full' ? null : hi, price: now,
         fmt: v => sigfig(v), height: 170,
         label: `${pool.symB} per ${pool.symA} with the chosen range`,
+        zoom: zapZoom, onZoom: z => { zapZoom = z; paint(); },
         onChange: (nlo, nhi) => {
           band = 'custom';
           zapCustom = { lower: nlo, upper: nhi };
@@ -10540,8 +10546,8 @@ function paintPulse() {
       ${pulseSplit('Traders', t.traders, 'Buyers', 'Sellers', t.buyers, t.sellers, count)}
     </div>
     <p class="sub pulsenote">${st.markets > 1 ? `Across its ${st.markets} busiest markets. ` : ''}${st.complete
-      ? `Every trade in the window, read from Alcor.`
-      : `From the last ${st.rows.length.toLocaleString()} trades &mdash; ${ago(new Date(st.oldest).toISOString())} at the earliest, so longer windows are partial.`}
+      ? ''
+      : `Last ${st.rows.length.toLocaleString()} trades, back to ${ago(new Date(st.oldest).toISOString())}.`}
       ${t.buyers + t.sellers > t.traders ? `<span class="dim"> &middot; ${t.buyers + t.sellers - t.traders} wallet${t.buyers + t.sellers - t.traders === 1 ? '' : 's'} did both.</span>` : ''}</p>`;
 
   box.querySelectorAll('[data-pwin]').forEach(b => b.onclick = () => { pulseState.win = b.dataset.pwin; paintPulse(); });
@@ -11088,7 +11094,7 @@ async function openPool(key) {
       busy = true;
       try {
         const got = await candlesFor(p, iv,
-          d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading ${d} of this pool…</span></div>`; });
+          d => { box.innerHTML = `<div class="loading"><span class="spinner"></span><span>Reading this pool&rsquo;s history…</span></div>`; });
         if (!got.candles.length) { box.innerHTML = '<div class="empty">No price history for this pool.</div>'; note.textContent = ''; return; }
         const shown = flipped ? invertCandles(got.candles) : got.candles;
         const [num, den] = flipped ? [p.symA, p.symB] : [p.symB, p.symA];
