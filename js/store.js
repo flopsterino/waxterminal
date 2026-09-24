@@ -830,6 +830,21 @@ export function positionPnl(led, valueUsd, waxUsdNow, paidUsd = 0) {
 // pair's code, precision 0, and withdrawing is sending it back to swap.nefty.
 // The same constant-product share as Taco — its own site is gone, so this is
 // the only place left that shows it.
+// A pool somebody just created on Alcor, read straight off the chain and added
+// to the page's list, so it can be deposited into now rather than after the
+// next snapshot. Matched on both tokens and the fee tier, newest first.
+export async function freshAlcorPool({ tokenA, tokenB, feeBps }) {
+  const d = await getRows(ALCOR, ALCOR, 'pools', { limit: 25, reverse: true });
+  const found = normaliseAlcor(d.rows || [], state.tokens).find(p => p.feeBps === Number(feeBps)
+    && ((p.tokenA === tokenA && p.tokenB === tokenB) || (p.tokenA === tokenB && p.tokenB === tokenA)));
+  if (!found) return null;
+  applyPrices([found], state.prices);
+  found.tvlReal = found.tvl || 0;
+  const had = state.pools.findIndex(p => p.dex === 'alcor' && p.id === found.id);
+  if (had >= 0) state.pools[had] = { ...state.pools[had], ...found }; else state.pools.push(found);
+  return state.pools.find(p => p.dex === 'alcor' && p.id === found.id);
+}
+
 async function neftyPositions(account, byId) {
   const out = [];
   try {

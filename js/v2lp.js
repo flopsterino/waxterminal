@@ -159,3 +159,65 @@ export async function buildV2Zap({ account, pair, plan, feeAccount = '', auth = 
   const deposit = await buildV2Add({ account, pair, quote: { a: depA, b: depB, lp: plan.lp }, auth: au });
   return actions.concat(deposit);
 }
+
+// ---- a pair that does not exist yet ---------------------------------------
+// Opening one and putting the first liquidity in is one transaction, and the
+// amounts in it ARE the price: nothing else sets it. Read off real creations:
+//   TacoSwap     <A>::transfer "deposit" · <B>::transfer "deposit" ·
+//                swap.taco::inittoken(user, initial_pool1, initial_pool2)
+//                (09314b63…, 2026-09-23 — the contract names the LP token and
+//                opens the balance itself)
+//   NeftyBlocks  swap.nefty::createpair(creator, token0, token1) ·
+//                the two deposit_to_pair transfers · addliquidity
+//                (3d267df2…, 2026-05-22)
+// A NeftyBlocks pair is named by the first three letters of each symbol in
+// the order given — CHAD + WAX is CHAWAX — so two different pairs can want the
+// same name (WAXCASH/CHAD already is WAXCHA). Both orders are checked, and a
+// pair that exists but is empty is filled rather than created twice.
+const first3 = s => s.slice(0, 3);
+
+export async function neftyNewPairPlan(A, B) {
+  const same = (r, x, y) => r.reserve0.contract === x.contract && r.reserve0.quantity.endsWith(` ${x.symbol}`)
+    && r.reserve1.contract === y.contract && r.reserve1.quantity.endsWith(` ${y.symbol}`);
+  let blocked = 0;
+  for (const [x, y] of [[A, B], [B, A]]) {
+    const code = first3(x.symbol) + first3(y.symbol);
+    const r = (await getRows(NEFTY, NEFTY, 'pairs', { lower: codeKey(code), limit: 1 })).rows?.[0];
+    if (!r || r.code !== code) return { create: true, code, t0: x, t1: y };
+    if (same(r, x, y)) {
+      if (Number(r.total_liquidity) > 0) throw new Error(`This pair exists on NeftyBlocks already (${code}) — reload to deposit into it.`);
+      return { create: false, code, t0: x, t1: y };
+    }
+    blocked++;
+  }
+  throw new Error(`NeftyBlocks names pairs by their first letters, and both names for this one (${first3(A.symbol) + first3(B.symbol)}, ${first3(B.symbol) + first3(A.symbol)}) belong to other pairs. It cannot be opened there.`);
+}
+
+// A and B: { symbol, contract, decimals, amount }.
+export async function buildV2Create({ account, dex, A, B, auth = null }) {
+  const au = auth || [{ actor: account, permission: 'active' }];
+  const q = t => fmt(t.amount, t.decimals, t.symbol);
+  if (!(A.amount > 0) || !(B.amount > 0) || !(parse(q(A)).amount > 0) || !(parse(q(B)).amount > 0)) throw new Error('Both amounts have to be above zero.');
+  if (dex === 'taco') {
+    return [
+      { account: A.contract, name: 'transfer', authorization: au, data: { from: account, to: TACO, quantity: q(A), memo: 'deposit' } },
+      { account: B.contract, name: 'transfer', authorization: au, data: { from: account, to: TACO, quantity: q(B), memo: 'deposit' } },
+      { account: TACO, name: 'inittoken', authorization: au, data: {
+        user: account,
+        initial_pool1: { quantity: q(A), contract: A.contract },
+        initial_pool2: { quantity: q(B), contract: B.contract },
+      } },
+    ];
+  }
+  if (dex !== 'nefty') throw new Error('Not a v2 exchange.');
+  const plan = await neftyNewPairPlan(A, B);
+  const t0 = { sym: `${plan.t0.decimals},${plan.t0.symbol}`, contract: plan.t0.contract };
+  const t1 = { sym: `${plan.t1.decimals},${plan.t1.symbol}`, contract: plan.t1.contract };
+  const memo = `deposit_to_pair:${t0.sym}@${t0.contract}-${t1.sym}@${t1.contract}`;
+  return [
+    ...(plan.create ? [{ account: NEFTY, name: 'createpair', authorization: au, data: { creator: account, token0: t0, token1: t1 } }] : []),
+    { account: plan.t0.contract, name: 'transfer', authorization: au, data: { from: account, to: NEFTY, quantity: q(plan.t0), memo } },
+    { account: plan.t1.contract, name: 'transfer', authorization: au, data: { from: account, to: NEFTY, quantity: q(plan.t1), memo } },
+    { account: NEFTY, name: 'addliquidity', authorization: au, data: { owner: account, token0: t0, token1: t1 } },
+  ];
+}

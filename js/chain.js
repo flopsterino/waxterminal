@@ -139,8 +139,9 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-export async function getRows(code, scope, table, { limit = 1000, lower = null, upper = null, indexPosition = null, keyType = null } = {}) {
+export async function getRows(code, scope, table, { limit = 1000, lower = null, upper = null, indexPosition = null, keyType = null, reverse = false } = {}) {
   const body = { json: true, code, scope: String(scope), table, limit };
+  if (reverse) body.reverse = true;
   if (lower !== null) body.lower_bound = String(lower);
   if (upper !== null) body.upper_bound = String(upper);
   // A secondary index turns "find this user's rows" from a scan of every row in

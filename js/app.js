@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, positionLedger, positionPnl, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, positionLedger, positionPnl, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD, freshAlcorPool } from './store.js';
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
@@ -13,7 +13,7 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
 import { drawShareCard, shareOrSave } from './sharecard.js';
-import { livePair, quoteV2, buildV2Add, buildV2Remove, planV2Zap, buildV2Zap } from './v2lp.js';
+import { livePair, quoteV2, buildV2Add, buildV2Remove, planV2Zap, buildV2Zap, buildV2Create, neftyNewPairPlan } from './v2lp.js';
 import { neftyIndex, neftyCollection, neftyLive, neftyCandidates, neftyProof, buildNeftyBlend } from './nefty.js';
 import { debounce, quote as routeQuote } from './router.js';
 import { STABLES } from './price.js';
@@ -7157,8 +7157,10 @@ function tacoCard(p, mine = false) {
 // ------------------------------------------------------ OPEN A POSITION ----
 // One way in for every venue: pick the exchange, then the two tokens, then the
 // pool, and only then the deposit. A list of every pool was never the way to
-// find one; two tokens are. The second field only offers tokens that actually
-// have a pool with the first on that exchange, so no path ends at "no pool".
+// find one; two tokens are. The second field offers the tokens that already
+// have a pool with the first on that exchange, and — once something is typed —
+// any other token too: a pair nobody has opened yet is opened here, at the
+// market's price, with the first deposit.
 const VENUES = [
   { dex: 'alcor', name: 'Alcor', sub: 'concentrated — you choose the price range' },
   { dex: 'taco', name: 'TacoSwap', sub: 'classic 50/50 pool' },
@@ -7179,7 +7181,31 @@ function openPositionFlow(preset = {}) {
   if (pool) { tokA = pool.tokenA; tokB = pool.tokenB; }
   const poolsOf = d => state.pools.filter(p => p.dex === d && p.active !== false && p.reserveA > 0 && p.reserveB > 0 && (d !== 'alcor' || p.sqrtX64));
   const tokName = id => { const t = state.tokens.get(id); return t ? t.symbol : id.split('@')[0]; };
+  const otherTokens = () => {
+    const w = new Map();
+    for (const p of state.pools) for (const id of [p.tokenA, p.tokenB]) w.set(id, (w.get(id) || 0) + (p.tvlReal || 0));
+    return [...state.tokens.keys()].filter(id => state.prices.get(id)?.usd > 0).sort((x, y) => (w.get(y) || 0) - (w.get(x) || 0));
+  };
   const tokChip = id => `<span data-pm="${esc(id)}|${esc(tokName(id))}"></span><b>${esc(tokName(id))}</b> <span class="dim mono">${esc(id.split('@')[1] || '')}</span>`;
+
+  // No pool for the pair on this exchange — or, on Alcor, not at every fee
+  // tier — so the step offers to open one.
+  const newPoolOffer = matches => {
+    const vname = VENUES.find(v => v.dex === dex)?.name || dex;
+    const tiersLeft = dex === 'alcor' ? [5, 30, 100].filter(f => !state.pools.some(p => p.dex === 'alcor' && p.feeBps === f
+      && ((p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA)))) : [];
+    // A v2 pair that exists but is empty is not in the list; it cannot be
+    // opened a second time either. NeftyBlocks refills it; TacoSwap cannot.
+    const emptyTaco = dex === 'taco' && state.pools.some(p => p.dex === 'taco'
+      && ((p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA)));
+    if (matches.length && !tiersLeft.length) return '';
+    if (emptyTaco) return '<div class="empty">This pair exists on TacoSwap but is empty, and TacoSwap does not let it be restarted.</div>';
+    const fresh = pool?.fresh;
+    return `<button class="pfpool pfnew" data-pfnew aria-pressed="${!!fresh}">
+      <b>${matches.length ? 'New fee tier' : `No ${esc(tokName(tokA))}/${esc(tokName(tokB))} pool on ${esc(vname)} yet`}</b>
+      <span>${matches.length ? tiersLeft.map(f => `${(f / 100).toFixed(2)}%`).join(' · ') : 'Open it'}</span>
+      <span class="dim">you set the price with the first deposit</span></button>`;
+  };
 
   const render = () => {
     const pools = dex ? poolsOf(dex) : [];
@@ -7189,6 +7215,9 @@ function openPositionFlow(preset = {}) {
       .sort((x, y) => tvlOf(y) - tvlOf(x)).map(p => [p.tokenA === tokA ? p.tokenB : p.tokenA, p])).keys()] : [];
     const matches = tokA && tokB ? pools.filter(p => (p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA))
       .sort((x, y) => tvlOf(y) - tvlOf(x)) : [];
+    // A pool opened a moment ago in this same flow is still empty, and so not
+    // in the list above; it is the one being deposited into, so it stays.
+    if (pool && !pool.fresh && !matches.includes(pool)) matches.unshift(pool);
     box.innerHTML = `
       <div class="pfhead"><h3>Open a position</h3><button class="btn ghost" data-pfclose>Close</button></div>
       <div class="pfstep"><span class="pfn">1</span><div class="pfbody"><div class="pflab">Exchange</div>
@@ -7205,13 +7234,14 @@ function openPositionFlow(preset = {}) {
         ${matches.length ? `<div class="pfpools">${matches.map(p => `<button class="pfpool" data-pfpool="${esc(p.id)}" aria-pressed="${pool && String(pool.id) === String(p.id) && pool.dex === p.dex}">
           <b>${esc(p.symA)}/${esc(p.symB)}</b><span>${(p.feeBps / 100).toFixed(2)}% fee</span>
           <span>${usd(tvlOf(p))} in it</span><span class="dim">${p.vol24 > 0 ? `${usd(p.vol24)} traded 24h` : 'quiet'}</span></button>`).join('')}</div>`
-          : '<div class="empty">No pool for this pair on this exchange.</div>'}</div></div>` : ''}
+          : ''}${newPoolOffer(matches)}</div></div>` : ''}
       ${pool ? `<div class="pfstep"><span class="pfn">4</span><div class="pfbody"><div class="pflab">Deposit</div><div class="pfdeposit"></div></div></div>` : ''}`;
     fillMarks(box);
     box.querySelector('[data-pfclose]').onclick = close;
     box.querySelectorAll('[data-pfdex]').forEach(b => b.onclick = () => { dex = b.dataset.pfdex; tokA = tokB = null; pool = null; render(); });
     box.querySelectorAll('[data-pfclear]').forEach(b => b.onclick = () => { if (b.dataset.pfclear === 'a') tokA = null; tokB = null; pool = null; render(); });
     box.querySelectorAll('[data-pfpool]').forEach(b => b.onclick = () => { pool = matches.find(p => String(p.id) === b.dataset.pfpool); render(); });
+    box.querySelector('[data-pfnew]')?.addEventListener('click', () => { pool = { fresh: true, dex, tokenA: tokA, tokenB: tokB }; render(); });
     // Suggestions: A from every token with a pool on this venue, B from A's partners.
     box.querySelectorAll('[data-pfsearch]').forEach(inp => {
       const which = inp.dataset.pfsearch;
@@ -7221,12 +7251,19 @@ function openPositionFlow(preset = {}) {
           return d(y) - d(x);
         })
         : partners;
+      // Everything else the terminal knows a price for: shown only once typed,
+      // because a pair that does not exist yet is something you ask for, not
+      // something to scroll past. The deepest-traded first.
+      const known = new Set(all);
+      const others = otherTokens().filter(id => !known.has(id) && id !== tokA);
       const sugg = box.querySelector(`[data-pfsugg="${which}"]`);
       const paint = () => {
         const q = inp.value.trim().toLowerCase();
         const hits = all.filter(id => !q || id.toLowerCase().includes(q)).slice(0, 18);
-        sugg.innerHTML = hits.length ? hits.map(id => `<button class="chip" data-pftok="${esc(id)}">${tokChip(id)}</button>`).join('')
-          : `<span class="dim">${which === 'b' ? 'No pool pairs these on this exchange.' : 'No token by that name has a pool here.'}</span>`;
+        const more = q ? others.filter(id => id.toLowerCase().includes(q)).slice(0, Math.max(0, 18 - hits.length)) : [];
+        sugg.innerHTML = hits.length || more.length ? hits.map(id => `<button class="chip" data-pftok="${esc(id)}">${tokChip(id)}</button>`).join('')
+          + more.map(id => `<button class="chip" data-pftok="${esc(id)}" title="No pool with ${which === 'b' ? esc(tokName(tokA)) : 'it'} here yet">${tokChip(id)} <span class="dim">new</span></button>`).join('')
+          : `<span class="dim">${q ? 'No token by that name.' : 'Type a token.'}</span>`;
         fillMarks(sugg);
         sugg.querySelectorAll('[data-pftok]').forEach(c => c.onclick = () => {
           if (which === 'a') { tokA = c.dataset.pftok; tokB = null; } else tokB = c.dataset.pftok;
@@ -7249,7 +7286,14 @@ function openPositionFlow(preset = {}) {
       const body = dep.querySelector('.pfdepbody');
       const draw = () => {
         const fail = e => { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; };
-        if (pool.dex === 'alcor') {
+        if (pool.fresh && pool.dex === 'alcor') {
+          // A new Alcor pool is its own transaction (it starts empty, at the
+          // price given); once it is on the chain it is an ordinary pool and
+          // this step becomes the ordinary deposit into it.
+          dep.querySelector('.pfmode').style.display = 'none';
+          renderAlcorNewPool(body, tokA, tokB, p => { pool = p; render(); });
+        } else if (pool.fresh) renderV2NewPool(body, pool.dex, tokA, tokB, mode).catch(fail);
+        else if (pool.dex === 'alcor') {
           if (mode === 'zap') renderZap(body, pool, { incentiveIds: [], account: wallet.account(), embedded: true });
           else renderNewPosition(wallet.account() || '', pool.id, body);
         } else if (mode === 'zap') renderV2Zap(body, pool).catch(fail);
@@ -7439,6 +7483,197 @@ async function renderV2Deposit(box, pool) {
       <b>${quote.lp.toLocaleString('en-US', { maximumFractionDigits: pair.lpDecimals })} ${esc(pair.code)}</b> LP. Anything that does not fit the ratio comes straight back.
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-v2do>Sign and deposit</button></div></div>`;
     out.querySelector('[data-v2do]').onclick = () => runStakeTx(out, actions, 'Deposited. The LP tokens are in your wallet; the position shows under My wallet → LP.');
+  };
+}
+
+// ---- opening a pool that does not exist yet --------------------------------
+// The first deposit IS the price. So it starts at the market's — both tokens
+// priced here means the page knows it — and says so plainly when someone moves
+// it off, because the difference is not theirs to keep: the first trade
+// against a mispriced pool is an arbitrage paid out of that deposit.
+const marketRatio = (a, b) => {
+  const pa = state.prices.get(a)?.usd, pb = state.prices.get(b)?.usd;
+  return pa > 0 && pb > 0 ? pa / pb : null;          // B per A
+};
+const offMarket = (ratio, market) => (market ? ratio / market - 1 : null);
+const offMarketNote = (off, symA, symB) => (off == null ? `<span class="capmark" style="margin:0">No market price for both tokens here, so nothing checks this price.</span>`
+  : Math.abs(off) > 0.02 ? `<span class="neg">${(off * 100).toFixed(1)}% ${off > 0 ? 'above' : 'below'} the market.</span> The first trade takes the difference out of this deposit.`
+  : `<span class="pos">At the market price.</span>`);
+
+function renderAlcorNewPool(box, tokA, tokB, onReady) {
+  const A = state.tokens.get(tokA), B = state.tokens.get(tokB);
+  const taken = new Set(state.pools.filter(p => p.dex === 'alcor'
+    && ((p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA))).map(p => p.feeBps));
+  const tiers = [[5, '0.05%', 'stable pairs'], [30, '0.30%', 'most pairs'], [100, '1.00%', 'pairs that move']].filter(([f]) => !taken.has(f));
+  let fee = tiers.some(([f]) => f === 30) ? 30 : tiers[0][0];
+  const market = marketRatio(tokA, tokB);
+  box.innerHTML = `
+    <div class="toolbar" style="margin:0 0 10px"><span class="sub">Fee</span>
+      ${tiers.map(([f, l, why]) => `<button class="chip" data-anfee="${f}" aria-pressed="${f === fee}" title="${why}">${l}</button>`).join('')}</div>
+    <div class="v2in" style="grid-template-columns:1fr"><label><span>${esc(B.symbol)} per ${esc(A.symbol)}</span>
+      <input type="number" min="0" step="any" data-anpx value="${market ? String(+market.toPrecision(8)) : ''}" placeholder="price"></label></div>
+    <div class="v2quote" data-anq></div>
+    <p class="sub" style="margin:6px 0 10px">Alcor opens a pool empty, at this price: one signature to open it, then the deposit — one token or both — into it right here.</p>
+    <div class="v2out"></div>
+    <button class="btn" data-ango>Open the pool</button>`;
+  const px = box.querySelector('[data-anpx]'), q = box.querySelector('[data-anq]'), go = box.querySelector('[data-ango]');
+  const paint = () => {
+    const v = Number(px.value);
+    go.disabled = !(v > 0);
+    q.innerHTML = v > 0 ? offMarketNote(offMarket(v, market), A.symbol, B.symbol) : 'Type the price it opens at.';
+  };
+  px.oninput = paint;
+  box.querySelectorAll('[data-anfee]').forEach(b => b.onclick = () => {
+    fee = Number(b.dataset.anfee);
+    box.querySelectorAll('[data-anfee]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  });
+  paint();
+  go.onclick = async () => {
+    const out = box.querySelector('.v2out');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    try {
+      const built = buildCreatePool({ tokenA: tokA, tokenB: tokB, price: Number(px.value), feeBps: fee, me: wallet.account() });
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      await wallet.transact(built.actions, { verify: true });
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Opened. Reading it back from the chain…</span></div>';
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const p = await freshAlcorPool({ tokenA: tokA, tokenB: tokB, feeBps: fee }).catch(() => null);
+        if (p) { onReady(p); return; }
+      }
+      out.innerHTML = '<div class="err">The pool is opened, but the chain has not shown it yet. It appears here after a reload.</div>';
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e?.message || String(e))}</div>`; }
+  };
+}
+
+// TacoSwap and NeftyBlocks open a pair and take its first liquidity in the
+// same transaction. With both tokens that is one signature. With one (zap),
+// the best route buys the other half first, and the pair then opens at what
+// that swap actually paid — the market, as it stood a moment ago.
+async function renderV2NewPool(box, dex, tokA, tokB, mode) {
+  const vname = dex === 'taco' ? 'TacoSwap' : 'NeftyBlocks';
+  const meta = id => state.tokens.get(id) || { symbol: id.split('@')[0], contract: id.split('@')[1], decimals: 4 };
+  const A = meta(tokA), B = meta(tokB);
+  const market = marketRatio(tokA, tokB);
+  const me = () => wallet.account();
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Checking the exchange…</span></div>';
+  // NeftyBlocks can refuse the pair's name; better said now than after a swap.
+  if (dex === 'nefty') await neftyNewPairPlan({ ...A, amount: 0 }, { ...B, amount: 0 });
+  const feeAccount = CFG?.commercial?.feeAccount || '';
+  const zapFeeBps = feeAccount ? Math.max(0, Math.min(200, CFG?.commercial?.zapFeeBps ?? 0)) : 0;
+  const bal = new Map();
+  const WAX = 'WAX@eosio.token';
+  const choices = [tokA, tokB, ...(tokA !== WAX && tokB !== WAX ? [WAX] : [])];
+  if (me()) await Promise.all(choices.map(async id => bal.set(id, await balanceOf(me(), meta(id).contract, meta(id).symbol).catch(() => null))));
+  const holds = id => (bal.get(id) != null ? `<button class="xlink" data-nmax="${esc(id)}">you hold ${qty(bal.get(id))}</button>` : '');
+  const done = `Opened, and the first liquidity is in. The LP tokens are in your wallet; the pair shows on ${vname} after the next snapshot.`;
+  const confirm = (out, html, actions) => {
+    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">${html}
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-ndo>Sign</button></div></div>`;
+    out.querySelector('[data-ndo]').onclick = () => runStakeTx(out, actions, done);
+  };
+
+  if (mode === 'both') {
+    box.innerHTML = `
+      <p class="sub" style="margin:0 0 10px">${market ? `Market: 1 ${esc(A.symbol)} = ${sigfig(market)} ${esc(B.symbol)}. Type one amount and the other follows at that price; change it and you change the price the pair opens at.`
+        : 'There is no market price for both, so the two amounts you type are the price the pair opens at.'}</p>
+      <div class="v2in">
+        <label><span>${esc(A.symbol)}</span><input type="number" min="0" step="any" data-nv="a" placeholder="0">${holds(tokA)}</label>
+        <label><span>${esc(B.symbol)}</span><input type="number" min="0" step="any" data-nv="b" placeholder="0">${holds(tokB)}</label>
+      </div>
+      <div class="v2quote dim" data-nq>Type an amount.</div>
+      <div class="v2out"></div>
+      <button class="btn" data-ngo disabled>Review</button>`;
+    const inA = box.querySelector('[data-nv="a"]'), inB = box.querySelector('[data-nv="b"]');
+    const q = box.querySelector('[data-nq]'), go = box.querySelector('[data-ngo]');
+    const paint = () => {
+      const a = Number(inA.value), b = Number(inB.value);
+      go.disabled = true;
+      if (!(a > 0 && b > 0)) { q.textContent = 'Type both amounts.'; return; }
+      const short = (bal.get(tokA) != null && a > bal.get(tokA)) || (bal.get(tokB) != null && b > bal.get(tokB));
+      q.innerHTML = `Opens at 1 ${esc(A.symbol)} = ${sigfig(b / a)} ${esc(B.symbol)}. ${offMarketNote(offMarket(b / a, market), A.symbol, B.symbol)}${short ? ' · <span class="neg">more than you hold</span>' : ''}`;
+      go.disabled = short;
+    };
+    inA.oninput = () => { if (market && Number(inA.value) > 0) inB.value = String(+(Number(inA.value) * market).toFixed(B.decimals)); paint(); };
+    inB.oninput = () => { if (market && !(Number(inA.value) > 0) && Number(inB.value) > 0) inA.value = String(+(Number(inB.value) / market).toFixed(A.decimals)); paint(); };
+    box.querySelectorAll('[data-nmax]').forEach(x => x.onclick = () => {
+      const id = x.dataset.nmax, v = bal.get(id);
+      if (id === tokA) { inA.value = String(v); inA.oninput(); } else { inB.value = String(v); inA.value = market ? String(+(v / market).toFixed(A.decimals)) : inA.value; paint(); }
+    });
+    go.onclick = async () => {
+      const out = box.querySelector('.v2out');
+      if (!me()) { try { await wallet.connect(); } catch { return; } }
+      try {
+        const a = Number(inA.value), b = Number(inB.value);
+        const actions = await buildV2Create({ account: me(), dex, A: { ...A, amount: a }, B: { ...B, amount: b } });
+        confirm(out, `Open ${esc(A.symbol)}/${esc(B.symbol)} on ${vname} with <b>${qty(a)} ${esc(A.symbol)}</b> and <b>${qty(b)} ${esc(B.symbol)}</b>,
+          at 1 ${esc(A.symbol)} = ${sigfig(b / a)} ${esc(B.symbol)}. One transaction.`, actions);
+      } catch (e) { out.innerHTML = `<div class="err">${esc(e?.message || String(e))}</div>`; }
+    };
+    return;
+  }
+
+  // Zap: one token in, half of its value routed into each side it is not.
+  const shell = { dex, tokenA: tokA, tokenB: tokB, symA: A.symbol, symB: B.symbol, decA: A.decimals, decB: B.decimals };
+  let from = choices[0], plan = null, gen = 0;
+  box.innerHTML = `
+    <div class="toolbar" style="margin:0 0 10px"><span class="sub">Bring</span>
+      ${choices.map(id => `<button class="chip" data-nfrom="${esc(id)}" aria-pressed="${id === from}">${esc(meta(id).symbol)}</button>`).join('')}</div>
+    <div class="v2in" style="grid-template-columns:1fr"><label><span data-nsym>${esc(meta(from).symbol)}</span>
+      <input type="number" min="0" step="any" data-namt placeholder="0"><span data-nhold></span></label></div>
+    <div class="v2quote dim" data-nq>Type an amount.</div>
+    <div class="v2out"></div>
+    <button class="btn" data-ngo disabled>Review</button>`;
+  const amtIn = box.querySelector('[data-namt]'), q = box.querySelector('[data-nq]'), go = box.querySelector('[data-ngo]');
+  const showHold = () => {
+    const h = box.querySelector('[data-nhold]');
+    h.innerHTML = holds(from);
+    h.querySelector('[data-nmax]')?.addEventListener('click', () => { amtIn.value = String(bal.get(from)); requote(); });
+  };
+  const requote = debounce(async () => {
+    const my = ++gen;
+    const amount = Number(amtIn.value);
+    plan = null; go.disabled = true;
+    if (!(amount > 0)) { q.textContent = 'Type an amount.'; return; }
+    q.innerHTML = '<span class="spinner"></span> Finding the best route…';
+    let z = null;
+    try { z = await planZap({ pool: shell, fromToken: from, amount, feeBps: zapFeeBps, me: me() || 'eosio.null', ratio: { shareA: 0.5, shareB: 0.5 } }); }
+    catch (e) { z = { ok: false, reason: e.message }; }
+    if (my !== gen) return;
+    if (!z || z.ok === false) { q.innerHTML = `<span class="neg">${esc(z?.reason || 'No route to one of the two tokens.')}</span>`; return; }
+    plan = z;
+    const legs = z.legs.map(l => `${esc(l.sym)} via ${l.routed === 'alcor' ? `Alcor${l.hops > 1 ? ` (${l.hops} steps)` : ''}` : 'our route'}`).join(' and ');
+    const short = bal.get(from) != null && amount > bal.get(from);
+    q.innerHTML = `Swaps into ${legs}, then opens the pair with what arrived — at the price that swap paid. Two signatures.${short ? ' · <span class="neg">more than you hold</span>' : ''}`;
+    go.disabled = short;
+  }, 350);
+  amtIn.oninput = requote;
+  showHold();
+  box.querySelectorAll('[data-nfrom]').forEach(b => b.onclick = () => {
+    from = b.dataset.nfrom;
+    box.querySelectorAll('[data-nfrom]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    box.querySelector('[data-nsym]').textContent = meta(from).symbol;
+    showHold(); requote();
+  });
+  go.onclick = async () => {
+    const out = box.querySelector('.v2out');
+    if (!me()) { try { await wallet.connect(); } catch { return; } }
+    const account = me();
+    try {
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      const before = await readBalances(shell, [tokA, tokB], account);
+      const t1 = await buildZapSwap({ pool: shell, plan, feeAccount, me: account });
+      if (t1.actions.length) await wallet.transact(t1.actions, { verify: true });
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Measuring what arrived…</span></div>';
+      await new Promise(r => setTimeout(r, 2500));
+      const after = await readBalances(shell, [tokA, tokB], account);
+      const got = id => Math.max(0, (after.get(id) || 0) - (before.get(id) || 0)) + (id === from ? (plan.keep || 0) : 0);
+      const a = got(tokA), b = got(tokB);
+      if (!(a > 0 && b > 0)) throw new Error('The swap did not deliver both tokens; nothing was deposited. What arrived is in your wallet.');
+      const actions = await buildV2Create({ account, dex, A: { ...A, amount: a }, B: { ...B, amount: b } });
+      confirm(out, `Swapped. Now open ${esc(A.symbol)}/${esc(B.symbol)} on ${vname} with <b>${qty(a)} ${esc(A.symbol)}</b> and <b>${qty(b)} ${esc(B.symbol)}</b>,
+        at 1 ${esc(A.symbol)} = ${sigfig(b / a)} ${esc(B.symbol)}. ${offMarketNote(offMarket(b / a, market), A.symbol, B.symbol)}`, actions);
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e?.message || String(e))}</div>`; }
   };
 }
 
