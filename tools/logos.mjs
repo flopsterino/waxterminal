@@ -14,6 +14,21 @@
 
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 
+// Shrunk on the way in. The source files run to 300 KB for a mark drawn at 20
+// pixels; the front page pulled 2 MB of them. 64x64 WebP is sharp on a phone's
+// 3x screen at icon size and a few KB each. sharp is installed by the workflow
+// just for this step; without it the originals are kept as they were.
+let sharp = null;
+try { sharp = (await import('sharp')).default; } catch { console.log('sharp not installed: keeping logos at their original size'); }
+const SIZE = 64;
+async function shrink(buf) {
+  if (!sharp) return null;
+  try {
+    return await sharp(buf, { animated: false }).resize(SIZE, SIZE, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .webp({ quality: 82, effort: 5 }).toBuffer();
+  } catch { return null; }
+}
+
 const ALCOR_TREE = 'https://api.github.com/repos/alcorexchange/alcor-ui/git/trees/master?recursive=1';
 const ALCOR_RAW = 'https://raw.githubusercontent.com/alcorexchange/alcor-ui/master/';
 const REGISTRY = 'https://raw.githubusercontent.com/eoscafe/eos-airdrops/master/tokens.json';
@@ -60,16 +75,22 @@ for (let i = 0; i < entries.length; i += BATCH) {
   await Promise.all(entries.slice(i, i + BATCH).map(async ([key, url]) => {
     const ext = (url.match(/\.(png|jpg|jpeg|svg|webp|gif)(\?|$)/i)?.[1] || 'png').toLowerCase();
     const [sym, contract] = key.split('@');
-    const file = `${contract}-${sym}.${ext}`.replace(/[^\w.@-]/g, '_');
+    const base = `${contract}-${sym}`.replace(/[^\w.@-]/g, '_');
+    const small = `${base}.webp`, orig = `${base}.${ext}`;
+    // An SVG stays an SVG: it is already small and scales on its own.
+    if (ext !== 'svg' && existing.has(small)) { manifest[key] = small; skipped++; return; }
+    if (existing.has(orig) && !sharp) { manifest[key] = orig; skipped++; return; }
+    const file = orig;
     manifest[key] = file;
-    if (existing.has(file)) { skipped++; return; }
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
       if (!r.ok) { failed++; delete manifest[key]; return; }
       const buf = Buffer.from(await r.arrayBuffer());
       // A "logo" that is really an HTML error page helps nobody.
       if (buf.length < 64 || buf.length > MAX_BYTES) { failed++; delete manifest[key]; return; }
-      await writeFile(new URL(file, OUT), buf);
+      const tiny = ext === 'svg' ? null : await shrink(buf);
+      if (tiny) { await writeFile(new URL(small, OUT), tiny); manifest[key] = small; }
+      else await writeFile(new URL(file, OUT), buf);
       fetched++;
     } catch { failed++; delete manifest[key]; }
   }));

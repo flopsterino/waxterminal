@@ -41,4 +41,9 @@ html = html
   .replace(/(src=")(js\/app\.js)(")/g, `$1$2?v=${v}$3`);
 await writeFile(idx, html);
 
+// The service worker names its cache after the build, so a new deploy drops
+// the previous one's code instead of serving it next to the new.
+const swUrl = new URL('sw.js', root);
+try { const sw = await readFile(swUrl, 'utf8'); await writeFile(swUrl, sw.replace(/__BUILD__/g, v)); } catch { /* no worker in this build */ }
+
 console.log(`stamped v=${v}: ${imports} imports across ${files.length} modules, index.html ${html !== before ? 'updated' : 'UNCHANGED — check the selectors'}`);

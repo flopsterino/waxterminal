@@ -584,6 +584,11 @@ async function checkForNewer(build) {
 }
 
 async function boot() {
+  // Installable, and a second visit that does not wait on the network. After
+  // the page is up, so registering never competes with the first paint.
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === '127.0.0.1' || location.hostname === 'localhost')) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}), { once: true });
+  }
   try {
     CFG = await (await fetch('theme.json')).json();
     configurePromotion(CFG.commercial);
@@ -1114,6 +1119,17 @@ function routeFromHash() {
 // ------------------------------------------------------------- OVERVIEW -----
 // The page that answers "what is going on" before anyone touches a filter.
 // Charts, not tables: a 19,000-row table is a database dump, not an overview.
+// Resolves once the element is within a screen of the viewport. Anything that
+// cannot observe (an old browser, a missing element) resolves at once, so the
+// worst case is the old behaviour, never a chart that does not load.
+function whenVisible(el, margin = '400px') {
+  return new Promise(res => {
+    if (!el || !('IntersectionObserver' in window)) return res();
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); res(); } }, { rootMargin: margin });
+    io.observe(el);
+  });
+}
+
 let showRisky = false;
 function renderOverview() {
   const pools = state.pools.filter(p => p.tvl > 0);
@@ -1374,7 +1390,9 @@ function renderOverview() {
     wireIntervals('ovWax', v => { waxIv = v; drawWax(); });
   }
 
-  loadHistory().then(rows => {
+  // 900 KB of history for one chart halfway down the page: fetched when the
+  // chart is about to be seen, not by every visitor who reads the top.
+  whenVisible($('#ovHist')).then(() => loadHistory()).then(rows => {
     const el = $('#ovHist');
     // A handful of points inside one day is not a time series; drawing it makes
     // a flat line look like a chart and implies history that is not there yet.

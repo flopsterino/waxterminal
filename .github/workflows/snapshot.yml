@@ -42,7 +42,9 @@ jobs:
         run: echo "daily=${{ github.event.schedule == '7 3 * * *' || github.event_name == 'workflow_dispatch' }}" >> "$GITHUB_OUTPUT"
       - name: Refresh token logos
         if: steps.kind.outputs.daily == 'true'
-        run: node tools/logos.mjs
+        run: |
+          npm i --no-save --no-package-lock --silent sharp@0.33.5
+          node tools/logos.mjs
       - name: Read chain and write snapshot
         env:
           WRITE_HISTORY: ${{ steps.kind.outputs.daily == 'true' && '1' || '0' }}
