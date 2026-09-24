@@ -7152,6 +7152,37 @@ function tacoCard(p) {
   </article>`;
 }
 
+// A NeftyBlocks position. Its site is gone, so taking liquidity out is here:
+// the LP tokens go back to swap.nefty (plain transfer, empty memo — read off
+// a real withdrawal on 2026-09-09) and both sides come back in the same
+// transaction. Part of it works the same way, with fewer LP tokens.
+function neftyLpCard(p, mine = false) {
+  const pool = p.pool;
+  const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
+  const tot = vA + vB;
+  const wA = tot > 0 ? vA / tot : 0.5;
+  return `<article class="poscard" data-find="${esc(`${pool.symA}/${pool.symB} ${pool.symA} ${pool.symB} neftyblocks nefty ${pool.id}`)}">
+    <header class="pc-head">
+      <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
+      <div class="pc-id">
+        <div class="pc-pair">${pairLinks(pool)}<span class="venue nefty">Nefty</span></div>
+        <div class="pc-meta">${qty(p.balance)} ${esc(p.lpSymbol)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
+      </div>
+      <div class="pc-val"><span class="v">${p.valueUsd != null ? usdExact(p.valueUsd) : '&mdash;'}</span></div>
+    </header>
+    <div class="pc-pills"><span class="pill good">Full range</span>${pool.active ? '' : '<span class="pill warn">Pair paused</span>'}</div>
+    <div class="pc-split"><div class="seg a" style="width:${(wA * 100).toFixed(2)}%"></div><div class="seg b" style="width:${((1 - wA) * 100).toFixed(2)}%"></div></div>
+    <div class="pc-legend">
+      <span><i class="a"></i>${esc(pool.symA)} ${qty(p.amountA)}</span>
+      <span><i class="b"></i>${esc(pool.symB)} ${qty(p.amountB)}</span>
+    </div>
+    ${mine ? `<footer class="pc-act">
+      <span class="dim" style="font-size:12px">Take out</span>
+      ${[25, 50, 100].map(pc => `<button class="btn ${pc === 100 ? '' : 'ghost'}" data-neftyout="${esc(p.lpSymbol)}:${pc}">${pc === 100 ? 'All' : `${pc}%`}</button>`).join('')}
+    </footer><div class="neftyoutbox"></div>` : ''}
+  </article>`;
+}
+
 async function lookupWallet(account) {
   if (!account) return;
   walletShown = account;
@@ -7181,10 +7212,10 @@ async function lookupWallet(account) {
     // deposited. Reading the chain ourselves is the fallback, not the default.
     const alcor = await walletPositionsFast(account);
     const slow = await walletPositions(account, { onProgress: () => {}, skipAlcor: true }).catch(() => ({ alcor: [], taco: [], poolsChecked: 0 }));
-    res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, poolsChecked: slow.poolsChecked };
+    res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, nefty: slow.nefty || [], poolsChecked: slow.poolsChecked };
     // The pie can now offer to include what is inside the positions, which it
     // could not while this was still sweeping.
-    walletPositionsFor = { account, list: [...res.alcor, ...res.taco] };
+    walletPositionsFor = { account, list: [...res.alcor, ...res.taco, ...(res.nefty || [])] };
     redrawBalancePie();
   } catch {
     try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
@@ -7196,7 +7227,8 @@ async function lookupWallet(account) {
     }
   }
 
-  const all = [...res.alcor, ...res.taco];
+  res.nefty = res.nefty || [];
+  const all = [...res.alcor, ...res.taco, ...res.nefty];
   if (!all.length) aggSet(account, 'lpx', { oorCount: 0, gaps: 0, dailyFees: 0 });
   aggSet(account, 'lp', {
     usd: all.reduce((s2, p) => s2 + (p.valueUsd || 0) * (p.pool?.tvl > 0 && p.pool.tvlReal != null ? Math.min(1, p.pool.tvlReal / p.pool.tvl) : 1), 0),
@@ -7339,6 +7371,7 @@ async function lookupWallet(account) {
   const mine = isMine(account);
   for (const p of res.alcor) html += positionCard(p, mine);
   for (const p of res.taco) html += tacoCard(p);
+  for (const p of res.nefty) html += neftyLpCard(p, mine);
   html += '</div><div class="empty filternone" hidden>No position matches.</div></div>';
   out.innerHTML = html;
   // Forty positions is a scroll, not a list. The filter matches the pair, the
@@ -7371,6 +7404,26 @@ async function lookupWallet(account) {
   // position stays where it is and stays yours; staking only tells the pool's
   // incentive to count it. Nothing here can move it.
   wireJoinFarm(out, account);
+
+  // Taking liquidity out of a NeftyBlocks pair: LP tokens back to swap.nefty.
+  out.querySelectorAll('[data-neftyout]').forEach(b => b.onclick = () => {
+    const [sym, pcS] = b.dataset.neftyout.split(':');
+    const p = res.nefty.find(x => x.lpSymbol === sym);
+    const box = b.closest('.poscard')?.querySelector('.neftyoutbox');
+    if (!p || !box) return;
+    const pc = Number(pcS) / 100;
+    const lp = pc >= 1 ? p.balance : Math.floor(p.balance * pc);
+    if (!(lp > 0)) { box.innerHTML = '<div class="err">That is less than one LP token.</div>'; return; }
+    const got = lp / p.balance;
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft);margin-top:10px">
+      Send ${lp.toLocaleString('en-US')} ${esc(sym)} LP back to <span class="mono">swap.nefty</span> and receive about
+      <b>${qty(p.amountA * got)} ${esc(p.pool.symA)}</b> and <b>${qty(p.amountB * got)} ${esc(p.pool.symB)}</b>.
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-neftydo>Sign and take out</button></div></div>`;
+    box.querySelector('[data-neftydo]').onclick = () => runStakeTx(box, [{
+      account: 'lp.nefty', name: 'transfer', authorization: [{ actor: account, permission: 'active' }],
+      data: { from: account, to: 'swap.nefty', quantity: `${lp} ${sym}`, memo: '' },
+    }], 'Taken out. Both tokens are back in your wallet.');
+  });
 
   // Share: the figures this page already shows, drawn as a picture.
   const pctOf = pl => (pnlBasis(pl) > 0 ? `${pnlNum(pl) >= 0 ? '+' : ''}${(pnlNum(pl) / pnlBasis(pl) * 100).toFixed(1)}% on what went in` : '');

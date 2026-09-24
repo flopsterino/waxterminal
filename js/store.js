@@ -384,7 +384,8 @@ async function loadSnapshot() {
       vol24: p.v1 ?? null, vol7d: p.v7 ?? null, change24: p.ch ?? null,
       turnover: (p.v1 > 0 && p.vr > 0) ? p.v1 / p.vr : null,
       depth1: p.d1 ?? null, bornAt: p.bd ?? null,
-      lpSupply: p.d === 'taco' ? p.l : undefined,
+      // Taco and NeftyBlocks positions are LP tokens valued as a share of this.
+      lpSupply: p.d === 'taco' || p.d === 'nefty' ? p.l : undefined,
     };
   });
   state.pools = pools;
@@ -825,6 +826,42 @@ export function positionPnl(led, valueUsd, waxUsdNow, paidUsd = 0) {
   };
 }
 
+// NeftyBlocks' exchange: a position is an LP token on lp.nefty, symbol = the
+// pair's code, precision 0, and withdrawing is sending it back to swap.nefty.
+// The same constant-product share as Taco — its own site is gone, so this is
+// the only place left that shows it.
+async function neftyPositions(account, byId) {
+  const out = [];
+  try {
+    const held = (await getAllRows('lp.nefty', account, 'accounts')).map(r => parseAsset(r.balance)).filter(b => b.amount > 0);
+    // The snapshot keeps only the pairs with something in them; a position in
+    // one it left out is still money somebody may want back, so those pairs
+    // are read from the contract — once, and only when there are any.
+    if (held.some(b => !byId.get(`nefty:${b.symbol}`)?.lpSupply)) {
+      const tokens = new Map(state.tokens);
+      for (const p of normaliseNefty(await getAllRows(NEFTY, NEFTY, 'pairs'), tokens)) {
+        const known = byId.get(`nefty:${p.id}`);
+        if (known?.lpSupply) continue;
+        const pa = state.prices.get(p.tokenA)?.usd ?? null, pb = state.prices.get(p.tokenB)?.usd ?? null;
+        byId.set(`nefty:${p.id}`, { ...p, ...(known || {}), lpSupply: p.lpSupply, reserveA: p.reserveA, reserveB: p.reserveB,
+          priceUsdA: known?.priceUsdA ?? pa, priceUsdB: known?.priceUsdB ?? pb,
+          tvl: known?.tvl ?? (pa != null && pb != null ? p.reserveA * pa + p.reserveB * pb : null) });
+      }
+    }
+    for (const bal of held) {
+      const pool = byId.get(`nefty:${bal.symbol}`);
+      if (!pool || !(pool.lpSupply > 0)) continue;
+      const share = bal.amount / pool.lpSupply;
+      out.push({ dex: 'nefty', pool, balance: bal.amount, lpSymbol: bal.symbol, share,
+        amountA: pool.reserveA * share, amountB: pool.reserveB * share,
+        valueUsd: pool.tvl != null ? pool.tvl * share : null,
+        valueRealUsd: pool.tvlReal != null ? pool.tvlReal * share : null,
+        inRange: true, side: 'in' });
+    }
+  } catch { /* no LP tokens is the common case */ }
+  return out.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
+}
+
 export async function walletPositions(account, { onProgress = () => {}, skipAlcor = false } = {}) {
   if (skipAlcor) {
     // Only the Taco side is wanted; skip the Alcor sweep entirely.
@@ -844,7 +881,7 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
       }
     } catch {}
     taco.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
-    return { alcor: [], taco, poolsChecked: 0 };
+    return { alcor: [], taco, nefty: await neftyPositions(account, byId), poolsChecked: 0 };
   }
   const poolIds = new Set();
   onProgress({ msg: 'Finding pools you have touched' });
@@ -924,7 +961,8 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
 
   out.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
   tacoLp.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
-  return { alcor: out, taco: tacoLp, poolsChecked: ids.length };
+  const nefty = await neftyPositions(account, new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p])));
+  return { alcor: out, taco: tacoLp, nefty, poolsChecked: ids.length };
 }
 
 // ------------------------------------------------------------- activity -----

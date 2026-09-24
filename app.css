@@ -2238,3 +2238,5 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 /* Collection suggestions on the NeftyBlocks tab. */
 .colpick { display: flex; flex-wrap: wrap; gap: 6px; }
 .colpick .chip .dim { margin-left: 4px; }
+
+.venue.nefty { color: var(--c7); border-color: color-mix(in oklch, var(--c7) 45%, transparent); }
