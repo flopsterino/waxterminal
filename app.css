@@ -2234,3 +2234,7 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .sharebar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .sharebar .spacer { flex: 1; }
 .sharecheck { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+
+/* Collection suggestions on the NeftyBlocks tab. */
+.colpick { display: flex; flex-wrap: wrap; gap: 6px; }
+.colpick .chip .dim { margin-left: 4px; }

@@ -13,6 +13,7 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
 import { drawShareCard, shareOrSave } from './sharecard.js';
+import { neftyIndex, neftyCollection, neftyLive, neftyCandidates, neftyProof, buildNeftyBlend } from './nefty.js';
 import { debounce } from './router.js';
 import { STABLES } from './price.js';
 import { watchPoolTrades, tradeSide, tradePrice, poolSwapHistory } from './live.js';
@@ -3328,6 +3329,7 @@ async function renderLegacy(tab = 'waxfun') {
       <button role="tab" data-ltab="waxfun" aria-selected="true">wax.fun</button>
       <button role="tab" data-ltab="waxdao" aria-selected="false">WaxDAO drops</button>
       <button role="tab" data-ltab="blends" aria-selected="false">WaxDAO blends</button>
+      <button role="tab" data-ltab="nefty" aria-selected="false">NeftyBlocks blends</button>
       <button role="tab" data-ltab="fusion" aria-selected="false">WaxFusion</button>
     </div>
     <div class="lpane" data-lpane="waxfun">
@@ -3374,15 +3376,26 @@ async function renderLegacy(tab = 'waxfun') {
         </div>
         <div id="blendGrid"><div class="loading"><span class="spinner"></span><span>Reading blends&hellip;</span></div></div>
       </div>
+    </div>
+    <div class="lpane" data-lpane="nefty" hidden>
+      <div class="section">
+        <div class="toolbar">
+          <input class="search" id="neftySearch" type="search" placeholder="Type a collection&hellip;" autocomplete="off" spellcheck="false">
+          <button class="chip" id="neftyMine" aria-pressed="false">Blends I have pieces for</button>
+          <span class="dim" id="neftyCount" style="font-size:12px"></span>
+        </div>
+        <div id="neftyGrid"></div>
+      </div>
     </div>`;
-  let dropsLoaded = false, blendsLoaded = false, fusionLoaded = false;
+  let dropsLoaded = false, blendsLoaded = false, fusionLoaded = false, neftyLoaded = false;
   document.querySelectorAll('#legacyTabs button').forEach(b => b.onclick = () => {
     legacyTab(b.dataset.ltab);
     if (b.dataset.ltab === 'waxdao' && !dropsLoaded) { dropsLoaded = true; loadDrops(); }
     if (b.dataset.ltab === 'blends' && !blendsLoaded) { blendsLoaded = true; loadBlends(); }
     if (b.dataset.ltab === 'fusion' && !fusionLoaded) { fusionLoaded = true; renderFusion().catch(() => {}); }
+    if (b.dataset.ltab === 'nefty' && !neftyLoaded) { neftyLoaded = true; renderNefty().catch(() => {}); }
   });
-  legacyTab(['waxdao', 'blends', 'fusion'].includes(tab) ? tab : 'waxfun');
+  legacyTab(['waxdao', 'blends', 'nefty', 'fusion'].includes(tab) ? tab : 'waxfun');
 
   // ---- wax.fun ------------------------------------------------------------
   let tokens = [];
@@ -3662,6 +3675,223 @@ async function renderLegacy(tab = 'waxfun') {
   if (tab === 'waxdao') { dropsLoaded = true; loadDrops(); }
   if (tab === 'blends') { blendsLoaded = true; loadBlends(); }
   if (tab === 'fusion') { fusionLoaded = true; renderFusion().catch(() => {}); }
+  if (tab === 'nefty') { neftyLoaded = true; renderNefty().catch(() => {}); }
+}
+
+// ---------------------------------------------------- NEFTYBLOCKS BLENDS ---
+// blend.nefty still runs; NeftyBlocks' site does not. The daily job lists the
+// open recipes (tools/nefty.mjs): the newest few hundred load with the tab,
+// and a collection's full set loads when its name is typed or picked.
+const neftyTpl = {};
+
+
+const neftyName = (tid) => neftyTpl[tid]?.name || `template ${tid}`;
+const neftyIng = i => {
+  if (i.kind === 'ft') return `${qty(i.amount)} ${esc(i.symbol)}`;
+  const n = i.count > 1 ? `${i.count} &times; ` : '';
+  if (i.kind === 'template') return `${n}${esc(neftyName(i.templateId))}`;
+  if (i.kind === 'attribute') return `${n}${esc(i.note || `${i.schema} with ${i.attrs.map(a => `${a.name}: ${a.values.slice(0, 3).join('/')}`).join(', ')}`)}`;
+  if (i.kind === 'schema') return `${n}${esc(i.note || `any ${i.schema}`)}`;
+  if (i.kind === 'collection') return `${n}any NFT from ${esc(i.collection)}`;
+  return 'something this page cannot read';
+};
+const neftyRes = r => (r.kind === 'mint' ? esc(neftyName(r.templateId))
+  : r.kind === 'pool' ? `an NFT from ${esc(r.name)}`
+  : r.kind === 'ft' ? `${qty(r.amount)} ${esc(r.symbol)}` : 'something this page cannot read');
+// A roll with one outcome is a thing you get; several are a draw, with odds.
+const neftyGives = b => b.rolls.map(r => (r.outcomes.length === 1
+  ? r.outcomes[0].results.map(neftyRes).join(' + ')
+  : `one of: ${r.outcomes.map(o => `${o.results.map(neftyRes).join(' + ') || 'nothing'} <span class="dim">(${(o.odds / r.total * 100).toFixed(o.odds / r.total < 0.1 ? 1 : 0)}%)</span>`).join(', ')}`)).join(' + ');
+
+function neftyCard(b) {
+  const left = b.max ? Math.max(0, b.max - (b.used || 0)) : null;
+  const blocked = b.unsupported || (b.security && !b.security.supported);
+  const img = b.img;
+  return `<article class="funcard" data-nefty="${b.id}">
+    <header>${img ? `<img class="funimg" src="${esc(ipfs(img))}" alt="" loading="lazy" onerror="${esc(ipfsFallback(img, "this.replaceWith(Object.assign(document.createElement('span'),{className:'funimg gen',textContent:'MIX'}))"))}">`
+      : '<span class="funimg gen">MIX</span>'}
+      <div class="fnname"><b>${esc(b.name)}</b><span class="sub">blend #${b.id} &middot; ${esc(b.col)}</span></div>
+      ${b.security ? `<span class="pill${b.security.supported ? '' : ' warn'}" title="${b.security.supported ? 'Only for holders of certain NFTs; the page proves it for you.' : 'An access rule this page cannot check.'}">${b.security.supported ? 'Holders only' : 'Restricted'}</span>` : ''}</header>
+    <div class="blendflow">
+      <div><span class="k">Takes</span>${b.ing.map(i => `<span class="v">${neftyIng(i)}${i.kind !== 'ft' && !i.burn ? ` <span class="dim">&rarr; ${esc(i.to || 'kept')}</span>` : ''}</span>`).join('')}</div>
+      <div class="arrow">&rarr;</div>
+      <div><span class="k">Gives</span><span class="v">${neftyGives(b)}</span></div>
+    </div>
+    <div class="funfigs">
+      <div><span class="k">Left</span><span class="v">${left == null ? 'unlimited' : left.toLocaleString('en-US')}</span>${left != null ? `<span class="s">of ${b.max.toLocaleString('en-US')}</span>` : ''}</div>
+      <div><span class="k">Ends</span><span class="v">${b.end ? forDays((b.end - Date.now()) / 86400e3) : 'open-ended'}</span></div>
+    </div>
+    ${b.desc && !/^(Qm|baf)[A-Za-z0-9]{40,}$/.test(b.desc.trim()) ? `<p class="sub fundesc">${esc(b.desc.replace(/[*_#]/g, '').slice(0, 150))}</p>` : ''}
+    <footer>
+      <button class="btn" data-neftygo="${b.id}" ${blocked ? 'disabled title="This recipe needs something this page cannot do"' : ''}>Blend</button>
+      <a class="plink" href="https://wax.atomichub.io/explorer/collection/wax-mainnet/${encodeURIComponent(b.col)}" target="_blank" rel="noopener">Collection &nearr;</a>
+    </footer>
+    <div class="funpanel" hidden></div>
+  </article>`;
+}
+
+// Nothing loads until it is asked for: a collection typed in, or the blends
+// the connected wallet already holds pieces for. 25,000 recipes are open in
+// the sense that nobody closed them; nobody wants to scroll them.
+async function renderNefty() {
+  const grid = $('#neftyGrid');
+  if (!grid) return;
+  const idx = await neftyIndex();
+  if (!idx) { grid.innerHTML = '<div class="empty">The NeftyBlocks list is not built yet — it is made once a day.</div>'; return; }
+  const cols = idx.collections;
+  const known = new Map(cols.map(c => [c.col, c]));
+  let base = [], label = '', mineMode = false, have = null;
+  const count = $('#neftyCount');
+
+  const start = () => {
+    base = []; label = '';
+    if (count) count.textContent = `${idx.total.toLocaleString('en-US')} open blends in ${cols.length.toLocaleString('en-US')} collections`;
+    grid.innerHTML = '<div class="empty">Type a collection to see its blends, or show the blends you already hold pieces for.</div>';
+  };
+  const paint = () => {
+    if (count) count.textContent = label;
+    grid.innerHTML = base.length
+      ? `<div class="fungrid">${base.slice(0, 60).map(neftyCard).join('')}</div>${base.length > 60 ? `<p class="sub" style="margin:10px 0 0">Showing 60 of ${base.length.toLocaleString('en-US')}.</p>` : ''}`
+      : '<div class="empty">No open blend here.</div>';
+    grid.querySelectorAll('[data-neftygo]').forEach(btn => btn.onclick = () => {
+      const b = base.find(x => x.id === Number(btn.dataset.neftygo));
+      if (b) openNeftyPanel(btn.closest('.funcard'), b);
+    });
+  };
+  const loadCol = async col => {
+    const c = await neftyCollection(col);
+    if (c) Object.assign(neftyTpl, c.templates || {});
+    return c?.blends || [];
+  };
+  // Suggestions while typing: collections whose name contains the text, the
+  // most recently active first. A click, or an exact name, loads it.
+  const suggest = v => {
+    const hits = cols.filter(c => c.col.includes(v)).slice(0, 24);
+    grid.innerHTML = hits.length
+      ? `<div class="colpick">${hits.map(c => `<button class="chip" data-ncol="${esc(c.col)}">${esc(c.col)} <span class="dim">${c.n.toLocaleString('en-US')}</span></button>`).join('')}</div>`
+      : '<div class="empty">No collection with open blends by that name.</div>';
+    grid.querySelectorAll('[data-ncol]').forEach(b => b.onclick = () => { $('#neftySearch').value = b.dataset.ncol; showCol(b.dataset.ncol); });
+  };
+  const showCol = async col => {
+    mineMode = false; $('#neftyMine')?.setAttribute('aria-pressed', 'false');
+    grid.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the collection&hellip;</span></div>';
+    base = await loadCol(col);
+    label = `${base.length.toLocaleString('en-US')} open in ${col}`;
+    paint();
+  };
+
+  start();
+  const input = $('#neftySearch');
+  if (input) input.oninput = debounce(() => {
+    const v = input.value.trim().toLowerCase();
+    if (!v) return start();
+    if (known.has(v)) return showCol(v);
+    suggest(v);
+  }, 180);
+
+  // The blends a wallet holds at least one piece for, closest to complete
+  // first. One read of the wallet's NFTs, then only its own collections.
+  const mine = $('#neftyMine');
+  if (mine) mine.onclick = async () => {
+    if (mineMode) { mineMode = false; mine.setAttribute('aria-pressed', 'false'); return start(); }
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    mine.disabled = true;
+    grid.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading your NFTs&hellip;</span></div>';
+    try { have = have || await ownedAssets(wallet.account()); } catch { have = null; }
+    if (!have) { mine.disabled = false; grid.innerHTML = '<div class="err">Your NFTs did not load. Try again in a moment.</div>'; return; }
+    const myCols = [...new Set(have.map(a => a.collection))].filter(c => known.has(c))
+      .sort((x, y) => have.filter(a => a.collection === y).length - have.filter(a => a.collection === x).length).slice(0, 20);
+    grid.innerHTML = `<div class="loading"><span class="spinner"></span><span>Checking ${myCols.length} collection${myCols.length === 1 ? '' : 's'} you hold&hellip;</span></div>`;
+    const all = (await Promise.all(myCols.map(loadCol))).flat();
+    const fits = (i, a) => a.collection === i.collection && (i.kind === 'template' ? a.templateId === i.templateId : (i.kind === 'schema' || i.kind === 'attribute') ? a.schema === i.schema : true);
+    const scored = all.map(b => {
+      const pieces = b.ing.filter(i => i.kind !== 'ft');
+      const got = pieces.filter(i => have.filter(a => fits(i, a)).length >= i.count).length;
+      const any = pieces.some(i => have.some(a => fits(i, a)));
+      return { b, got, of: pieces.length, any };
+    }).filter(x => x.any).sort((x, y) => (y.got / y.of) - (x.got / x.of) || y.b.id - x.b.id);
+    base = scored.map(x => x.b);
+    label = `${base.length.toLocaleString('en-US')} blend${base.length === 1 ? '' : 's'} you hold pieces for · ${scored.filter(x => x.got === x.of).length} complete`;
+    mineMode = true; mine.disabled = false; mine.setAttribute('aria-pressed', 'true');
+    paint();
+  };
+}
+
+async function openNeftyPanel(card, b) {
+  const panel = card?.querySelector('.funpanel');
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span><span>Looking through your wallet…</span></div>';
+  const me = wallet.account();
+  const nft = b.ing.filter(i => i.kind !== 'ft');
+  const fun = b.ing.filter(i => i.kind === 'ft');
+  const candidates = new Map(), balances = new Map();
+  const [live] = await Promise.all([
+    neftyLive(b.id).catch(() => null),
+    ...nft.map(async i => candidates.set(i.index, me ? await neftyCandidates(me, i).catch(() => []) : [])),
+    ...fun.map(async i => balances.set(i.index, me ? await balanceOf(me, i.contract, i.symbol).catch(() => null) : null)),
+  ]);
+  if (panel.hidden) return;
+  const gone = live && live.left === 0;
+
+  const picks = new Map(nft.map(i => [i.index, []]));
+  const short = [];
+  for (const i of fun) { const h = balances.get(i.index); if (h != null && h < i.amount) short.push(`${qty(i.amount)} ${esc(i.symbol)} — you hold ${qty(h)}`); }
+  for (const i of nft) { const h = (candidates.get(i.index) || []).length; if (me && h < i.count) short.push(`${neftyIng(i)} — you have ${h}`); }
+
+  panel.innerHTML = `
+    <div class="funtrade">
+      ${gone ? '<div class="err">This recipe has been used up since the list was made.</div>' : ''}
+      ${!me ? '<p class="sub">Connect a wallet to see which of your NFTs fit.</p>' : ''}
+      ${short.length ? `<div class="err">You are short: ${short.join('; ')}.</div>` : ''}
+      ${fun.map(i => `<div class="blendneed"><span>${qty(i.amount)} <b>${esc(i.symbol)}</b> <span class="dim mono">${esc(i.contract)}</span></span>
+        <span class="dim">${balances.get(i.index) == null ? '' : `you hold ${qty(balances.get(i.index))}`}</span></div>`).join('')}
+      ${nft.map(i => {
+        const list = candidates.get(i.index) || [];
+        return `<div class="blendpick"><div class="blendneed"><span>Pick ${neftyIng(i)}</span><span class="dim" data-npicked="${i.index}">0 of ${i.count}</span></div>
+          ${list.length ? `<div class="assetrow">${list.map(a => `
+            <button class="assetchip" data-npick="${i.index}" data-asset="${esc(a.id)}" title="${esc(a.name)}${a.mint ? ` · mint #${a.mint}` : ''}">
+              ${a.image ? `<img src="${esc(ipfs(a.image))}" alt="" loading="lazy" onerror="this.style.display='none'">` : '<span class="ph">NFT</span>'}
+              <span class="an">${esc(a.name.slice(0, 18))}</span>${a.mint ? `<span class="am">#${esc(String(a.mint))}</span>` : ''}
+            </button>`).join('')}</div>` : `<p class="sub">${me ? 'Nothing in your wallet fits this one.' : 'Connect a wallet to pick.'}</p>`}
+        </div>`;
+      }).join('')}
+      <div class="buyresult"><span class="k">You get</span><b>${neftyGives(b)}</b>
+        <span class="sub">${b.rolls.some(r => r.outcomes.length > 1) ? 'A draw: the result lands in your wallet a few seconds after the blend.' : ''}${
+          b.ing.some(i => i.kind !== 'ft' && i.burn) ? ' The NFTs you hand over are burned.' : ''}</span></div>
+      <div id="neftyOut"></div>
+      <button class="btn" id="neftySign" ${gone ? 'disabled' : ''}>Review</button>
+    </div>`;
+
+  panel.querySelectorAll('[data-npick]').forEach(btn => btn.onclick = () => {
+    const ing = Number(btn.dataset.npick), id = btn.dataset.asset;
+    const want = b.ing[ing].count, cur = picks.get(ing);
+    const at = cur.indexOf(id);
+    if (at >= 0) cur.splice(at, 1); else if (cur.length < want) cur.push(id); else { cur.shift(); cur.push(id); }
+    panel.querySelectorAll(`[data-npick="${ing}"]`).forEach(x => x.setAttribute('aria-pressed', String(cur.includes(x.dataset.asset))));
+    const n = panel.querySelector(`[data-npicked="${ing}"]`);
+    if (n) n.textContent = `${cur.length} of ${want}`;
+  });
+
+  const go = panel.querySelector('#neftySign');
+  if (go) go.onclick = async () => {
+    const box = panel.querySelector('#neftyOut');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const account = wallet.account();
+    let proof = null, actions;
+    try {
+      const handing = [...picks.values()].flat();
+      if (b.security) proof = await neftyProof(account, b.security, handing);
+      actions = buildNeftyBlend({ account, blend: b, picks: Object.fromEntries(picks), proof });
+    } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    const burns = b.ing.some(i => i.kind !== 'ft' && i.burn);
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Hand over ${b.ing.map(i => `<b>${neftyIng(i)}</b>`).join(' and ')} for ${neftyGives(b)}.
+      <br><span class="dim">${burns ? 'The NFTs are burned by the contract and cannot come back. ' : ''}Everything happens in one transaction, or none of it does.</span>
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="neftyDo">Sign and blend</button></div></div>`;
+    panel.querySelector('#neftyDo').onclick = () => runStakeTx(box, actions, 'Blended. What it gave you is in your wallet, or on its way if it was a draw.');
+  };
 }
 
 // ------------------------------------------------------ WAX.FUN TOKEN PAGE --
