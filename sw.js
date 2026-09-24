@@ -6,9 +6,10 @@
 //                     never stale: cache first, and old versions are dropped
 //                     when a new worker takes over.
 //   data/logos        change a few times a year: cache first.
-//   data/*.json and   the page itself: network first, the last good copy when
-//   navigations       the network is slow or gone. The numbers on screen are
-//                     never older than the connection allows.
+//   data/*.json       network first, the last good copy when the network is
+//                     slow or gone. The numbers on screen are never older
+//                     than the connection allows.
+//   the page itself   not touched: the browser loads it (see below).
 // Everything cross-origin (chain nodes, Alcor, IPFS) is left alone: those are
 // live answers, and a cached one would be a wrong one.
 // =============================================================================
@@ -20,7 +21,7 @@ const LOGOS = 'wedge-logos';
 const NET_TIMEOUT_MS = 4000;
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(['./', 'theme.json', 'theme.css'])).catch(() => {}));
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(['theme.json', 'theme.css'])).catch(() => {}));
   self.skipWaiting();
 });
 
@@ -63,12 +64,11 @@ self.addEventListener('fetch', e => {
   if (url.origin !== self.location.origin) return;
   const path = url.pathname;
 
-  if (req.mode === 'navigate') {
-    // A deep link is answered by 404.html, which bounces to the root; only the
-    // root itself has a sensible offline fallback.
-    e.respondWith(networkFirst(req, SHELL, path.endsWith('/') ? './' : null));
-    return;
-  }
+  // The page itself is never answered from here. Safari's home-screen apps
+  // showed a black screen or "cannot open the page" when the worker answered
+  // navigations; the browser loads the page as it always did, and the worker
+  // only speeds up what the page then asks for.
+  if (req.mode === 'navigate' || req.destination === 'document') return;
   if (path.includes('/data/logos/')) { e.respondWith(cacheFirst(req, LOGOS)); return; }
   if (path.includes('/data/')) { e.respondWith(networkFirst(req, DATA)); return; }
   if (url.searchParams.has('v') || path.includes('/brand/')) { e.respondWith(cacheFirst(req, SHELL)); return; }
