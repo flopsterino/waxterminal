@@ -56,6 +56,22 @@ export async function waxdaoFarms({ maxAgeMs = 5 * 60 * 1000 } = {}) {
   return farmCache;
 }
 
+// How many accounts stake in one farm. The farms table carries the NFT count
+// but not the people, so the Staking page showed "—" under Stakers for every
+// WaxDAO farm. The stakers table has one row per (user, farm) and its fourth
+// index is the farm name, so a count is one query. Every row of one farm shares
+// that key, which means there is no paging past the first answer — a farm with
+// more than that comes back as a floor ("1,000+"), not a made-up total.
+const stakerCounts = new Map();
+export function waxdaoStakerCount(farm) {
+  if (!stakerCounts.has(farm)) {
+    stakerCounts.set(farm, getRows(CONTRACT, CONTRACT, 'stakers', { lower: farm, upper: farm, indexPosition: 4, keyType: 'name', limit: 1000 })
+      .then(d => ({ n: (d.rows || []).filter(r => r.farmname === farm).length, more: !!d.more }))
+      .catch(() => null));
+  }
+  return stakerCounts.get(farm);
+}
+
 export async function waxdaoStakes(account) {
   let rows = [];
   try {

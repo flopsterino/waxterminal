@@ -66,9 +66,12 @@ export async function fusionState({ now = Date.now() } = {}) {
   const nextEpoch = epochs.filter(e => e.windowFrom > now).sort((a, b) => a.windowFrom - b.windowFrom)[0] || null;
 
   // Synthetix-shaped reward accounting: a rate per second against the staked
-  // total. Both sides are in the same 1e-8 units, so the scaling cancels and
-  // only the rate's own 1e6 has to come off.
-  const rate = r ? Number(r.rewardRate) / 1e6 : 0;
+  // total, both in 1e-8 units. The rate carries its own scale of 1e3, not 1e6:
+  // read as 1e6 it pays the 3.1M staked sWAX 0.83 WAX a day and the page said
+  // 0.01% a year, while the contract's own totals show stakers paid 1.01M WAX
+  // over 779 days — 1,299 a day. At 1e3 the current rate is 829 WAX a day,
+  // 9.7% a year, under the 12% cap it is meant to sit under.
+  const rate = r ? Number(r.rewardRate) / 1e3 : 0;
   const supply = r ? Number(r.totalSupply) : 0;
   const aprPct = supply > 0 ? (rate * 31536000 / supply) * 100 : null;
 

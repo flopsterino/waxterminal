@@ -26,7 +26,7 @@ import { waxfunTokens, waxfunToken, waxfunTrades, buildWaxfunBuy, buildWaxfunSel
 import { stakeInfo, claimHistory, observedApr } from './stake.js';
 import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './resources.js';
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
-import { waxdaoStakes, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
+import { waxdaoStakes, waxdaoStakerCount, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
   buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
@@ -2852,7 +2852,7 @@ async function renderStaking() {
       <div class="stakes">${takes}</div>
       <footer>
         ${fig('Staked', r.stakedUsd > 0 ? usd(r.stakedUsd) : esc(r.stakedLabel))}
-        ${fig('Stakers', r.users != null ? r.users.toLocaleString() : '—', r.users ? '' : 'dim')}
+        ${fig('Stakers', r.users != null ? r.users.toLocaleString() : `<span data-wdstakers="${esc(r.venue === 'waxdao' ? r.id : '')}">—</span>`, r.users ? '' : 'dim')}
         ${fig('Runs', endTxt, ends != null && ends >= 0 && ends < 7 ? 'neg' : '')}
       </footer>
     </article>`;
@@ -2863,8 +2863,25 @@ async function renderStaking() {
     el.onclick = rowClick(() => open(el));
     el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(el); } };
   });
-  $('#stakeNote').innerHTML = `Read live from <span class="mono">pepperstake</span> and <span class="mono">farms.waxdao</span>.
-    PepperStake's own site is down; its pools are not, and WaxDAO's front end is gone for good.`;
+  $('#stakeNote').innerHTML = '';
+  fillWaxdaoStakers(grid);
+}
+
+// Staker counts for the WaxDAO farms on screen, a few at a time, written into
+// the cards as they land. One query per farm, cached for the session.
+function fillWaxdaoStakers(root) {
+  const slots = [...root.querySelectorAll('[data-wdstakers]')].filter(el => el.dataset.wdstakers);
+  let next = 0;
+  const work = async () => {
+    while (next < slots.length) {
+      const el = slots[next++];
+      const got = await waxdaoStakerCount(el.dataset.wdstakers);
+      if (!got || !el.isConnected) continue;
+      el.textContent = got.more ? `${got.n.toLocaleString()}+` : got.n.toLocaleString();
+      el.closest('.v')?.classList.toggle('dim', !got.n);
+    }
+  };
+  for (let i = 0; i < 4; i++) work();
 }
 
 function wireStaking() {
@@ -3172,7 +3189,7 @@ async function renderAds() {
         <div><span class="k">Runs</span><b>24h from 14:00 UTC</b></div>
         <div><span class="k">Book</span><b>48h ahead</b><span class="dim"> &middot; 12h to join a shared spot</span></div>
       </div>
-      <p class="sub" style="margin:10px 0 0">Two spots a day, shown on CheeseHub and on every page here. Paid on chain to <span class="mono">cheesebannad</span>, CheeseHub&rsquo;s contract. Images are 580&times;150.</p>
+      <p class="sub" style="margin:10px 0 0">Shown on CheeseHub and on every page here &middot; 580&times;150.</p>
     </div>
 
     <div class="card" style="margin-top:12px">
@@ -4384,6 +4401,9 @@ function fusionTimeline(st) {
 // because the one thing that costs money is missing a redemption window.
 let fusionGen = 0;
 
+// A redemption window, the way every other date here is written, in UTC.
+const fusionWhen = ms => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
 async function renderFusion() {
   const out = $('#fusionOut');
   if (!out) return;
@@ -4400,9 +4420,9 @@ async function renderFusion() {
   const inUsd = wax => (waxUsd ? usd(wax * waxUsd) : `${qty(wax)} WAX`);
   const win = st.openEpoch || st.nextEpoch;
   const windowLine = st.openEpoch
-    ? `<b class="pos">A redemption period is open</b> until ${new Date(st.openEpoch.windowTo).toLocaleString()} &mdash; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
+    ? `<b class="pos">Redemption period open</b> until ${fusionWhen(st.openEpoch.windowTo)} &middot; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
     : st.nextEpoch
-      ? `The next redemption period opens ${new Date(st.nextEpoch.windowFrom).toLocaleString()} &mdash; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}, and lasts ${forDays(st.windowSeconds / 86400)}`
+      ? `Next redemption period opens ${fusionWhen(st.nextEpoch.windowFrom)} &middot; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}`
       : 'No redemption period is scheduled in what the contract still holds.';
 
   // The shape of the thing, drawn once so the words underneath have something
@@ -4523,7 +4543,7 @@ async function drawFusionPrice(st) {
   if (nowPrice == null && !series.length) return;
   card.hidden = false;
   const gap = nowPrice != null ? (nowPrice / st.lswaxInSwax - 1) * 100 : null;
-  if (sub) sub.innerHTML = '&mdash; premium or discount, day by day';
+  if (sub) sub.innerHTML = '';
   // The price itself is a flat line with the whole story in its last decimal.
   // What anyone is actually asking is how far off the backing it traded, so
   // that is what is drawn: one bar a day, above the line or below it.
@@ -8386,7 +8406,7 @@ async function renderLeaders() {
   $('#ldStats').innerHTML = `
     <div class="stat"><span class="v">${(sc.accounts || 0).toLocaleString()}</span><span class="k">liquidity providers</span><span class="sub">across ${(sc.pools || 0).toLocaleString()} pools</span></div>
     <div class="stat"><span class="v">${(sc.positions || 0).toLocaleString()}</span><span class="k">positions read</span></div>
-    <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts${sc.swapsUnvalued ? ` &middot; ${sc.swapsUnvalued.toLocaleString()} more this terminal will not price` : ''}</span></div>
+    <div class="stat"><span class="v">${usd(sc.volumeUsd || 0)}</span><span class="k">traded in 24h</span><span class="sub">${(sc.swaps || 0).toLocaleString()} swaps by ${(sc.traders || 0).toLocaleString()} accounts${sc.swapsUnvalued ? ` &middot; ${sc.swapsUnvalued.toLocaleString()} unpriced` : ''}</span></div>
     <div class="stat"><span class="v">${d.at ? ago(new Date(d.at).toISOString()) : '—'}</span><span class="k">last built</span></div>`;
 
   // Positions at the burn account are still left off the boards — the builder
@@ -8445,7 +8465,7 @@ async function renderLeaders() {
           <div><dt>Half of it is held by</dt><dd><b>${half}</b> <span class="dim">account${half === 1 ? '' : 's'}</span></dd></div>
           <div><dt>Counted here</dt><dd>${rows.length.toLocaleString()} accounts &middot; ${esc(String(fmt0(total)))} between them</dd></div>
         </dl>
-        <p class="sub" style="margin:8px 0 0">${esc(cfg.note)}</p>
+
       </div>
     </div>
     <div class="tablewrap"><table><thead><tr>
