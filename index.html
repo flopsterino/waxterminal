@@ -9,6 +9,13 @@
 // it is the only reliable moment to pin every relative asset to it. Then the
 // deep link is put back without a reload.
 (function () {
+  // The old address keeps working, but only as a way to the new one: every
+  // path, query and hash is carried over, so a shared link lands where it
+  // pointed.
+  if (location.hostname === 'flopsterino.github.io') {
+    location.replace('https://waxedge.app' + location.pathname.replace(/^\/waxterminal/, '') + location.search + location.hash);
+    return;
+  }
   var b = document.createElement('base');
   b.href = location.pathname.replace(/[^/]*$/, '');
   document.head.appendChild(b);
@@ -25,10 +32,10 @@
 <meta property="og:site_name" content="WaxEDGE">
 <meta property="og:title" content="WaxEDGE — DeFi terminal for WAX">
 <meta property="og:description" content="Pools, farms, tokens and your own positions across WAX, read straight from chain.">
-<meta property="og:image" content="https://flopsterino.github.io/waxterminal/brand/og.png">
+<meta property="og:image" content="https://waxedge.app/brand/og.png">
 <meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://flopsterino.github.io/waxterminal/brand/og.png">
+<meta name="twitter:image" content="https://waxedge.app/brand/og.png">
 <meta name="theme-color" content="#0B0E11">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

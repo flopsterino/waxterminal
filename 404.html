@@ -5,6 +5,10 @@
 // /waxterminal/market/alcor:314 arrives here. Park it and hand control to
 // index.html, which is what makes real paths work at all.
 (function () {
+  if (location.hostname === 'flopsterino.github.io') {
+    location.replace('https://waxedge.app' + location.pathname.replace(/^\/waxterminal/, '') + location.search + location.hash);
+    return;
+  }
   var views = ['', 'overview', 'markets', 'pools', 'farms', 'tokens', 'staking',
     'wallet', 'activity', 'leaders', 'market', 'token', 'farm', 'account', 'advertise', 'apps', 'old', 'waxfun'];
   var parts = location.pathname.split('/');
