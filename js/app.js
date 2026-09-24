@@ -13,6 +13,7 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
 import { drawShareCard, shareOrSave } from './sharecard.js';
+import { livePair, quoteV2, buildV2Add, buildV2Remove } from './v2lp.js';
 import { neftyIndex, neftyCollection, neftyLive, neftyCandidates, neftyProof, buildNeftyBlend } from './nefty.js';
 import { debounce } from './router.js';
 import { STABLES } from './price.js';
@@ -5259,11 +5260,8 @@ function wireWallet() {
     if (a && lastView === 'wallet') autoWallet();
   });
   $('#walletGo').onclick = () => lookupWallet($('#walletInput').value.trim());
-  $('#walletNewPos').onclick = async () => {
-    const who = $('#walletInput').value.trim() || wallet.account();
-    if (!who) { alert('Enter your account, or connect a wallet.'); return; }
-    renderNewPosition(who);
-  };
+  $('#walletNewPos').onclick = () => openPositionFlow();
+  $('#marketsOpenPos')?.addEventListener('click', () => openPositionFlow());
   $('#walletInput').onkeydown = e => { if (e.key === 'Enter') lookupWallet(e.target.value.trim()); };
   // No demo button. It held a stranger's account name, and pointing thousands
   // of visitors at someone's wallet because it made a convenient example is not
@@ -7121,7 +7119,7 @@ function positionCard(p, mine = false) {
     <div class="lpbox" data-lpbox="${p.posId}"></div></article>`;
 }
 
-function tacoCard(p) {
+function tacoCard(p, mine = false) {
   const pool = p.pool;
   const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
   const tot = vA + vB;
@@ -7148,8 +7146,165 @@ function tacoCard(p) {
         tacoDay > 0 ? '<span class="figsub">trading fees</span>' : ''}</div>
       <div class="fig"><span class="k">Fee tier</span><span class="v">${(pool.feeBps / 100).toFixed(2)}%</span></div>
     </div>
-    <footer class="pc-act"><a class="plink" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">Open the pool on TacoSwap &nearr;</a></footer>
+    <footer class="pc-act">
+      ${mine ? `<span class="dim" style="font-size:12px">Take out</span>
+      ${[25, 50, 100].map(pc => `<button class="btn ${pc === 100 ? '' : 'ghost'}" data-tacoout="${esc(pool.id)}:${pc}">${pc === 100 ? 'All' : `${pc}%`}</button>`).join('')}` : ''}
+      <a class="plink" href="${venueUrl.taco(pool)}" target="_blank" rel="noopener">TacoSwap &nearr;</a></footer>
+    <div class="neftyoutbox"></div>
   </article>`;
+}
+
+// ------------------------------------------------------ OPEN A POSITION ----
+// One way in for every venue: pick the exchange, then the two tokens, then the
+// pool, and only then the deposit. A list of every pool was never the way to
+// find one; two tokens are. The second field only offers tokens that actually
+// have a pool with the first on that exchange, so no path ends at "no pool".
+const VENUES = [
+  { dex: 'alcor', name: 'Alcor', sub: 'concentrated — you choose the price range' },
+  { dex: 'taco', name: 'TacoSwap', sub: 'classic 50/50 pool' },
+  { dex: 'nefty', name: 'NeftyBlocks', sub: 'classic 50/50 pool' },
+];
+
+function openPositionFlow(preset = {}) {
+  document.querySelector('.posflowmodal')?.remove();
+  const m = document.createElement('div');
+  m.className = 'sharemodal posflowmodal';
+  m.innerHTML = '<div class="sharebox posflowbox" role="dialog" aria-label="Open a position"></div>';
+  document.body.appendChild(m);
+  const box = m.querySelector('.posflowbox');
+  const close = () => m.remove();
+  m.addEventListener('click', e => { if (e.target === m) close(); });
+
+  let dex = preset.pool?.dex || preset.dex || null, tokA = null, tokB = null, pool = preset.pool || null;
+  if (pool) { tokA = pool.tokenA; tokB = pool.tokenB; }
+  const poolsOf = d => state.pools.filter(p => p.dex === d && p.active !== false && p.reserveA > 0 && p.reserveB > 0 && (d !== 'alcor' || p.sqrtX64));
+  const tokName = id => { const t = state.tokens.get(id); return t ? t.symbol : id.split('@')[0]; };
+  const tokChip = id => `<span data-pm="${esc(id)}|${esc(tokName(id))}"></span><b>${esc(tokName(id))}</b> <span class="dim mono">${esc(id.split('@')[1] || '')}</span>`;
+
+  const render = () => {
+    const pools = dex ? poolsOf(dex) : [];
+    const tvlOf = p => p.tvlReal ?? p.tvl ?? 0;
+    // Counterparts of A on this venue, the deepest first.
+    const partners = tokA ? [...new Map(pools.filter(p => p.tokenA === tokA || p.tokenB === tokA)
+      .sort((x, y) => tvlOf(y) - tvlOf(x)).map(p => [p.tokenA === tokA ? p.tokenB : p.tokenA, p])).keys()] : [];
+    const matches = tokA && tokB ? pools.filter(p => (p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA))
+      .sort((x, y) => tvlOf(y) - tvlOf(x)) : [];
+    box.innerHTML = `
+      <div class="pfhead"><h3>Open a position</h3><button class="btn ghost" data-pfclose>Close</button></div>
+      <div class="pfstep"><span class="pfn">1</span><div class="pfbody"><div class="pflab">Exchange</div>
+        <div class="pfvenues">${VENUES.map(v => `<button class="pfvenue" data-pfdex="${v.dex}" aria-pressed="${dex === v.dex}">
+          <b>${v.name}</b><span class="dim">${v.sub}</span><span class="dim">${poolsOf(v.dex).length.toLocaleString('en-US')} pools</span></button>`).join('')}</div></div></div>
+      ${dex ? `<div class="pfstep"><span class="pfn">2</span><div class="pfbody"><div class="pflab">Tokens</div>
+        <div class="pftoks">
+          <div class="pftok">${tokA ? `<button class="chip pfpicked" data-pfclear="a">${tokChip(tokA)} &times;</button>`
+            : '<input class="search" data-pfsearch="a" placeholder="First token — CHEESE, WAX, …" autocomplete="off" spellcheck="false"><div class="pfsugg" data-pfsugg="a"></div>'}</div>
+          ${tokA ? `<div class="pftok">${tokB ? `<button class="chip pfpicked" data-pfclear="b">${tokChip(tokB)} &times;</button>`
+            : `<input class="search" data-pfsearch="b" placeholder="Paired with…" autocomplete="off" spellcheck="false"><div class="pfsugg" data-pfsugg="b"></div>`}</div>` : ''}
+        </div></div></div>` : ''}
+      ${tokA && tokB ? `<div class="pfstep"><span class="pfn">3</span><div class="pfbody"><div class="pflab">Pool</div>
+        ${matches.length ? `<div class="pfpools">${matches.map(p => `<button class="pfpool" data-pfpool="${esc(p.id)}" aria-pressed="${pool && String(pool.id) === String(p.id) && pool.dex === p.dex}">
+          <b>${esc(p.symA)}/${esc(p.symB)}</b><span>${(p.feeBps / 100).toFixed(2)}% fee</span>
+          <span>${usd(tvlOf(p))} in it</span><span class="dim">${p.vol24 > 0 ? `${usd(p.vol24)} traded 24h` : 'quiet'}</span></button>`).join('')}</div>`
+          : '<div class="empty">No pool for this pair on this exchange.</div>'}</div></div>` : ''}
+      ${pool ? `<div class="pfstep"><span class="pfn">4</span><div class="pfbody"><div class="pflab">Deposit</div><div class="pfdeposit"></div></div></div>` : ''}`;
+    fillMarks(box);
+    box.querySelector('[data-pfclose]').onclick = close;
+    box.querySelectorAll('[data-pfdex]').forEach(b => b.onclick = () => { dex = b.dataset.pfdex; tokA = tokB = null; pool = null; render(); });
+    box.querySelectorAll('[data-pfclear]').forEach(b => b.onclick = () => { if (b.dataset.pfclear === 'a') tokA = null; tokB = null; pool = null; render(); });
+    box.querySelectorAll('[data-pfpool]').forEach(b => b.onclick = () => { pool = matches.find(p => String(p.id) === b.dataset.pfpool); render(); });
+    // Suggestions: A from every token with a pool on this venue, B from A's partners.
+    box.querySelectorAll('[data-pfsearch]').forEach(inp => {
+      const which = inp.dataset.pfsearch;
+      const all = which === 'a'
+        ? [...new Set(pools.flatMap(p => [p.tokenA, p.tokenB]))].sort((x, y) => {
+          const d = t => pools.filter(p => p.tokenA === t || p.tokenB === t).reduce((s2, p) => s2 + tvlOf(p), 0);
+          return d(y) - d(x);
+        })
+        : partners;
+      const sugg = box.querySelector(`[data-pfsugg="${which}"]`);
+      const paint = () => {
+        const q = inp.value.trim().toLowerCase();
+        const hits = all.filter(id => !q || id.toLowerCase().includes(q)).slice(0, 18);
+        sugg.innerHTML = hits.length ? hits.map(id => `<button class="chip" data-pftok="${esc(id)}">${tokChip(id)}</button>`).join('')
+          : `<span class="dim">${which === 'b' ? 'No pool pairs these on this exchange.' : 'No token by that name has a pool here.'}</span>`;
+        fillMarks(sugg);
+        sugg.querySelectorAll('[data-pftok]').forEach(c => c.onclick = () => {
+          if (which === 'a') { tokA = c.dataset.pftok; tokB = null; } else tokB = c.dataset.pftok;
+          pool = null;
+          render();
+          if (tokA && tokB) { const only = poolsOf(dex).filter(p => (p.tokenA === tokA && p.tokenB === tokB) || (p.tokenA === tokB && p.tokenB === tokA)); if (only.length === 1) { pool = only[0]; render(); } }
+        });
+      };
+      inp.oninput = debounce(paint, 120);
+      paint();
+      setTimeout(() => inp.focus(), 30);
+    });
+    const dep = box.querySelector('.pfdeposit');
+    if (dep && pool) {
+      if (pool.dex === 'alcor') renderNewPosition(wallet.account() || '', pool.id, dep);
+      else renderV2Deposit(dep, pool).catch(e => { dep.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
+    }
+  };
+  render();
+}
+
+// Adding to a TacoSwap or NeftyBlocks pair: one amount typed, the other in the
+// pool's ratio as the chain holds it right now, and the LP tokens it buys.
+async function renderV2Deposit(box, pool) {
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the pair…</span></div>';
+  const pair = await livePair(pool);
+  const me = wallet.account();
+  const [balA, balB] = await Promise.all([
+    me ? balanceOf(me, pair.a.contract, pair.a.symbol).catch(() => null) : null,
+    me ? balanceOf(me, pair.b.contract, pair.b.symbol).catch(() => null) : null,
+  ]);
+  const price = pair.b.amount / pair.a.amount;
+  box.innerHTML = `
+    <p class="sub" style="margin:0 0 10px">1 ${esc(pair.a.symbol)} = ${sigfig(price)} ${esc(pair.b.symbol)} in this pool right now. Both go in at that ratio.</p>
+    <div class="v2in">
+      <label><span>${esc(pair.a.symbol)}</span><input type="number" min="0" step="any" data-v2="a" placeholder="0">
+        ${balA != null ? `<button class="xlink" data-v2max="a">you hold ${qty(balA)}</button>` : ''}</label>
+      <label><span>${esc(pair.b.symbol)}</span><input type="number" min="0" step="any" data-v2="b" placeholder="0">
+        ${balB != null ? `<button class="xlink" data-v2max="b">you hold ${qty(balB)}</button>` : ''}</label>
+    </div>
+    <div class="v2quote dim">Type an amount of either one.</div>
+    <div class="v2out"></div>
+    <button class="btn" data-v2go disabled>Review</button>`;
+  let quote = null;
+  const inA = box.querySelector('[data-v2="a"]'), inB = box.querySelector('[data-v2="b"]');
+  const setFrom = side => {
+    const v = Number((side === 'a' ? inA : inB).value);
+    const go = box.querySelector('[data-v2go]');
+    quote = null; go.disabled = true;
+    if (!(v > 0)) { box.querySelector('.v2quote').textContent = 'Type an amount of either one.'; return; }
+    try { quote = quoteV2(pair, side, v); } catch (e) { box.querySelector('.v2quote').innerHTML = `<span class="neg">${esc(e.message)}</span>`; return; }
+    (side === 'a' ? inB : inA).value = String(side === 'a' ? quote.b : quote.a);
+    const short = (balA != null && quote.a > balA) || (balB != null && quote.b > balB);
+    box.querySelector('.v2quote').innerHTML = `You get <b>${quote.lp.toLocaleString('en-US', { maximumFractionDigits: pair.lpDecimals })} ${esc(pair.code)}</b> LP — ${(quote.shareAfter * 100).toPrecision(3)}% of the pool${
+      short ? ' · <span class="neg">more than you hold</span>' : ''}`;
+    go.disabled = !(quote.lp > 0) || short;
+  };
+  inA.oninput = () => setFrom('a');
+  inB.oninput = () => setFrom('b');
+  box.querySelectorAll('[data-v2max]').forEach(b => b.onclick = () => {
+    const side = b.dataset.v2max;
+    // The most of both that fits: whichever side runs out first sets it.
+    const byA = balA ?? 0, byB = (balB ?? 0) * pair.a.amount / pair.b.amount;
+    inA.value = String(Math.min(byA, byB));
+    setFrom('a');
+    if (side === 'b' && balB != null && (balA == null || byB <= byA)) { inB.value = String(balB); setFrom('b'); }
+  });
+  box.querySelector('[data-v2go]').onclick = async () => {
+    const out = box.querySelector('.v2out');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    let actions;
+    try { actions = await buildV2Add({ account: wallet.account(), pair, quote }); } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+      Put <b>${qty(quote.a)} ${esc(pair.a.symbol)}</b> and <b>${qty(quote.b)} ${esc(pair.b.symbol)}</b> into the ${pool.dex === 'taco' ? 'TacoSwap' : 'NeftyBlocks'} pool for
+      <b>${quote.lp.toLocaleString('en-US', { maximumFractionDigits: pair.lpDecimals })} ${esc(pair.code)}</b> LP. Anything that does not fit the ratio comes straight back.
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-v2do>Sign and deposit</button></div></div>`;
+    out.querySelector('[data-v2do]').onclick = () => runStakeTx(out, actions, 'Deposited. The LP tokens are in your wallet; the position shows under My wallet → LP.');
+  };
 }
 
 // A NeftyBlocks position. Its site is gone, so taking liquidity out is here:
@@ -7370,7 +7525,7 @@ async function lookupWallet(account) {
   html += '<div id="posList"><div class="grid g2">';
   const mine = isMine(account);
   for (const p of res.alcor) html += positionCard(p, mine);
-  for (const p of res.taco) html += tacoCard(p);
+  for (const p of res.taco) html += tacoCard(p, mine);
   for (const p of res.nefty) html += neftyLpCard(p, mine);
   html += '</div><div class="empty filternone" hidden>No position matches.</div></div>';
   out.innerHTML = html;
@@ -7404,6 +7559,27 @@ async function lookupWallet(account) {
   // position stays where it is and stays yours; staking only tells the pool's
   // incentive to count it. Nothing here can move it.
   wireJoinFarm(out, account);
+
+  // Taking liquidity out of a TacoSwap pair: remliquidity with a share of the
+  // LP tokens held, the LP precision read from the live pair.
+  out.querySelectorAll('[data-tacoout]').forEach(b => b.onclick = async () => {
+    const [id, pcS] = b.dataset.tacoout.split(':');
+    const p = res.taco.find(x => String(x.pool.id) === id);
+    const box = b.closest('.poscard')?.querySelector('.neftyoutbox');
+    if (!p || !box) return;
+    box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the pair…</span></div>';
+    let pair;
+    try { pair = await livePair(p.pool); } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    const pc = Number(pcS) / 100;
+    const lp = pc >= 1 ? p.balance : Math.floor(p.balance * pc * 10 ** pair.lpDecimals) / 10 ** pair.lpDecimals;
+    const got = lp / pair.supply;
+    box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft);margin-top:10px">
+      Sell ${qty(lp)} ${esc(id)} LP back to TacoSwap and receive about
+      <b>${qty(pair.a.amount * got)} ${esc(pair.a.symbol)}</b> and <b>${qty(pair.b.amount * got)} ${esc(pair.b.symbol)}</b>.
+      <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-tacodo>Sign and take out</button></div></div>`;
+    box.querySelector('[data-tacodo]').onclick = () => runStakeTx(box,
+      buildV2Remove({ account, dex: 'taco', code: id, lp, lpDecimals: pair.lpDecimals }), 'Taken out. Both tokens are back in your wallet.');
+  });
 
   // Taking liquidity out of a NeftyBlocks pair: LP tokens back to swap.nefty.
   out.querySelectorAll('[data-neftyout]').forEach(b => b.onclick = () => {
@@ -11338,7 +11514,11 @@ async function openPool(key) {
   // someone to another site, or another page, is a step at which most people
   // stop.
   const add = $('#poolAddLiq');
-  if (add) add.onclick = () => {
+  // Taco and NeftyBlocks pools have no panel on this page; the flow opens at
+  // their deposit step. Defibox and A-DEX are read here, not deposited into.
+  if (add && !['alcor', 'taco', 'nefty'].includes(p.dex)) add.remove();
+  if (add && (p.dex === 'taco' || p.dex === 'nefty')) add.onclick = () => openPositionFlow({ pool: p });
+  else if (add) add.onclick = () => {
     const target = $('#farmZap') || $('#farmParts');
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     $('#zapAmt')?.focus();

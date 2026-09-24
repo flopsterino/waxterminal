@@ -2240,3 +2240,31 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .colpick .chip .dim { margin-left: 4px; }
 
 .venue.nefty { color: var(--c7); border-color: color-mix(in oklch, var(--c7) 45%, transparent); }
+
+/* Open a position: exchange, tokens, pool, deposit — one step under the other. */
+.posflowmodal { align-items: start; overflow-y: auto; }
+.posflowbox { width: min(980px, 100%); margin: 4vh auto; }
+.pfhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.pfhead h3 { margin: 0; }
+.pfstep { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+.pfn { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-weight: 700; font-size: 12px; }
+.pfbody { flex: 1; min-width: 0; }
+.pflab { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 3px 0 8px; }
+.pfvenues, .pfpools { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.pfvenue, .pfpool { text-align: left; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r); padding: 10px 12px; color: var(--ink); cursor: pointer; display: flex; flex-direction: column; gap: 3px; font: inherit; font-size: 13px; }
+.pfvenue[aria-pressed="true"], .pfpool[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.pftoks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 640px) { .pftoks { grid-template-columns: 1fr; } }
+.pftok .search { width: 100%; }
+.pfsugg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 190px; overflow-y: auto; }
+.pfsugg .chip, .pfpicked { display: inline-flex; align-items: center; gap: 5px; }
+.v2in { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 640px) { .v2in { grid-template-columns: 1fr; } }
+.v2in label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.v2in input { background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r); padding: 9px 10px; color: var(--ink); font: 600 15px var(--font-data); }
+.v2in .xlink { background: none; border: 0; padding: 0; text-align: left; color: var(--accent-ink); cursor: pointer; font-size: 12px; }
+.v2quote { margin: 10px 0; font-size: 13px; }
+
+/* Inside the flow the builder does not need its own "Open a position" heading. */
+.pfdeposit .card > h3:first-child, .pfdeposit .section > h3:first-child { display: none; }
+.pfdeposit > .card { border: 0; padding: 0; background: none; }
