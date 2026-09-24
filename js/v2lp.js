@@ -106,3 +106,56 @@ export function buildV2Remove({ account, dex, code, lp, lpDecimals = 0, auth = n
   if (dex === 'taco') return [{ account: TACO, name: 'remliquidity', authorization: au, data: { user: account, to_sell: fmt(lp, lpDecimals, code) } }];
   return [{ account: NEFTY_LP, name: 'transfer', authorization: au, data: { from: account, to: NEFTY, quantity: `${Math.floor(lp)} ${code}`, memo: '' } }];
 }
+
+// ---- zap: one of the pair's own tokens, straight in -----------------------
+// Swap the right part of it in this same pool, then deposit both halves — in
+// one transaction, so the pool the deposit meets is exactly the pool the swap
+// left behind. The part to swap is the classic single-sided split for a
+// constant-product pool with fee f:
+//     s = ( sqrt( ((2-f)·R)² + 4(1-f)·R·amount ) − (2-f)·R ) / ( 2(1-f) )
+// after which the rest of the token and what the swap returned sit in the
+// pool's new ratio. Swap memos, read off real swaps:
+//   swap.taco    "<min out>@<contract>"           e.g. "0.00000019 WAX@eosio.token"
+//   swap.nefty   "swap:<pair>,min:<raw min out>"  e.g. "swap:BANLFG,min:3673"
+// The deposit uses the guaranteed minimum of what the swap returns, so it can
+// never ask for more than arrived; anything above that stays in the wallet.
+const GUARD = 0.995;   // the swap's floor, and so the deposit's
+
+export function planV2Zap(pair, side, amount, { feeBps = 30, zapFeeBps = 0 } = {}) {
+  if (!(pair.a.amount > 0) || !(pair.b.amount > 0) || !(pair.supply > 0)) throw new Error('This pair is empty; there is nothing to zap into.');
+  const X = side === 'a' ? pair.a : pair.b, Y = side === 'a' ? pair.b : pair.a;
+  const f = feeBps / 10000;
+  const fee = Math.floor(amount * zapFeeBps / 10000 * 10 ** X.decimals) / 10 ** X.decimals;
+  const amt = amount - fee;
+  const R = X.amount;
+  let s = (Math.sqrt(((2 - f) * R) ** 2 + 4 * (1 - f) * R * amt) - (2 - f) * R) / (2 * (1 - f));
+  s = Math.floor(s * 10 ** X.decimals) / 10 ** X.decimals;
+  const out = Y.amount * s * (1 - f) / (R + s * (1 - f));
+  const minOut = Math.floor(out * GUARD * 10 ** Y.decimals) / 10 ** Y.decimals;
+  if (!(s > 0) || !(minOut > 0)) throw new Error('Too small to split: the swap would return less than one unit.');
+  // The pool as the swap leaves it, and the deposit that fits it.
+  const rX = R + s, rY = Y.amount - out;
+  const needX = minOut * rX / rY;
+  const depX = Math.floor(Math.min(amt - s, needX * 1.0005) * 10 ** X.decimals) / 10 ** X.decimals;
+  const share = Math.min(depX / rX, minOut / rY);
+  const lp = Math.floor(pair.supply * share * 0.9995 * 10 ** pair.lpDecimals) / 10 ** pair.lpDecimals;
+  return { side, from: X, to: Y, fee, swap: s, out, minOut, depX, depY: minOut, lp, shareAfter: lp / (pair.supply + lp), leftover: amt - s - depX };
+}
+
+export async function buildV2Zap({ account, pair, plan, feeAccount = '', auth = null }) {
+  const au = auth || [{ actor: account, permission: 'active' }];
+  const X = plan.from, Y = plan.to;
+  const actions = [];
+  if (feeAccount && plan.fee > 0) {
+    actions.push({ account: X.contract, name: 'transfer', authorization: au, data: { from: account, to: feeAccount, quantity: fmt(plan.fee, X.decimals, X.symbol), memo: 'zap fee' } });
+  }
+  const venue = pair.dex === 'taco' ? TACO : NEFTY;
+  const memo = pair.dex === 'taco'
+    ? `${fmt(plan.minOut, Y.decimals, Y.symbol)}@${Y.contract}`
+    : `swap:${pair.code},min:${Math.floor(plan.minOut * 10 ** Y.decimals)}`;
+  actions.push({ account: X.contract, name: 'transfer', authorization: au, data: { from: account, to: venue, quantity: fmt(plan.swap, X.decimals, X.symbol), memo } });
+  // The deposit, in the pair's own order.
+  const depA = plan.side === 'a' ? plan.depX : plan.depY, depB = plan.side === 'a' ? plan.depY : plan.depX;
+  const deposit = await buildV2Add({ account, pair, quote: { a: depA, b: depB, lp: plan.lp }, auth: au });
+  return actions.concat(deposit);
+}

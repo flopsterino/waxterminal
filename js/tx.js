@@ -895,8 +895,10 @@ export async function buildClaimAndSwap({ pool, position, basket, plan, harveste
 //
 // The fee is taken first and in the token they brought, so it never depends on
 // how the swap turned out.
-export async function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps = 0, sqrtP, me = account() }) {
-  const ratio = depositRatio(sqrtP, tickLower, tickUpper);
+export async function planZap({ pool, tickLower, tickUpper, fromToken, amount, feeBps = 0, sqrtP, me = account(), ratio: fixedRatio = null }) {
+  // A classic 50/50 pool (TacoSwap, NeftyBlocks) has no band: half the value
+  // each side, passed in rather than derived from ticks it does not have.
+  const ratio = fixedRatio || depositRatio(sqrtP, tickLower, tickUpper);
   const from = tokenMeta(fromToken);
   const pFrom = priceOf(fromToken);
   const isA = fromToken === pool.tokenA;

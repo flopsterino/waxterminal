@@ -13,9 +13,9 @@ import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
 import { drawShareCard, shareOrSave } from './sharecard.js';
-import { livePair, quoteV2, buildV2Add, buildV2Remove } from './v2lp.js';
+import { livePair, quoteV2, buildV2Add, buildV2Remove, planV2Zap, buildV2Zap } from './v2lp.js';
 import { neftyIndex, neftyCollection, neftyLive, neftyCandidates, neftyProof, buildNeftyBlend } from './nefty.js';
-import { debounce } from './router.js';
+import { debounce, quote as routeQuote } from './router.js';
 import { STABLES } from './price.js';
 import { watchPoolTrades, tradeSide, tradePrice, poolSwapHistory } from './live.js';
 import { topHolders, clusterHolders, transferGraph, tokenStats, lpHoldings, topLPs, tokenTax, holderCount, transferActivity, upcomingUnlocks, lockedSupply } from './holders.js';
@@ -7175,7 +7175,7 @@ function openPositionFlow(preset = {}) {
   const close = () => m.remove();
   m.addEventListener('click', e => { if (e.target === m) close(); });
 
-  let dex = preset.pool?.dex || preset.dex || null, tokA = null, tokB = null, pool = preset.pool || null;
+  let dex = preset.pool?.dex || preset.dex || null, tokA = null, tokB = null, pool = preset.pool || null, mode = 'zap';
   if (pool) { tokA = pool.tokenA; tokB = pool.tokenB; }
   const poolsOf = d => state.pools.filter(p => p.dex === d && p.active !== false && p.reserveA > 0 && p.reserveB > 0 && (d !== 'alcor' || p.sqrtX64));
   const tokName = id => { const t = state.tokens.get(id); return t ? t.symbol : id.split('@')[0]; };
@@ -7241,11 +7241,146 @@ function openPositionFlow(preset = {}) {
     });
     const dep = box.querySelector('.pfdeposit');
     if (dep && pool) {
-      if (pool.dex === 'alcor') renderNewPosition(wallet.account() || '', pool.id, dep);
-      else renderV2Deposit(dep, pool).catch(e => { dep.innerHTML = `<div class="err">${esc(e.message)}</div>`; });
+      // Zap is the default: one token in, the fastest way into any pool.
+      dep.innerHTML = `<div class="seg pfmode" role="radiogroup">
+          <button role="radio" data-pfmode="zap" aria-checked="${mode === 'zap'}">One token (zap)</button>
+          <button role="radio" data-pfmode="both" aria-checked="${mode === 'both'}">Both tokens</button></div>
+        <div class="pfdepbody"></div>`;
+      const body = dep.querySelector('.pfdepbody');
+      const draw = () => {
+        const fail = e => { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; };
+        if (pool.dex === 'alcor') {
+          if (mode === 'zap') renderZap(body, pool, { incentiveIds: [], account: wallet.account(), embedded: true });
+          else renderNewPosition(wallet.account() || '', pool.id, body);
+        } else if (mode === 'zap') renderV2Zap(body, pool).catch(fail);
+        else renderV2Deposit(body, pool).catch(fail);
+      };
+      dep.querySelectorAll('[data-pfmode]').forEach(b => b.onclick = () => {
+        mode = b.dataset.pfmode;
+        dep.querySelectorAll('[data-pfmode]').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+        draw();
+      });
+      draw();
     }
   };
   render();
+}
+
+// Zapping into a TacoSwap or NeftyBlocks pair: one token in, and the swap goes
+// wherever it gets the most. Bringing one of the pair's own tokens, the pool
+// itself is one candidate — swap and deposit in one transaction — and the best
+// route elsewhere (Alcor's router, or our graph across venues) the other; the
+// better quote wins. Bringing anything else, it is routed to both halves. A
+// routed zap is two signatures, like Alcor's: the swap, then what arrived.
+async function renderV2Zap(box, pool) {
+  box.innerHTML = '<div class="loading"><span class="spinner"></span><span>Reading the pair…</span></div>';
+  const pair = await livePair(pool);
+  const WAX = 'WAX@eosio.token';
+  const choices = [pool.tokenA, pool.tokenB, ...(pool.tokenA !== WAX && pool.tokenB !== WAX ? [WAX] : [])];
+  const feeAccount = CFG?.commercial?.feeAccount || '';
+  const zapFeeBps = feeAccount ? Math.max(0, Math.min(200, CFG?.commercial?.zapFeeBps ?? 0)) : 0;
+  const meta = id => state.tokens.get(id) || { symbol: id.split('@')[0], contract: id.split('@')[1], decimals: 4 };
+  let from = choices[0], plan = null;
+  const me = () => wallet.account();
+  const bal = new Map();
+  if (me()) await Promise.all(choices.map(async id => bal.set(id, await balanceOf(me(), meta(id).contract, meta(id).symbol).catch(() => null))));
+
+  box.innerHTML = `
+    <div class="toolbar" style="margin:0 0 10px"><span class="sub">Bring</span>
+      ${choices.map(id => `<button class="chip" data-zfrom="${esc(id)}" aria-pressed="${id === from}">${esc(meta(id).symbol)}</button>`).join('')}</div>
+    <div class="v2in" style="grid-template-columns:1fr"><label><span data-zsym>${esc(meta(from).symbol)}</span>
+      <input type="number" min="0" step="any" data-zamt placeholder="0"><button class="xlink" data-zmax></button></label></div>
+    <div class="v2quote dim" data-zq>Type an amount.</div>
+    <div class="v2out"></div>
+    <button class="btn" data-zgo disabled>Review</button>`;
+  const amtIn = box.querySelector('[data-zamt]'), qEl = box.querySelector('[data-zq]'), go = box.querySelector('[data-zgo]');
+  const showMax = () => {
+    const b = bal.get(from), mx = box.querySelector('[data-zmax]');
+    mx.textContent = b != null ? `you hold ${qty(b)}` : '';
+    mx.onclick = () => { if (b != null) { amtIn.value = String(b); requote(); } };
+  };
+  showMax();
+  let gen = 0;
+  const requote = debounce(async () => {
+    const my = ++gen;
+    const amount = Number(amtIn.value);
+    plan = null; go.disabled = true;
+    if (!(amount > 0)) { qEl.textContent = 'Type an amount.'; return; }
+    qEl.innerHTML = '<span class="spinner"></span> Finding the best route…';
+    const side = from === pool.tokenA ? 'a' : from === pool.tokenB ? 'b' : null;
+    let inPool = null, routed = null;
+    try { if (side) inPool = planV2Zap(pair, side, amount, { feeBps: pool.feeBps || 30, zapFeeBps }); } catch { /* too small for the pool */ }
+    // The same swap along the best route elsewhere — or, for a token the pair
+    // does not hold, the only way in.
+    try {
+      if (inPool) {
+        const q = await routeQuote({ from: meta(from), to: meta(side === 'a' ? pool.tokenB : pool.tokenA), amount: inPool.swap, slippagePct: 2, receiver: me() || 'eosio.null' });
+        if (q && q.expect > inPool.out * 1.003) routed = await planZap({ pool, fromToken: from, amount, feeBps: zapFeeBps, me: me() || 'eosio.null', ratio: { shareA: 0.5, shareB: 0.5 } });
+      } else routed = await planZap({ pool, fromToken: from, amount, feeBps: zapFeeBps, me: me() || 'eosio.null', ratio: { shareA: 0.5, shareB: 0.5 } });
+    } catch { /* no route: the pool itself, if it can */ }
+    if (my !== gen) return;
+    const held = bal.get(from);
+    const short = held != null && amount > held;
+    if (routed && routed.ok !== false) {
+      plan = { kind: 'routed', z: routed, amount };
+      const legs = routed.legs.map(l => `${esc(l.sym)} via ${l.routed === 'alcor' ? `Alcor${l.hops > 1 ? ` (${l.hops} steps)` : ''}` : 'our route'}`).join(' and ');
+      qEl.innerHTML = `Swaps into ${legs}${inPool ? ' — more than this pool itself gives' : ''}, then deposits both. Two signatures.${short ? ' · <span class="neg">more than you hold</span>' : ''}`;
+    } else if (inPool) {
+      plan = { kind: 'pool', z: inPool, amount };
+      qEl.innerHTML = `Swaps ${qty(inPool.swap)} ${esc(inPool.from.symbol)} into ≥ ${qty(inPool.minOut)} ${esc(inPool.to.symbol)} in this pool, then deposits both:
+        <b>${inPool.lp.toLocaleString('en-US', { maximumFractionDigits: pair.lpDecimals })} ${esc(pair.code)}</b> LP, ${(inPool.shareAfter * 100).toPrecision(3)}% of the pool. One signature.${short ? ' · <span class="neg">more than you hold</span>' : ''}`;
+    } else {
+      qEl.innerHTML = `<span class="neg">${esc(routed?.reason || 'No route found for this token into this pair.')}</span>`;
+      return;
+    }
+    go.disabled = short;
+  }, 350);
+  amtIn.oninput = requote;
+  box.querySelectorAll('[data-zfrom]').forEach(b => b.onclick = () => {
+    from = b.dataset.zfrom;
+    box.querySelectorAll('[data-zfrom]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    box.querySelector('[data-zsym]').textContent = meta(from).symbol;
+    showMax(); requote();
+  });
+
+  go.onclick = async () => {
+    const out = box.querySelector('.v2out');
+    if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+    const account = wallet.account();
+    try {
+      if (plan.kind === 'pool') {
+        // Re-planned against the pair as it is now, once, so the plan and the
+        // transaction are the same numbers.
+        const now = await livePair(pool);
+        const actions = await buildV2Zap({ account, pair: now, plan: planV2Zap(now, plan.z.side, plan.amount, { feeBps: pool.feeBps || 30, zapFeeBps }), feeAccount });
+        out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+          Zap ${qty(plan.amount)} ${esc(meta(from).symbol)} into the ${pool.dex === 'taco' ? 'TacoSwap' : 'NeftyBlocks'} pool in one transaction${zapFeeBps ? ` (zap fee ${(zapFeeBps / 100).toFixed(2)}%)` : ''}.
+          <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-zdo>Sign and zap in</button></div></div>`;
+        out.querySelector('[data-zdo]').onclick = () => runStakeTx(out, actions, 'In. The LP tokens are in your wallet; the position shows under My wallet → LP.');
+        return;
+      }
+      // Routed: swap first, then deposit exactly what arrived, at the pair's
+      // ratio at that moment.
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Waiting for your wallet…</span></div>';
+      const before = await readBalances(pool, [pool.tokenA, pool.tokenB], account);
+      const t1 = await buildZapSwap({ pool, plan: plan.z, feeAccount, me: account });
+      if (t1.actions.length) await wallet.transact(t1.actions, { verify: true });
+      out.innerHTML = '<div class="loading"><span class="spinner"></span><span>Measuring what arrived…</span></div>';
+      await new Promise(r => setTimeout(r, 2500));
+      const after = await readBalances(pool, [pool.tokenA, pool.tokenB], account);
+      // The half that was never swapped is what the plan kept of the input.
+      const got = id => Math.max(0, (after.get(id) || 0) - (before.get(id) || 0)) + (id === from ? (plan.z.keep || 0) : 0);
+      const live = await livePair(pool);
+      const qa = quoteV2(live, 'a', got(pool.tokenA)), qb = quoteV2(live, 'b', got(pool.tokenB));
+      const quote = qa.b <= got(pool.tokenB) ? qa : qb;          // whichever side runs out first
+      const actions = await buildV2Add({ account, pair: live, quote });
+      out.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
+        Swapped. Now deposit <b>${qty(quote.a)} ${esc(live.a.symbol)}</b> and <b>${qty(quote.b)} ${esc(live.b.symbol)}</b> for
+        <b>${quote.lp.toLocaleString('en-US', { maximumFractionDigits: live.lpDecimals })} ${esc(live.code)}</b> LP.
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-zdo>Sign the deposit</button></div></div>`;
+      out.querySelector('[data-zdo]').onclick = () => runStakeTx(out, actions, 'In. The LP tokens are in your wallet; the position shows under My wallet → LP.');
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e?.message || String(e))}</div>`; }
+  };
 }
 
 // Adding to a TacoSwap or NeftyBlocks pair: one amount typed, the other in the
