@@ -37,6 +37,19 @@ jobs:
       # server and absent from the browser for ten minutes, which is
       # indistinguishable from the fix never having happened.
       - run: node tools/stamp.mjs "${{ github.sha }}"
+      # The site lives on waxedge.app (Cloudflare Pages); github.io only forwards
+      # there. Same stamped checkout, minus what is not the site. Skipped, not
+      # failed, until the two secrets exist in the repo.
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then echo "no Cloudflare secrets, skipping"; exit 0; fi
+          mkdir -p "$RUNNER_TEMP/site"
+          rsync -a --exclude .git --exclude .github --exclude tools/verify ./ "$RUNNER_TEMP/site/"
+          npx -y wrangler@3 pages deploy "$RUNNER_TEMP/site" --project-name waxedge --branch main \
+            --commit-hash "${{ github.sha }}" --commit-message "deploy ${{ github.sha }}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
