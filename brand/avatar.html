@@ -1,0 +1,6 @@
+<!doctype html><meta charset=utf-8><style>html,body{margin:0;height:100%}
+body{display:grid;place-items:center;background:radial-gradient(circle at 50% 58%,#3A2406 0%,#0B0E11 62%)}
+img{width:var(--w);transform:translateY(var(--dy))}</style>
+<body><img id=i></body>
+<script>const q=new URLSearchParams(location.search);const i=document.getElementById('i');i.src=(q.get('f')||'mark.svg')+'?v=8';
+document.documentElement.style.setProperty('--w',(q.get('w')||'62')+'%');document.documentElement.style.setProperty('--dy',(q.get('dy')||'0')+'%')</script>
