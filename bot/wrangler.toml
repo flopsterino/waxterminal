@@ -1,0 +1,14 @@
+# WaxEDGE alert bot — a Cloudflare Worker on the Free plan.
+# On the Free plan nothing here can be billed: past a limit, requests fail.
+name = "waxedge-bot"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "waxedge-bot"
+database_id = "3e9cd432-f89a-45b7-a90d-5c7846a09e38"

@@ -47,7 +47,7 @@ jobs:
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then echo "no Cloudflare secrets, skipping"; exit 0; fi
           mkdir -p "$RUNNER_TEMP/site"
-          rsync -a --exclude .git --exclude .github --exclude tools/verify ./ "$RUNNER_TEMP/site/"
+          rsync -a --exclude .git --exclude .github --exclude tools/verify --exclude bot ./ "$RUNNER_TEMP/site/"
           npx -y wrangler@3 pages deploy "$RUNNER_TEMP/site" --project-name waxedge --branch main \
             --commit-hash "${{ github.sha }}" --commit-message "deploy ${{ github.sha }}"
       - uses: actions/configure-pages@v5
