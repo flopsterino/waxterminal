@@ -3107,21 +3107,20 @@ async function renderBanner() {
   try { got = await currentBanners(); } catch {}
   // A shared position alternates between its two buyers; a coin per page load
   // is the same thing over enough visits. A spot rented as shared whose other
-  // half nobody has bought runs half the time too — it was showing on every
-  // load, which is the whole spot sold at the shared price — and the other
-  // half of the loads say that half is for rent.
+  // half nobody has bought still shows its banner every time — the half that
+  // was paid for is never hidden — and the header says the spot is shared with
+  // its other half for rent, so it does not read as a whole spot.
   let openHalves = 0;
   const sold = (got?.banners || []).slice(0, 2)
     .map(b => {
       if (b.shared?.img) return Math.random() < 0.5 ? { ...b, ...b.shared } : b;
-      if (b.rentalShared && Math.random() < 0.5) { openHalves++; return null; }
+      if (b.rentalShared) openHalves++;
       return b;
-    })
-    .filter(Boolean);
+    });
   // Which of two sold banners leads is also a coin: a phone shows only the
   // first, and both buyers paid for the same slot.
   if (sold.length === 2 && Math.random() < 0.5) sold.reverse();
-  const free = (got?.free || 0) + openHalves;
+  const free = got?.free || 0;
   if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
   const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
   const tiles = sold.map(b => `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
@@ -3131,9 +3130,9 @@ async function renderBanner() {
   // mostly advertising, least of all for advertising.
   bannerMarkup = `<div class="card bannerslot${tiles.length ? '' : ' empty'}">
     <div class="bannerhead"><span class="sponsored">Sponsored</span>
-      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}`
-        : openHalves ? 'half of this CheeseHub spot is free today' : 'this CheeseHub banner spot is free today'}</span>
-      <a class="more" href="${routePath('ads')}" data-ads>${tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
+      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}${openHalves ? ' &middot; shared spot, other half free' : ''}`
+        : 'this CheeseHub banner spot is free today'}</span>
+      <a class="more" href="${routePath('ads')}" data-ads>${openHalves ? 'Join it' : tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
     ${tiles.length ? `<div class="bannertiles">${tiles.join('')}</div>` : ''}</div>`;
   paintBanners();
 }
