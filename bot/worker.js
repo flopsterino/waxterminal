@@ -39,11 +39,17 @@ async function positions(account) {
   const r = await fetch(`${ALCOR}/account/${encodeURIComponent(account)}/positions`, { cf: { cacheTtl: 60 } });
   if (!r.ok) return null;
   const rows = await r.json();
-  return rows.filter(p => !p.closed).map(p => ({
-    id: String(p.id),
-    pair: `${String(p.amountA || '').split(' ')[1] || '?'}/${String(p.amountB || '').split(' ')[1] || '?'}`,
-    inRange: !!p.inRange,
-  }));
+  const tok = a => { const [n, sym] = String(a || '').split(' '); return { n: Number(n) || 0, sym: sym || '?' }; };
+  return rows.filter(p => !p.closed).map(p => {
+    const A = tok(p.amountA), B = tok(p.amountB), fA = tok(p.feesA), fB = tok(p.feesB);
+    return {
+      id: String(p.id), pool: String(p.pool),
+      pair: `${A.sym}/${B.sym}`,
+      inRange: !!p.inRange,
+      value: Number(p.totalValue) || 0,
+      fees: [fA, fB].filter(f => f.n > 0).map(f => `${fmtAmt(f.n)} ${f.sym}`),
+    };
+  }).sort((a, b) => b.value - a.value);
 }
 async function tokenPrice(id) {
   const r = await fetch(`${ALCOR}/tokens/${encodeURIComponent(id)}`, { cf: { cacheTtl: 60 } });
@@ -63,13 +69,43 @@ async function resolveToken(input) {
   all.sort((a, b) => (b.is_trusted - a.is_trusted) || ((b.score || 0) - (a.score || 0)));
   return { id: all[0].id, symbol: all[0].symbol, contract: all[0].contract, others: all.length - 1 };
 }
-const fmtUsd = v => (v >= 1 ? `$${v.toFixed(2)}` : `$${Number(v.toPrecision(3))}`);
+const fmtUsd = v => (v >= 1 ? `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `$${Number(v.toPrecision(3))}`);
+const fmtAmt = v => (v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 })
+  : v >= 1 ? v.toFixed(2)
+  : v >= 1e-4 ? String(Number(v.toPrecision(3)))
+  : v.toFixed(8).replace(/0+$/, ''));
+const poolLink = p => `<a href="${SITE}/market/alcor:${p.pool}">${esc(p.pair)}</a>`;
+
+// One account, the way the wallet page would summarise it: total first, what
+// needs attention first, then every position with its value and what is
+// waiting to be collected.
+function summary(acct, pos) {
+  if (!pos.length) return `<b>${esc(acct)}</b> has no open Alcor positions.`;
+  const total = pos.reduce((t, p) => t + p.value, 0);
+  const out = pos.filter(p => !p.inRange);
+  // Dust gets one line: four positions worth a few cents each are not what
+  // anybody opened the chat to read.
+  const big = pos.filter(p => p.value >= 1 || !p.inRange), dust = pos.filter(p => p.value < 1 && p.inRange);
+  const line = p => `${p.inRange ? '✅' : '⚠️'} ${poolLink(p)} · ${fmtUsd(p.value)}${p.fees.length ? `\n     fees waiting: ${p.fees.join(' + ')}` : ''}`;
+  const lines = [
+    `<b>${esc(acct)}</b> — ${pos.length} position${pos.length === 1 ? '' : 's'} · <b>${fmtUsd(total)}</b>`,
+    out.length ? `<b>${out.length} out of range</b> — earning nothing until the price returns.` : 'All in range.',
+    '',
+    ...big.slice(0, 12).map(line),
+  ];
+  if (big.length > 12) lines.push(`… and ${big.length - 12} more`);
+  if (dust.length) lines.push(`+ ${dust.length} position${dust.length === 1 ? '' : 's'} under $1`);
+  lines.push('', `<a href="${SITE}/wallet/${encodeURIComponent(acct)}">Open on WaxEDGE</a>`);
+  return lines.join('\n');
+}
 
 // ---------------------------------------------------------------- commands --
 const HELP = [
   '<b>WaxEDGE alerts</b>',
   '',
   '/watch <i>account</i> — tell me when an Alcor position leaves its range, and when it is back',
+  '/status — your watched accounts right now: every position, its value, fees waiting',
+  '/price <i>SYM</i> — the price now',
   '/price <i>SYM</i> above|below <i>usd</i> — one alert when a token crosses a price',
   '/list — what this chat is watching',
   '/unwatch <i>account</i> — stop watching one',
@@ -96,10 +132,20 @@ async function onMessage(env, msg) {
     const state = Object.fromEntries(pos.map(p => [p.id, p.inRange ? 1 : 0]));
     await env.DB.prepare('INSERT OR REPLACE INTO watches (chat_id, account, state, created) VALUES (?, ?, ?, ?)')
       .bind(chat, acct, JSON.stringify(state), now).run();
-    const out = pos.filter(p => !p.inRange);
-    return say(env, chat, `Watching <b>${esc(acct)}</b>: ${pos.length} Alcor position${pos.length === 1 ? '' : 's'}`
-      + (out.length ? `, <b>${out.length} out of range now</b> (${out.map(p => esc(p.pair)).join(', ')}).` : ', all in range.')
-      + `\nI will write when one leaves its range or comes back.`);
+    return say(env, chat, `👀 Watching — I will write when a position leaves its range or comes back.\n\n${summary(acct, pos)}`);
+  }
+
+  if (cmd === '/status') {
+    const want = String(args[0] || '').toLowerCase();
+    const list = want ? [want] : (await env.DB.prepare('SELECT account FROM watches WHERE chat_id = ?').bind(chat).all()).results.map(r => r.account);
+    if (!list.length) return say(env, chat, 'Nothing watched yet. /watch <i>account</i> first, or /status <i>account</i> for a one-off look.');
+    if (want && !ACCOUNT_RE.test(want)) return say(env, chat, 'Usage: /status <i>account</i>');
+    const parts = [];
+    for (const a of list.slice(0, MAX_WATCH)) {
+      const pos = await positions(a);
+      parts.push(pos ? summary(a, pos) : `<b>${esc(a)}</b>: Alcor did not answer. Try again in a minute.`);
+    }
+    return say(env, chat, parts.join('\n\n—\n\n'));
   }
 
   if (cmd === '/unwatch') {
@@ -112,6 +158,14 @@ async function onMessage(env, msg) {
     const [symIn, dirIn, valIn] = args;
     const dir = String(dirIn || '').toLowerCase();
     const price = Number(String(valIn || '').replace(',', '.').replace('$', ''));
+    if (symIn && !dirIn) {
+      const t = await resolveToken(symIn);
+      if (!t) return say(env, chat, `No token <b>${esc(symIn.toUpperCase())}</b> on Alcor.`);
+      const px = await tokenPrice(t.id);
+      return say(env, chat, `<b>${esc(t.symbol)}</b> (${esc(t.contract)}): ${px ? fmtUsd(px) : 'no price right now'}`
+        + `\n<a href="${SITE}/token/${encodeURIComponent(`${t.symbol}@${t.contract}`)}">Open on WaxEDGE</a>`
+        + `\n\nAlert me: /price ${esc(t.symbol)} above|below <i>usd</i>`);
+    }
     if (!symIn || !['above', 'below'].includes(dir) || !(price > 0)) {
       return say(env, chat, 'Usage: /price <i>SYM</i> above|below <i>usd</i> — e.g. /price CHEESE above 0.01');
     }
@@ -172,8 +226,8 @@ async function tick(env) {
         const left = Object.keys(now).filter(id => was[id] === 1 && now[id] === 0);
         const back = Object.keys(now).filter(id => was[id] === 0 && now[id] === 1);
         const lines = [
-          ...left.map(id => `⚠️ <b>${esc(byId[id].pair)}</b> #${id} is <b>out of range</b> — it earns no fees until the price comes back.`),
-          ...back.map(id => `✅ <b>${esc(byId[id].pair)}</b> #${id} is back in range.`),
+          ...left.map(id => `⚠️ ${poolLink(byId[id])} (${fmtUsd(byId[id].value)}) is <b>out of range</b> — it earns no fees until the price comes back, or until you move the range.`),
+          ...back.map(id => `✅ ${poolLink(byId[id])} (${fmtUsd(byId[id].value)}) is <b>back in range</b> and earning again.`),
         ];
         if (lines.length && sends < SENDS_PER_RUN) {
           await say(env, s.chat_id, `<b>${esc(acct)}</b>\n${lines.join('\n')}\n\n<a href="${SITE}/wallet/${encodeURIComponent(acct)}">Open on WaxEDGE</a>`);
