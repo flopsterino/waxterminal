@@ -49,6 +49,11 @@ jobs:
         env:
           WRITE_HISTORY: ${{ steps.kind.outputs.daily == 'true' && '1' || '0' }}
         run: node --max-old-space-size=2048 tools/snapshot.mjs
+      # The Telegram bot's small slice of it: a Worker on the Free plan cannot
+      # afford to parse a megabyte.
+      - name: Write the bot's data
+        continue-on-error: true
+        run: node tools/botdata.mjs
       # Ranking liquidity providers means reading every position in every pool
       # and rebuilding fee growth for each — about a minute of table reads, so
       # it belongs beside the snapshot rather than in anyone's browser. A

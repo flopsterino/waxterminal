@@ -24,11 +24,13 @@ jobs:
         with:
           node-version: '20'
       - run: node tools/volume.mjs
+      - run: node tools/botdata.mjs
+        continue-on-error: true
       - name: Commit if changed
         run: |
           git config user.name  "wax-terminal-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/volume.json
+          git add data/volume.json data/bot.json
           git diff --staged --quiet && exit 0
           git commit -m "volume $(date -u +%Y-%m-%dT%H:%MZ)"
           # Code can land on main while this job runs; a plain push is then

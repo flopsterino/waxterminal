@@ -6,7 +6,7 @@ compatibility_date = "2024-09-23"
 workers_dev = true
 
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["* * * * *"]   # every minute; each run does a small rotating share (see tick)
 
 [[d1_databases]]
 binding = "DB"
