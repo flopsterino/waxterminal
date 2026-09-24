@@ -11,7 +11,8 @@ import { swapLeg, buildCreatePool, buildCreateFarm, buildFundFarm, findNewFarm, 
 import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMap, sparkline, depthChart, priceBandChart, deviationArea } from './charts.js';
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
-import { loadTokenMeta, pairMark, tokenMark, tokenMeta } from './tokens.js';
+import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
+import { drawShareCard, shareOrSave } from './sharecard.js';
 import { debounce } from './router.js';
 import { STABLES } from './price.js';
 import { watchPoolTrades, tradeSide, tradePrice, poolSwapHistory } from './live.js';
@@ -6683,7 +6684,8 @@ function lockForeign(acct) {
   if (isMine(acct)) return;
   // Paying for someone else's CPU, NET or RAM is ordinary — powering up a friend
   // is what the receiver in those memos is for — so those two cards stay.
-  document.querySelectorAll('.wpane button.btn, .wpane select, .wpane input').forEach(el => { if (!el.closest('.allow-foreign')) el.remove(); });
+  // Sharing a picture of public figures acts on nothing, so Share stays too.
+  document.querySelectorAll('.wpane button.btn, .wpane select, .wpane input').forEach(el => { if (!el.closest('.allow-foreign') && !el.matches('[data-share]')) el.remove(); });
   const bar = $('#walletReadonly');
   if (bar) {
     bar.textContent = `Viewing ${acct}. Connect that account to act on it.`;
@@ -6762,6 +6764,40 @@ function earningPerDay(p, feeDay, farmDay) {
   // reads as a sum with a part missing. Say what it is instead.
   return ['Earning / day', est > 0 ? usd(est) : '&mdash;', est > 0 ? '' : 'dim',
     est > 0 ? (farmDay > 0 ? `${usd(feeDay)} fees + ${usd(farmDay)} farm` : 'fees only, at today\'s volume') : ''];
+}
+
+// The share preview: the card as it will be posted, whether to put the account
+// on it (off unless asked), and the one button that posts or saves it.
+async function openShare(spec, account, filename) {
+  document.querySelector('.sharemodal')?.remove();
+  const m = document.createElement('div');
+  m.className = 'sharemodal';
+  m.innerHTML = `<div class="sharebox" role="dialog" aria-label="Share as an image">
+      <div class="shareimg"><div class="loading"><span class="spinner"></span><span>Drawing…</span></div></div>
+      <div class="sharebar">
+        <label class="sharecheck"><input type="checkbox" id="shareAcct"> Show <span class="mono">${esc(account)}</span></label>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="shareClose">Close</button>
+        <button class="btn" id="shareGo">${navigator.canShare ? 'Share' : 'Download'}</button>
+      </div></div>`;
+  document.body.appendChild(m);
+  let blob = null, url = null;
+  const draw = async () => {
+    blob = await drawShareCard({ ...spec, account: $('#shareAcct')?.checked ? account : null });
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(blob);
+    m.querySelector('.shareimg').innerHTML = `<img src="${url}" alt="The image that will be shared">`;
+  };
+  const close = () => { m.remove(); if (url) URL.revokeObjectURL(url); };
+  m.addEventListener('click', e => { if (e.target === m) close(); });
+  m.querySelector('#shareClose').onclick = close;
+  m.querySelector('#shareAcct').onchange = draw;
+  m.querySelector('#shareGo').onclick = async () => {
+    if (!blob) return;
+    const how = await shareOrSave(blob, { filename, text: 'waxedge.app' });
+    if (how !== 'cancelled') close();
+  };
+  await draw();
 }
 
 function positionCard(p, mine = false) {
@@ -6845,6 +6881,7 @@ function positionCard(p, mine = false) {
     </div>` : ''}
 
     <footer class="pc-act">
+      ${p.pnl && pnlBasis(p.pnl) > 0 ? `<button class="btn ghost" data-share="${esc(String(p.posId))}" title="Share this position as an image">Share</button>` : ''}
       ${mine ? `<button class="btn" data-compound="${esc(pool.id)}:${p.posId}">Compound</button>
         <button class="btn ghost" data-add="${p.posId}">Add</button>
         <button class="btn ghost" data-remove="${p.posId}">Remove</button>` : ''}
@@ -7022,7 +7059,7 @@ async function lookupWallet(account) {
       <div class="stat"><span class="v" id="rwStat">${usdExact(feesUsd)}</span><span class="k">rewards waiting</span><span class="sub" id="rwStatSub">fees, and farm rewards once read</span></div>
       <div class="stat"><span class="v ${outOfRange.length ? 'neg' : 'pos'}">${usdExact(oorUsd)}</span><span class="k">idle, out of range</span><span class="sub">${outOfRange.length} of ${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}</span></div>
       <div class="stat"><span class="v">${usd(dailyFees)}</span><span class="k">earning per day</span></div>
-      ${openPnl && pnlBasis(openPnl) > 0 ? `<div class="stat"><span class="v ${pnlNum(openPnl) >= 0 ? 'pos' : 'neg'}" title="${esc(pnlTitle(openPnl))}">${pnlText(openPnl)}</span><span class="k">profit on these positions</span><span class="sub">${
+      ${openPnl && pnlBasis(openPnl) > 0 ? `<div class="stat"><span class="v ${pnlNum(openPnl) >= 0 ? 'pos' : 'neg'}" title="${esc(pnlTitle(openPnl))}">${pnlText(openPnl)}</span><span class="k">profit on these positions <button class="sharelink" data-share="total" title="Share this as an image">Share</button></span><span class="sub">${
         [`${(pnlNum(openPnl) / pnlBasis(openPnl) * 100).toFixed(1)}% on what went in`,
           closedPnl && pnlBasis(closedPnl) > 0 ? `${pnlText(closedPnl)} on ${closedPnl.n} closed &mdash; ${pnlText(livePnl)} all told` : '',
           tacoCount > 0 ? 'TacoSwap not counted' : ''].filter(Boolean).join(' &middot; ')
@@ -7104,6 +7141,33 @@ async function lookupWallet(account) {
   // position stays where it is and stays yours; staking only tells the pool's
   // incentive to count it. Nothing here can move it.
   wireJoinFarm(out, account);
+
+  // Share: the figures this page already shows, drawn as a picture.
+  const pctOf = pl => (pnlBasis(pl) > 0 ? `${pnlNum(pl) >= 0 ? '+' : ''}${(pnlNum(pl) / pnlBasis(pl) * 100).toFixed(1)}% on what went in` : '');
+  out.querySelectorAll('[data-share]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    if (b.dataset.share === 'total') {
+      return openShare({
+        title: 'My liquidity on WAX',
+        kicker: `${res.alcor.length} Alcor position${res.alcor.length === 1 ? '' : 's'}`,
+        big: pnlText(openPnl), bigTone: pnlNum(openPnl) >= 0 ? 'good' : 'bad', bigSub: pctOf(openPnl),
+        stats: [['Value', usdExact(alcorValue)], ['Earning / day', usd(dailyFees)], ['Positions', String(res.alcor.length)]],
+        logos: [],
+      }, account, 'waxedge-liquidity.png');
+    }
+    const p = res.alcor.find(x => String(x.posId) === b.dataset.share);
+    if (!p?.pnl) return;
+    const since = p.pnl.firstAt ? ` · since ${new Date(p.pnl.firstAt).toISOString().slice(0, 10)}` : '';
+    const days = p.pnl.firstAt ? (Date.now() - p.pnl.firstAt) / 86400e3 : 0;
+    const paidDay = days >= 1 && p.led ? ((p.led.feesUsd + (p.paid?.usd || 0)) / days) : null;
+    openShare({
+      title: `${p.pool.symA} / ${p.pool.symB}`,
+      kicker: `Alcor position${since}`,
+      big: pnlText(p.pnl), bigTone: pnlNum(p.pnl) >= 0 ? 'good' : 'bad', bigSub: pctOf(p.pnl),
+      stats: [['Value', usdExact(p.valueUsd)], ...(paidDay > 0 ? [['Paid / day', usd(paidDay)]] : []), ['Range', p.inRange ? 'In range' : 'Out']],
+      logos: [tokenLogo(p.pool.tokenA), tokenLogo(p.pool.tokenB)],
+    }, account, `waxedge-${p.pool.symA}-${p.pool.symB}.png`.toLowerCase());
+  });
 
   // Adding and taking out were the only two things the Liquidity page did that
   // this one did not, so they live on the card now and that page is gone.
