@@ -29,8 +29,22 @@ const emit = () => listeners.forEach(f => f(session));
 // in ways that look like the user cancelled. Say so up front instead.
 export const isSecure = () => window.isSecureContext;
 
+// An iPhone home-screen app cannot be returned to by a link: iOS opens every
+// URL in Safari. Anchor, once the user approves, opens the "return path" it was
+// given — this page's own address — so the login finished in Safari and the
+// home-screen app was left waiting. WharfKit already leaves the return path
+// out for iOS apps, which it recognises by window.ReactNativeWebView; nothing
+// else in these bundles reads that flag (checked: session, web-renderer, the
+// two wallet plugins; protocol-esr only for the return path and an Android
+// test). So in the home-screen app on an iPhone the flag is raised: Anchor
+// stays open after approving, the user switches back, and the login arrives
+// over Anchor's own channel as it always does.
+const isIosHomeScreen = () => /iP(ad|od|hone)/i.test(navigator.userAgent)
+  && (navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches);
+
 async function kitOnce() {
   if (kit) return kit;
+  if (isIosHomeScreen() && !window.ReactNativeWebView) window.ReactNativeWebView = { note: 'waxedge: no return path in the iOS home-screen app' };
   const [{ SessionKit }, { WebRenderer }, { WalletPluginAnchor }, cloud] = await Promise.all([
     import(`${CDN}/@wharfkit/session@${V.session}/+esm`),
     import(`${CDN}/@wharfkit/web-renderer@${V.renderer}/+esm`),
