@@ -85,7 +85,7 @@ const say = (env, B, chat, text, markup = null) => tg(env, B, 'sendMessage', {
 // ------------------------------------------------------------------ format --
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // Three significant figures below 1, written out: $0.000000186, never 1.86e-7.
-const small = v => v.toFixed(Math.min(12, Math.max(2, 2 - Math.floor(Math.log10(Math.abs(v)))))).replace(/(\.\d\d\d*?)0+$/, '$1');
+const small = v => v.toFixed(Math.min(20, Math.max(2, 2 - Math.floor(Math.log10(Math.abs(v)))))).replace(/(\.\d\d\d*?)0+$/, '$1');
 const fmtUsd = v => (v == null || !isFinite(v) ? '—'
   : Math.abs(v) >= 1 ? `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   : v === 0 ? '$0' : `$${small(v)}`);
@@ -790,14 +790,27 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/top') {
     const D = await data(env, B);
-    const liquid = [...D.tok.values()].filter(t => t.liq >= 1000 && t.ch != null && t.sym !== 'WAX');
-    const up = [...liquid].sort((a, b) => b.ch - a.ch).slice(0, 5).filter(t => t.ch > 0);
-    const dn = [...liquid].sort((a, b) => a.ch - b.ch).slice(0, 5).filter(t => t.ch < 0);
-    const vol = [...D.tok.values()].filter(t => t.sym !== 'WAX' && !/USD/.test(t.sym)).sort((a, b) => b.vol - a.vol).slice(0, 5);
-    const row = t => `• ${tokLink(t)} ${fmtUsd(t.usd)} ${arrow(t.ch)} ${pct(t.ch)}`;
-    return reply([`📈 <b>24h movers</b> <i>(tokens with $1k+ liquidity)</i>`, ...up.map(row), '', '📉 <b>Down</b>', ...dn.map(row), '',
-      '🔥 <b>Most traded</b>', ...vol.map(t => `• ${tokLink(t)} ${fmtBig(t.vol)} ${pct(t.ch)}`), '',
-      `<i>As of ${new Date(D.at).toISOString().slice(11, 16)} UTC</i> · <a href="${SITE}/tokens">All tokens</a>`].join('\n'));
+    const wax = D.tok.get('WAX@eosio.token'), waxCh = wax?.ch;
+    // A day in which WAX itself moves 10% moves every WAX-paired token's
+    // dollar price with it; ranked on dollars, the list is WAX's move many
+    // times over. So when WAX moved, tokens rank on what they did against it.
+    const rel = waxCh != null && Math.abs(waxCh) >= 1;
+    const own = t => (rel ? ((1 + t.ch / 100) / (1 + waxCh / 100) - 1) * 100 : t.ch);
+    // Left out: stablecoins, and prices that did not change at all — no trade,
+    // not a move.
+    const stable = t => /USD|EUR|JPY/.test(t.sym) && t.usd > 0.2;
+    const liquid = [...D.tok.values()].filter(t => t.liq >= 1000 && t.ch != null && t.ch !== 0 && t.sym !== 'WAX' && !stable(t));
+    const byOwn = [...liquid].sort((a, b) => own(b) - own(a));
+    const up = byOwn.filter(t => own(t) >= 0.5).slice(0, 6);
+    const dn = [...byOwn].reverse().filter(t => own(t) <= -0.5).slice(0, 6);
+    const row = t => `• ${tokLink(t)} ${fmtUsd(t.usd)} ${arrow(own(t))} <b>${pct(own(t))}</b>${rel ? ` <i>(${pct(t.ch)} in $)</i>` : ''}`;
+    const vol = [...D.tok.values()].filter(t => t.sym !== 'WAX' && !stable(t)).sort((a, b) => b.vol - a.vol).slice(0, 5);
+    return reply([`📈 <b>24h movers</b> <i>($1k+ liquidity${rel ? ', measured against WAX' : ''})</i>`,
+      wax ? `WAX ${fmtUsd(wax.usd)} ${arrow(waxCh)} ${pct(waxCh)}${rel ? ' — so a token that just followed WAX shows ±0% here' : ''}` : '', '',
+      '🟢 <b>Up</b>', ...(up.length ? up.map(row) : ['<i>nothing rose more than 0.5%</i>']), '',
+      '🔴 <b>Down</b>', ...(dn.length ? dn.map(row) : [`<i>nothing fell more than 0.5%${rel ? ' against WAX' : ''}</i>`]), '',
+      '🔥 <b>Most traded</b>', ...vol.map(t => `• ${tokLink(t)} ${fmtBig(t.vol)} ${pct(rel ? own(t) : t.ch)}${rel ? ' vs WAX' : ''}`), '',
+      `<i>As of ${new Date(D.at).toISOString().slice(11, 16)} UTC</i> · <a href="${SITE}/tokens">All tokens</a>`].filter((x, i, arr) => x !== '' || arr[i - 1] !== '').join('\n'));
   }
   if (cmd === '/pools') {
     if (!args[0]) return reply('Usage: /pools <i>SYM</i>');
@@ -1193,9 +1206,12 @@ async function digest(env, B, c) {
     const fees = pos.reduce((s, p) => s + (valued(D, p).fees || 0), 0);
     lines.push(`👛 ${walletLink(a, a)} — LP ${fmtUsd(v)}${pos.length ? ` · ${out ? `⚠️ ${out} out of range` : 'all in range'}` : ''}${fees >= 0.5 ? ` · ${fmtUsd(fees)} fees to compound` : ''}`);
   }
-  const liquid = [...D.tok.values()].filter(t => t.liq >= 1000 && t.ch != null && t.sym !== 'WAX');
-  const up = [...liquid].sort((a, b) => b.ch - a.ch)[0], dn = [...liquid].sort((a, b) => a.ch - b.ch)[0];
-  if (up || dn) lines.push('', `Movers: ${up ? `${tokLink(up)} ${pct(up.ch)}` : ''}${up && dn ? ' · ' : ''}${dn ? `${tokLink(dn)} ${pct(dn.ch)}` : ''} — /top`);
+  const waxCh = wax?.ch, rel = waxCh != null && Math.abs(waxCh) >= 1;
+  const own = t => (rel ? ((1 + t.ch / 100) / (1 + waxCh / 100) - 1) * 100 : t.ch);
+  const liquid = [...D.tok.values()].filter(t => t.liq >= 1000 && t.ch != null && t.ch !== 0 && t.sym !== 'WAX' && !(/USD|EUR|JPY/.test(t.sym) && t.usd > 0.2));
+  const up = [...liquid].sort((a, b) => own(b) - own(a))[0], dn = [...liquid].sort((a, b) => own(a) - own(b))[0];
+  const mv = t => `${tokLink(t)} ${pct(own(t))}`;
+  if (up || dn) lines.push('', `Movers${rel ? ' vs WAX' : ''}: ${[up && own(up) > 0.5 ? mv(up) : '', dn && own(dn) < -0.5 ? mv(dn) : ''].filter(Boolean).join(' · ') || 'a quiet day'}`);
   const top = D.farms.find(f => f.staked >= 100);
   if (top) { const p = D.poolById.get(`${top.pd}:${top.pi}`); if (p) lines.push(`Best farm: ${poolLink(p.dex, p.id, `${p.a}/${p.b}`)} ${top.apr?.toFixed(0)}% in ${esc(top.rs)} — /farms`); }
   return lines.join('\n');
