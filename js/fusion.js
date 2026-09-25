@@ -165,17 +165,37 @@ export async function fusionUser(account) {
 
 const auth1 = (account, auth) => auth || [{ actor: account, permission: 'active' }];
 
+// Every token that goes INTO dapp.fusion — WAX to stake, LSWAX to unliquify —
+// is preceded in the same transaction by dapp.fusion::stake {user}. It opens
+// (or touches) the account's row that the incoming transfer is booked to;
+// without it the transfer is refused. Read off every real transaction:
+//   stake · WAX "stake"                              (02551cfb…, 25-09)
+//   stake · LSWAX "|unliquify_exact|…|" · instaredeem (df698189…, 25-09)
+// Claims, reqredeem and redeem stand on their own.
+const openRow = (account, a) => ({ account: FUSION, name: 'stake', authorization: a, data: { user: account } });
+
 // WAX in. The contract mints sWAX one for one and starts it earning.
-export const buildFusionStake = ({ account, wax, auth = null }) => [{
-  account: WAX.contract, name: 'transfer', authorization: auth1(account, auth),
-  data: { from: account, to: FUSION, quantity: asset(wax, 8, 'WAX'), memo: 'stake' },
-}];
+export const buildFusionStake = ({ account, wax, auth = null }) => {
+  const a = auth1(account, auth);
+  return [openRow(account, a), {
+    account: WAX.contract, name: 'transfer', authorization: a,
+    data: { from: account, to: FUSION, quantity: asset(wax, 8, 'WAX'), memo: 'stake' },
+  }];
+};
 
 // sWAX that pays you, into LSWAX that compounds instead.
 export const buildFusionLiquify = ({ account, swax, auth = null }) => [{
   account: FUSION, name: 'liquify', authorization: auth1(account, auth),
   data: { user: account, quantity: asset(swax, 8, 'SWAX') },
 }];
+
+// WAX straight to LSWAX, one transaction: stake it, then liquify exactly the
+// sWAX that just arrived (one for one). The same three actions real users
+// sign (02551cfb…).
+export const buildFusionStakeLiquify = ({ account, wax, auth = null }) => [
+  ...buildFusionStake({ account, wax, auth }),
+  ...buildFusionLiquify({ account, swax: wax, auth }),
+];
 
 // And back. A minimum turns it into the exact variant, which refuses rather
 // than filling at a worse rate than you accepted.
@@ -185,10 +205,28 @@ export function buildFusionUnliquify({ account, lswax, minSwax = null, auth = nu
   // sWAX. Written any other way the contract has nothing to parse.
   const floor = minSwax != null ? Math.floor(Number(minSwax) * 1e8) : null;
   const memo = floor > 0 ? `|unliquify_exact|${floor}|` : 'unliquify';
-  return [{
-    account: LSWAX.contract, name: 'transfer', authorization: auth1(account, auth),
+  const a = auth1(account, auth);
+  return [openRow(account, a), {
+    account: LSWAX.contract, name: 'transfer', authorization: a,
     data: { from: account, to: FUSION, quantity: asset(lswax, 8, 'LSWAX'), memo },
   }];
+}
+
+// Redeeming what most people actually hold: LSWAX. Unliquify with an exact
+// floor, then redeem exactly that floor — the sWAX is guaranteed to be there
+// because the unliquify refuses to give less. Instantly (instaredeem, for the
+// fee) or as a request for the next redemption period. One transaction.
+export function buildFusionRedeemFromLswax({ account, lswax, lswaxInSwax, instant = true, replace = false, auth = null }) {
+  const floor = Math.floor(Number(lswax) * Number(lswaxInSwax) * 0.999 * 1e8) / 1e8;
+  if (!(floor > 0)) throw new Error('Too little LSWAX to redeem.');
+  const swax = floor;
+  return {
+    swax,
+    actions: [
+      ...buildFusionUnliquify({ account, lswax, minSwax: swax, auth }),
+      ...(instant ? buildFusionInstaRedeem({ account, swax, auth }) : buildFusionReqRedeem({ account, swax, replace, auth })),
+    ],
+  };
 }
 
 // Three ways to take what you are owed: as WAX, straight back into sWAX, or as

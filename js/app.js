@@ -31,7 +31,7 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, waxdaoStakerCount, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
-  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER } from './fusion.js';
+  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, buildFusionStakeLiquify, buildFusionRedeemFromLswax } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -4929,57 +4929,100 @@ function drawFusionDesk(st, u) {
   // Resolved at press time, not at draw time: the panel is drawn before
   // anyone has connected, and every button connects first.
   const me = () => wallet.account() || u.account;
-  let mode = 'stake';
+  const WAXID = 'WAX@eosio.token', LSWAXID = 'LSWAX@token.fusion';
+  // Most people hold LSWAX, not sWAX, so redeeming starts from whichever
+  // they have more of.
+  let mode = 'tolswax', from = u.lswax * st.lswaxInSwax > u.swax ? 'lswax' : 'swax';
   const paint = () => {
+    const redeemUnit = from === 'lswax' ? 'LSWAX' : 'sWAX';
     const cfg = {
-      stake: { unit: 'WAX', have: u.wax, note: `WAX to <span class="mono">dapp.fusion</span> with the memo <span class="mono">stake</span>. You get sWAX one for one, and it starts earning immediately. Minimum ${qty(st.minStake)} WAX.` },
+      tolswax: { unit: 'WAX', have: u.wax, note: 'Stakes the WAX and liquifies it in the same transaction: LSWAX, which compounds by itself and can be traded. If Alcor sells LSWAX for less, you see it here.' },
+      stake: { unit: 'WAX', have: u.wax, note: `You get sWAX one for one; it earns WAX rewards you claim. Minimum ${qty(st.minStake)} WAX.` },
       liquify: { unit: 'sWAX', have: u.swax, note: 'Turns sWAX that pays you into LSWAX that compounds for you. It is tradeable; sWAX is not.' },
       unliquify: { unit: 'LSWAX', have: u.lswax, note: `Back the other way, at ${st.lswaxInSwax.toFixed(6)} sWAX per LSWAX. Minimum ${qty(st.minUnliquify)} LSWAX.` },
-      redeem: { unit: 'sWAX', have: u.swax,
+      redeem: { unit: redeemUnit, have: from === 'lswax' ? u.lswax : u.swax,
         note: `Instantly redeemable right now: <b>${qty(st.forRedemption)} sWAX</b> (${qty(st.forRedemption / st.lswaxInSwax)} LSWAX), for ${st.feePct}%.
-          More than that has to go through an epoch's redemption period.` },
+          More than that goes through an epoch's redemption period.${from === 'lswax' ? ' LSWAX is unliquified in the same transaction.' : ''}` },
     }[mode];
     desk.innerHTML = `
       <h3>Stake, liquify or redeem</h3>
       <div class="seg" id="fusionMode" role="radiogroup" aria-label="What to do">
-        ${[['stake', 'Stake'], ['liquify', 'Liquify'], ['unliquify', 'Unliquify'], ['redeem', 'Redeem']]
+        ${[['tolswax', 'WAX → LSWAX'], ['stake', 'Stake'], ['liquify', 'Liquify'], ['unliquify', 'Unliquify'], ['redeem', 'Redeem']]
           .map(([k, label]) => `<button role="radio" data-fmode="${k}" aria-checked="${k === mode}">${label}</button>`).join('')}
       </div>
+      ${mode === 'redeem' ? `<div class="toolbar" style="margin:8px 0 0"><span class="sub">Redeem from</span>
+        <button class="chip" data-ffrom="lswax" aria-pressed="${from === 'lswax'}">LSWAX · ${bal(u.lswax)}</button>
+        <button class="chip" data-ffrom="swax" aria-pressed="${from === 'swax'}">sWAX · ${bal(u.swax)}</button></div>` : ''}
       <div class="buyinput"><input id="fusionAmt" type="number" step="any" min="0" inputmode="decimal" placeholder="0" aria-label="Amount">
         <span class="unit">${cfg.unit}</span></div>
       <div class="buymeta"><span>You hold ${bal(cfg.have)} ${cfg.unit}</span>
         <span class="quick"><button class="linkbtn" id="fusionMax">Max</button></span></div>
       <div class="buyresult"><span class="k">You get</span><b id="fusionGet">—</b><span class="sub" id="fusionGetSub">${cfg.note}</span></div>
-      ${mode === 'redeem' ? `<div class="furedeemcap${u.swax > st.forRedemption ? ' over' : ''}">
+      <div id="fusionMarket" class="sub" style="margin:6px 0"></div>
+      ${mode === 'redeem' ? `<div class="furedeemcap${cfg.have * (from === 'lswax' ? st.lswaxInSwax : 1) > st.forRedemption ? ' over' : ''}">
         <span>Instant limit</span><b>${bal(st.forRedemption)} sWAX</b>
-        <span class="dim">= ${bal(st.forRedemption / st.lswaxInSwax)} LSWAX${u.swax > st.forRedemption ? ' &middot; you hold more than that' : ''}</span></div>` : ''}
+        <span class="dim">= ${bal(st.forRedemption / st.lswaxInSwax)} LSWAX</span></div>` : ''}
       ${mode === 'redeem' ? `<label class="pwtop"><input type="checkbox" id="fusionReplace"><span>Replace a request I already have</span></label>` : ''}
       <div id="fusionOutBox"></div>
       ${mode === 'redeem'
-        ? `<button class="btn" id="fusionGo">Request a redemption</button>
-           <button class="btn ghost" id="fusionInsta">Redeem instantly &mdash; ${st.feePct}% fee</button>
+        ? `<button class="btn" id="fusionInsta">Redeem instantly &mdash; ${st.feePct}% fee</button>
+           <button class="btn ghost" id="fusionGo">Request a redemption (no fee, wait for its window)</button>
            ${st.openEpoch && u.requests.some(r => r.epochId === st.openEpoch.id) ? '<button class="btn" id="fusionTake">Withdraw now</button>' : ''}`
         : '<button class="btn" id="fusionGo">Review</button>'}`;
+    desk.querySelectorAll('[data-ffrom]').forEach(b => b.onclick = () => { from = b.dataset.ffrom; paint(); });
 
     const amt = () => Math.max(0, Number($('#fusionAmt')?.value) || 0);
+    // sWAX the amount stands for, whichever token it is typed in.
+    const asSwax = v => (mode === 'redeem' && from === 'lswax' ? v * st.lswaxInSwax * 0.999 : v);
+    let market = null, mgen = 0;
+    // What Alcor pays for the same trade: buying LSWAX with WAX, or selling
+    // LSWAX for WAX. When the market beats the contract, the page says so.
+    const checkMarket = debounce(async () => {
+      const my = ++mgen, v = amt(), el = $('#fusionMarket');
+      market = null;
+      if (!el) return;
+      el.innerHTML = '';
+      const pair = mode === 'tolswax' ? [WAXID, LSWAXID] : mode === 'redeem' && from === 'lswax' ? [LSWAXID, WAXID] : null;
+      if (!pair || !(v > 0)) return;
+      const leg = await swapLeg({ fromId: pair[0], toId: pair[1], amountIn: v, me: me() || 'eosio.null', auth: [{ actor: me() || 'eosio.null', permission: 'active' }] }).catch(() => null);
+      if (my !== mgen || !leg?.expect) return;
+      const viaContract = mode === 'tolswax' ? v / st.lswaxInSwax : asSwax(v) * (1 - st.feePct / 100);
+      const better = leg.expect > viaContract * 1.002;
+      market = { expect: leg.expect, better, pair };
+      const unit = mode === 'tolswax' ? 'LSWAX' : 'WAX';
+      el.innerHTML = better
+        ? `<b class="pos">Alcor gives more:</b> ${qty(leg.expect)} ${unit} instead of ${qty(viaContract)} (+${((leg.expect / viaContract - 1) * 100).toFixed(2)}%). <button class="linkbtn" id="fusionMkt">${mode === 'tolswax' ? 'Buy on Alcor instead' : 'Sell on Alcor instead'}</button>`
+        : `Alcor would give ${qty(leg.expect)} ${unit} — the contract gives more.`;
+      const btn = $('#fusionMkt');
+      if (btn) btn.onclick = async () => {
+        if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
+        const a = [{ actor: wallet.account(), permission: 'active' }];
+        const l = await swapLeg({ fromId: pair[0], toId: pair[1], amountIn: v, me: wallet.account(), auth: a }).catch(e => ({ skipped: e.message }));
+        if (!l?.actions) { $('#fusionOutBox').innerHTML = `<div class="err">${esc(l?.skipped || 'No route on Alcor right now.')}</div>`; return; }
+        run(l.actions, mode === 'tolswax' ? 'Bought — the LSWAX is in your wallet.' : 'Sold — the WAX is in your wallet.');
+      };
+    }, 400);
     const quote = () => {
       const el = $('#fusionGet');
       if (!el) return;
       const v = amt();
+      checkMarket();
       if (!(v > 0)) { el.textContent = '—'; return; }
-      el.textContent = mode === 'stake' ? `${qty(v)} sWAX`
+      const sw = asSwax(v);
+      el.textContent = mode === 'tolswax' ? `${qty(v / st.lswaxInSwax)} LSWAX`
+        : mode === 'stake' ? `${qty(v)} sWAX`
         : mode === 'liquify' ? `${qty(v / st.lswaxInSwax)} LSWAX`
         : mode === 'unliquify' ? `${qty(v * st.lswaxInSwax)} sWAX`
-        : v > st.forRedemption
-        ? `${qty(v)} WAX through a redemption period — only ${qty(st.forRedemption)} can be taken instantly`
-        : `${qty(v * (1 - st.feePct / 100))} WAX instantly, or ${qty(v)} WAX through a redemption period`;
+        : sw > st.forRedemption
+        ? `${qty(sw)} WAX through a redemption period — only ${qty(st.forRedemption)} can be taken instantly`
+        : `${qty(sw * (1 - st.feePct / 100))} WAX instantly, or ${qty(sw)} WAX through a redemption period`;
     };
     $('#fusionAmt')?.addEventListener('input', quote);
     const max = $('#fusionMax');
     if (max) max.onclick = () => {
       const el = $('#fusionAmt');
       // A wallet with no WAX left cannot sign the next thing it wants to do.
-      if (el) el.value = String(mode === 'stake' ? Math.max(0, Math.floor((cfg.have - 1) * 1e4) / 1e4) : Math.floor(cfg.have * 1e8) / 1e8);
+      if (el) el.value = String(cfg.unit === 'WAX' ? Math.max(0, Math.floor((cfg.have - 1) * 1e4) / 1e4) : Math.floor(cfg.have * 1e8) / 1e8);
       quote();
     };
     desk.querySelectorAll('[data-fmode]').forEach(b => b.onclick = () => { mode = b.dataset.fmode; paint(); });
@@ -4987,14 +5030,19 @@ function drawFusionDesk(st, u) {
     const run = (actions, msg) => runStakeTx($('#fusionOutBox'), actions, msg).then(ok => {
       if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
     });
+    // Only when the balances on screen are the connected wallet's own.
+    const need = (v, have, unit) => (u.account && u.account === wallet.account() && v > have + 1e-9 ? `You hold ${qty(have)} ${unit}.` : null);
     const go = $('#fusionGo');
     if (go) go.onclick = async () => {
       const box = $('#fusionOutBox');
       const v = amt();
       if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
       if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
-      if (mode === 'stake') {
+      const short = need(v, cfg.have, cfg.unit);
+      if (short) { box.innerHTML = `<div class="err">${short}</div>`; return; }
+      if (mode === 'stake' || mode === 'tolswax') {
         if (v < st.minStake) { box.innerHTML = `<div class="err">The contract wants at least ${qty(st.minStake)} WAX.</div>`; return; }
+        if (mode === 'tolswax') return run(buildFusionStakeLiquify({ account: me(), wax: v }), `Done — ${qty(v / st.lswaxInSwax)} LSWAX is in your wallet.`);
         return run(buildFusionStake({ account: me(), wax: v }), `Staked ${qty(v)} WAX — you hold the sWAX now.`);
       }
       if (mode === 'liquify') return run(buildFusionLiquify({ account: me(), swax: v }), 'Liquified — you hold LSWAX now.');
@@ -5002,24 +5050,35 @@ function drawFusionDesk(st, u) {
         if (v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract wants at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
         return run(buildFusionUnliquify({ account: me(), lswax: v, minSwax: v * st.lswaxInSwax * 0.99 }), 'Unliquified — it is sWAX again.');
       }
+      if (from === 'lswax' && v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract unliquifies at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
       const replace = !!$('#fusionReplace')?.checked;
+      const sw = asSwax(v);
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-        Request a redemption of <b>${qty(v)} sWAX</b>. The contract books it into an epoch; you then have to come back during that
+        Request a redemption of <b>${qty(sw)} sWAX</b>${from === 'lswax' ? ` (from ${qty(v)} LSWAX, unliquified in the same transaction)` : ''}. The contract books it into an epoch; you then come back during that
         epoch's 48-hour redemption period and withdraw, or the request expires and the sWAX stays staked.
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionReq">Sign and request</button></div></div>`;
-      $('#fusionReq').onclick = () => run(buildFusionReqRedeem({ account: me(), swax: v, replace }), 'Requested — come back when its window opens.');
+      $('#fusionReq').onclick = () => run(from === 'lswax'
+        ? buildFusionRedeemFromLswax({ account: me(), lswax: v, lswaxInSwax: st.lswaxInSwax, instant: false, replace }).actions
+        : buildFusionReqRedeem({ account: me(), swax: v, replace }), 'Requested — come back when its window opens.');
     };
     const insta = $('#fusionInsta');
     if (insta) insta.onclick = async () => {
       const box = $('#fusionOutBox');
       const v = amt();
       if (!(v > 0)) { box.innerHTML = '<div class="err">Enter an amount.</div>'; return; }
-      if (v > st.forRedemption) { box.innerHTML = `<div class="err">Only ${qty(st.forRedemption)} WAX is held for redemptions right now, so an instant redeem of ${qty(v)} would fail. Request one for the next redemption period instead.</div>`; return; }
+      const short = need(v, cfg.have, cfg.unit);
+      if (short) { box.innerHTML = `<div class="err">${short}</div>`; return; }
+      const sw = asSwax(v);
+      if (sw > st.forRedemption) { box.innerHTML = `<div class="err">Only ${qty(st.forRedemption)} sWAX can be redeemed instantly right now, so ${qty(sw)} would fail. Redeem less, or request a redemption.</div>`; return; }
+      if (from === 'lswax' && v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract unliquifies at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
       if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-        Redeem <b>${qty(v)} sWAX</b> now for about <b>${qty(v * (1 - st.feePct / 100))} WAX</b> — the protocol keeps ${st.feePct}%.
+        Redeem <b>${qty(sw)} sWAX</b>${from === 'lswax' ? ` (from ${qty(v)} LSWAX)` : ''} now for about <b>${qty(sw * (1 - st.feePct / 100))} WAX</b> — the protocol keeps ${st.feePct}%. One transaction.
+        ${market?.better ? `<br><b class="pos">Selling on Alcor gives ${qty(market.expect)} WAX</b> — see the line above.` : ''}
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionInstaGo">Sign and redeem</button></div></div>`;
-      $('#fusionInstaGo').onclick = () => run(buildFusionInstaRedeem({ account: me(), swax: v }), 'Redeemed — the WAX is in your wallet.');
+      $('#fusionInstaGo').onclick = () => run(from === 'lswax'
+        ? buildFusionRedeemFromLswax({ account: me(), lswax: v, lswaxInSwax: st.lswaxInSwax, instant: true }).actions
+        : buildFusionInstaRedeem({ account: me(), swax: v }), 'Redeemed — the WAX is in your wallet.');
     };
     const take = $('#fusionTake');
     if (take) take.onclick = () => run(buildFusionRedeem({ account: me() }), 'Redeemed — the WAX is in your wallet.');
