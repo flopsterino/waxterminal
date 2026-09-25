@@ -2114,6 +2114,13 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
 .furedeemcap b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .furedeemcap.over { border-color: var(--warn, var(--accent)); }
+.furedeemcap.big { display: grid; gap: 4px; font-size: 12.5px; padding: 10px 12px; margin: 8px 0; }
+.furedeemcap .capline { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; color: var(--ink); }
+.furedeemcap .capline b { font-size: 18px; }
+.furedeemcap .capbar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin-top: 2px; }
+.furedeemcap .capbar i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+.furedeemcap.over .capbar i { background: var(--warn, #c98500); }
+.furedeemcap .linkbtn { justify-self: start; }
 
 /* ---- blends ------------------------------------------------------------- */
 .blendflow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center;
