@@ -2285,3 +2285,13 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .futable tr.shut td { color: var(--muted); }
 .fuused { height: 3px; background: var(--line); border-radius: 2px; margin-top: 3px; overflow: hidden; }
 .fuused i { display: block; height: 100%; background: var(--accent); }
+
+/* WaxFusion: your LSWAX */
+.fulsbox { display: grid; gap: 6px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 6px 0 10px; font-size: 12.5px; }
+.fulshead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.fulshead b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.fulsways { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px; }
+@media (max-width: 640px) { .fulsways { grid-template-columns: 1fr; } }
+.fulsways > div { display: grid; gap: 2px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); }
+.fulsways .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.fulsways b { font-size: 15px; font-variant-numeric: tabular-nums; }

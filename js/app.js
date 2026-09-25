@@ -4895,7 +4895,7 @@ async function paintFusionUser(st, stale) {
     // The desk is drawn for everybody. How much can be redeemed instantly, and
     // what a stake or a liquify would give, are questions people have before
     // they connect anything — only signing needs a wallet.
-    you.innerHTML = `<h3>Your position</h3><p class="sub">Connect a wallet to see your sWAX, what it owes you, and to sign any of this.</p>`;
+    you.innerHTML = `<h3>Your position</h3><p class="sub">Connect a wallet to see your LSWAX and sWAX, what they are worth in WAX, and what you can take out right now.</p>`;
     drawFusionDesk(st, { account: null, swax: 0, lswax: 0, wax: 0, claimable: 0, requests: [] });
     return;
   }
@@ -4913,12 +4913,28 @@ async function paintFusionUser(st, stale) {
   const req = u.requests.reduce((s, r) => s + r.amount, 0);
   const has = u.swax > 0 || u.lswax > 0 || u.claimable > 0 || req > 0;
 
+  // Most people hold LSWAX, so it leads: what it is worth in WAX, and the
+  // three ways out of it with what each pays today. sWAX and its claims show
+  // only for those who have them.
+  const instantCapLswax = st.forRedemption / (st.lswaxInSwax * 0.999);
+  const lsInstant = Math.min(u.lswax, instantCapLswax);
   you.innerHTML = `<h3>Your position</h3>
-    ${has ? '' : '<p class="sub">Nothing of yours is in WaxFusion yet. Staking WAX below turns it into sWAX, which starts earning straight away.</p>'}
+    ${has ? '' : '<p class="sub">Nothing of yours is in WaxFusion yet. <b>WAX → LSWAX</b> below stakes and liquifies in one go; LSWAX grows by itself and can be traded.</p>'}
+    ${u.lswax > 0 ? `<div class="fulsbox">
+      <div class="fulshead"><span>Your LSWAX</span><b>${bal(u.lswax)} LSWAX</b></div>
+      <div class="dim">worth <b>${bal(lswaxInWax)} WAX</b>${val(lswaxInWax)} &middot; 1 LSWAX = ${st.lswaxInSwax.toFixed(4)} WAX and rising: the rewards are folded in, nothing to claim</div>
+      <div class="fulsways">
+        <div><span class="k">Instantly</span><b>${bal(lsInstant * st.lswaxInSwax * 0.999 * (1 - st.feePct / 100))} WAX</b>
+          <span class="dim">${lsInstant < u.lswax ? `for ${bal(lsInstant)} of your LSWAX — the instant pool holds no more` : `all of it, ${st.feePct}% fee`}</span></div>
+        <div><span class="k">By request</span><b>${bal(lswaxInWax)} WAX</b>
+          <span class="dim">${(() => { const p = planRequest(st, lswaxInWax); return p.parts.length ? `paid ${fusionWhen(p.parts[0].epoch.windowFrom).slice(5, 16)} → ${fusionWhen(p.parts[p.parts.length - 1].epoch.windowTo).slice(5, 16)} UTC` : 'no fee, paid in a redemption period'; })()}</span></div>
+        <div><span class="k">On Alcor</span><b id="fusionAlcorOut">…</b><span class="dim">sold now, no wait</span></div>
+      </div>
+      <div class="toolbar" style="margin:8px 0 0"><button class="btn" data-fgo="insta">Redeem instantly</button><button class="btn ghost" data-fgo="req">Request a redemption</button></div>
+    </div>` : ''}
     <dl class="ftrows wide">
-      <div><dt>sWAX, earning</dt><dd>${bal(u.swax)} sWAX${val(u.swax)}</dd></div>
-      <div><dt>LSWAX</dt><dd>${bal(u.lswax)} LSWAX <span class="dim">= ${bal(lswaxInWax)} sWAX</span>${val(lswaxInWax)}</dd></div>
-      <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${bal(u.claimable)} WAX${val(u.claimable)}</dd></div>
+      ${u.swax > 0 || u.claimable > 0 ? `<div><dt>sWAX, earning</dt><dd>${bal(u.swax)} sWAX${val(u.swax)}</dd></div>
+      <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${bal(u.claimable)} WAX${val(u.claimable)}</dd></div>` : ''}
       ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${bal(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
     </dl>
     ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
@@ -4935,7 +4951,7 @@ async function paintFusionUser(st, stale) {
     <div class="toolbar" style="margin:10px 0 0">
       ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${bal(u.claimable)} WAX</button>
         <button class="btn ghost" data-fclaim="swax">Claim and restake</button>
-        <button class="btn ghost" data-fclaim="lswax">Claim as LSWAX</button>` : '<span class="sub">Nothing to claim right now.</span>'}
+        <button class="btn ghost" data-fclaim="lswax">Claim as LSWAX</button>` : u.swax > 0 ? '<span class="sub">Nothing to claim right now.</span>' : ''}
     </div>
     <div id="fusionClaimOut"></div>`;
 
@@ -4950,7 +4966,15 @@ async function paintFusionUser(st, stale) {
     if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
   });
 
-  drawFusionDesk(st, u);
+  // What selling the LSWAX on Alcor would pay, beside the contract's two ways.
+  if (u.lswax > 0) swapLeg({ fromId: 'LSWAX@token.fusion', toId: 'WAX@eosio.token', amountIn: u.lswax, me, auth: [{ actor: me, permission: 'active' }] })
+    .then(l => { const el = $('#fusionAlcorOut'); if (el) el.textContent = l?.expect ? `${bal(l.expect)} WAX` : 'no route'; })
+    .catch(() => { const el = $('#fusionAlcorOut'); if (el) el.textContent = '—'; });
+  const deskApi = drawFusionDesk(st, u);
+  you.querySelectorAll('[data-fgo]').forEach(b => b.onclick = () => {
+    deskApi?.redeemLswax(b.dataset.fgo === 'insta' ? Math.floor(Math.min(u.lswax, instantCapLswax) * 1e4) / 1e4 : Math.floor(u.lswax * 1e8) / 1e8);
+    $('#fusionDesk')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 // Stake, liquify, unliquify, redeem — one form, four jobs, so the page does not
@@ -5147,6 +5171,15 @@ function drawFusionDesk(st, u) {
     if (take) take.onclick = () => run(buildFusionRedeem({ account: me() }), 'Redeemed — the WAX is in your wallet.');
   };
   paint();
+  // "Redeem" from the position card: the desk opens on it, filled in.
+  return {
+    redeemLswax(amount) {
+      mode = 'redeem'; from = 'lswax';
+      paint();
+      const el = $('#fusionAmt');
+      if (el) { el.value = String(amount); el.dispatchEvent(new Event('input')); }
+    },
+  };
 }
 
 // ---------------------------------------------------------------- RATINGS ---
