@@ -31,7 +31,7 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, waxdaoStakerCount, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
-  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, buildFusionStakeLiquify, buildFusionRedeemFromLswax } from './fusion.js';
+  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, buildFusionStakeLiquify, buildFusionRedeemFromLswax, redemptionEpochs, planRequest } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -4644,6 +4644,32 @@ function fusionTimeline(st) {
   <div class="fulegend"><span><i class="d open"></i> redemption period open now</span><span><i class="d"></i> upcoming redemption period</span><span><i class="d past"></i> closed</span></div>`;
 }
 
+// How much WAX each epoch frees for redemption requests, how much of it is
+// already spoken for, and how much a new request can still take — the three
+// epochs reqredeem actually looks at, with the one a request lands in first
+// marked.
+function fusionEpochTable(st) {
+  const eps = redemptionEpochs(st);
+  if (!eps.length) return '';
+  const first = eps.find(e => e.open && e.free > 0);
+  const d = t => new Date(t).toISOString().slice(5, 10).replace('-', '/');
+  const rows = eps.map(e => {
+    const pctUsed = e.bucket > 0 ? Math.min(100, e.requested / e.bucket * 100) : 0;
+    return `<tr class="${e === first ? 'next' : ''}${!e.open ? ' shut' : ''}">
+      <td>${d(e.startsAt)} <span class="dim mono">${esc(e.cpuWallet)}</span>${e === first ? ' <span class="pill good">a request now lands here</span>' : ''}</td>
+      <td class="num"><b>${qty(e.bucket)}</b></td>
+      <td class="num">${qty(e.requested)}<div class="fuused"><i style="width:${pctUsed.toFixed(1)}%"></i></div></td>
+      <td class="num ${e.open && e.free > 0 ? 'pos' : 'dim'}">${e.open ? qty(e.free) : 'closed'}</td>
+      <td title="Unstakes ${d(e.unstakeAt)}">${d(e.windowFrom)} ${new Date(e.windowFrom).toISOString().slice(11, 16)} &rarr; ${d(e.windowTo)}</td></tr>`;
+  }).join('');
+  const total = eps.filter(e => e.open).reduce((t, e) => t + e.free, 0);
+  return `<h4 style="margin:14px 0 6px">WAX freed per epoch</h4>
+    <p class="sub" style="margin:0 0 8px">Each epoch stakes WAX as CPU for 14 days. When it unstakes, that WAX comes back — the part people requested goes to them in the epoch's redemption period, the rest is rented out again. A request can still take <b>${qty(total)} WAX</b> across the open epochs${st.availableForRentals > 0 ? `, plus ${qty(st.availableForRentals)} WAX paid on the spot from the rental pool` : ''}.</p>
+    <div class="tablewrap"><table class="futable">
+      <thead><tr><th>Epoch</th><th class="num">Comes free</th><th class="num">Already requested</th><th class="num">Still requestable</th><th>Paid out (UTC)</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
 // ------------------------------------------------------------ WAXFUSION -----
 // Liquid staking with no website left. Everything here is the contract's own
 // state and its own actions; the page's job is to make the clock visible,
@@ -4673,6 +4699,11 @@ async function renderFusion() {
     : st.nextEpoch
       ? `Next redemption period opens ${fusionWhen(st.nextEpoch.windowFrom)} &middot; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}`
       : 'No redemption period is scheduled in what the contract still holds.';
+  // The next period is not necessarily where a new request goes: that is the
+  // earliest epoch that still has WAX to give.
+  const landing = redemptionEpochs(st).find(e => e.open && e.free > 0);
+  const landLine = landing && landing !== st.nextEpoch && landing.id !== st.nextEpoch?.id
+    ? ` A request made now is paid in the period from <b>${fusionWhen(landing.windowFrom)}</b>.` : '';
 
   // The shape of the thing, drawn once so the words underneath have something
   // to point at: WAX goes in and becomes sWAX, sWAX pays you, and LSWAX is the
@@ -4716,8 +4747,9 @@ async function renderFusion() {
       </div>
 
       <div class="card fuwindow"><h3>Redemption periods</h3>
-        <p class="sub" style="margin:0 0 4px">${windowLine}.</p>
+        <p class="sub" style="margin:0 0 4px">${windowLine}.${landLine}</p>
         ${fusionTimeline(st)}
+        ${fusionEpochTable(st)}
       </div>
 
       <div class="card" style="margin-bottom:12px"><h3>Revenue split <span class="dim">&mdash; ${qty(st.revenueDistributed)} WAX paid out so far</span></h3>
@@ -5082,8 +5114,11 @@ function drawFusionDesk(st, u) {
       const replace = !!$('#fusionReplace')?.checked;
       const sw = asSwax(v);
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
-        Request a redemption of <b>${qty(sw)} sWAX</b>${from === 'lswax' ? ` (from ${qty(v)} LSWAX, unliquified in the same transaction)` : ''}. The contract books it into an epoch; you then come back during that
-        epoch's 48-hour redemption period and withdraw, or the request expires and the sWAX stays staked.
+        Request a redemption of <b>${qty(sw)} sWAX</b>${from === 'lswax' ? ` (from ${qty(v)} LSWAX, unliquified in the same transaction)` : ''}.
+        ${(() => { const p = planRequest(st, sw); return p.impossible > 0
+          ? `<br><b class="neg">The open epochs and the rental pool together hold ${qty(sw - p.impossible)} WAX, so the contract will refuse ${qty(sw)}.</b>`
+          : `<br>It is booked into ${p.parts.map(x => `<b>${qty(x.amount)} WAX</b> in the period <b>${fusionWhen(x.epoch.windowFrom)} &rarr; ${fusionWhen(x.epoch.windowTo)}</b>`).join(' and ')}${p.paidNow > 0 ? `${p.parts.length ? ', and ' : ''}<b>${qty(p.paidNow)} WAX</b> is paid right away from the rental pool` : ''}.`; })()}
+        Come back during that 48-hour period and withdraw, or the request expires and the sWAX stays staked.
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionReq">Sign and request</button></div></div>`;
       $('#fusionReq').onclick = () => run(from === 'lswax'
         ? buildFusionRedeemFromLswax({ account: me(), lswax: v, lswaxInSwax: st.lswaxInSwax, instant: false, replace }).actions

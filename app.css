@@ -2276,3 +2276,12 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 /* Inside the flow the builder does not need its own "Open a position" heading. */
 .pfdeposit .card > h3:first-child, .pfdeposit .section > h3:first-child { display: none; }
 .pfdeposit > .card { border: 0; padding: 0; background: none; }
+
+/* WaxFusion: WAX freed per epoch */
+.futable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.futable th, .futable td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.futable .num { text-align: right; font-variant-numeric: tabular-nums; }
+.futable tr.next td { background: var(--accent-soft); }
+.futable tr.shut td { color: var(--muted); }
+.fuused { height: 3px; background: var(--line); border-radius: 2px; margin-top: 3px; overflow: hidden; }
+.fuused i { display: block; height: 100%; background: var(--accent); }

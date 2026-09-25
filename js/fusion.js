@@ -50,7 +50,7 @@ export async function fusionState({ now = Date.now() } = {}) {
   const startedAt = Number(g.last_epoch_start_time) || 0;
   // The last few epochs, which is where the open window is if there is one.
   const epochs = await getRows(FUSION, FUSION, 'epochs', {
-    limit: 6, lower: String(Math.max(0, startedAt - Number(g.cpu_rental_epoch_length_seconds || 0) * 3)),
+    limit: 12, lower: String(Math.max(0, startedAt - Number(g.cpu_rental_epoch_length_seconds || 0) * 3)),
   }).then(d => (d.rows || []).map(e => ({
     id: Number(e.start_time),
     startsAt: Number(e.start_time) * 1000,
@@ -113,6 +113,7 @@ export async function fusionState({ now = Date.now() } = {}) {
     aprPct, aprCapPct: g2 ? (Number(g2.max_staker_apr_1e6) || 0) / 1e6 : null,
     paused: !!g2?.panic,
     epochs, openEpoch, nextEpoch,
+    lastEpochStart: startedAt * 1000,
     rewardPool: r ? amt(r.rewardPool) : null,
     top21At: top ? Number(top.last_update) * 1000 : null,
     producers: (top?.block_producers || []).length,
@@ -283,4 +284,35 @@ export function buildFusionKeeper({ account, name, auth = null }) {
   const k = KEEPER.find(x => x.name === name);
   if (!k) throw new Error(`Unknown protocol action ${name}`);
   return [{ account: FUSION, name: k.name, authorization: auth1(account, auth), data: k.args(account) }];
+}
+
+// ---- where a redemption request lands ---------------------------------------
+// Straight from reqredeem (dapp.fusion source, fusion.cpp): it looks at three
+// epochs — the one before last_epoch_start_time, that one, and the next —
+// skips any whose redemption period has already begun, and books the request
+// into the earliest with room. Room is the WAX that epoch's CPU stake returns
+// (wax_bucket) minus what is already requested from it (wax_to_refund). A
+// request too big for one is split across them; what none of them can hold is
+// paid out on the spot from the rental pool, if the pool has it.
+export function redemptionEpochs(st, now = Date.now()) {
+  const step = st.epochSeconds * 1000;
+  const ids = [st.lastEpochStart - step, st.lastEpochStart, st.lastEpochStart + step];
+  return ids.map(id => st.epochs.find(e => e.startsAt === id)).filter(Boolean).map(e => ({
+    ...e,
+    requested: e.toRefund,
+    free: Math.max(0, e.bucket - e.toRefund),
+    open: e.windowFrom > now,          // still takes new requests
+  }));
+}
+export function planRequest(st, swax, now = Date.now()) {
+  let left = swax;
+  const parts = [];
+  for (const e of redemptionEpochs(st, now)) {
+    if (!e.open || !(e.free > 0) || !(left > 0)) continue;
+    const take = Math.min(left, e.free);
+    parts.push({ epoch: e, amount: take });
+    left -= take;
+  }
+  const now_ = Math.min(left, st.availableForRentals);
+  return { parts, paidNow: now_ > 0 ? now_ : 0, impossible: left - now_ > 1e-8 ? left - now_ : 0 };
 }
