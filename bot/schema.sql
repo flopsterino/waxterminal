@@ -6,7 +6,9 @@ CREATE TABLE IF NOT EXISTS chats (
   digest_hour INTEGER NOT NULL DEFAULT -1,   -- local hour, -1 = off
   tz          INTEGER NOT NULL DEFAULT 0,    -- minutes from UTC
   digest_day  INTEGER NOT NULL DEFAULT 0,    -- local day number of the last digest
-  favs        TEXT    NOT NULL DEFAULT '[]'  -- token ids, SYM@contract
+  favs        TEXT    NOT NULL DEFAULT '[]', -- token ids, SYM@contract
+  pending     TEXT    NOT NULL DEFAULT '',   -- a question waiting for its answer (see ask)
+  pending_at  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS watches (
   chat_id   INTEGER NOT NULL,

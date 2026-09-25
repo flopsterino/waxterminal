@@ -383,7 +383,7 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   }
   if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
   return { text: lines.join('\n'), markup: kb([
-    [btn('🔔 Alert me on ±10%', `mv:${t.id}`), btn('🐋 Whale swaps', `wh:${t.id}`)],
+    [btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`), btn('🐋 Big swaps', `wh:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
     [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
   ]) };
@@ -423,10 +423,247 @@ const HELP = [
   '',
   '/alerts — everything this chat gets · /mute <i>8h</i> · /stop',
 ].join('\n');
-const MENU = kb([
-  [btn('📈 Top movers', 'm:/top'), btn('🌾 Best farms', 'm:/farms'), btn('💲 WAX', 'm:/wax')],
-  [btn('🔔 My alerts', 'm:/alerts'), btn('⭐ Favourites', 'm:/favs'), btn('❓ Help', 'm:/help')],
-]);
+
+// ----------------------------------------------------------------- buttons --
+// Nobody should have to remember a command. A keyboard stays at the bottom of
+// a private chat; every menu is tap-through; and anything that needs an input
+// — an account, a token — is asked as a question the person simply answers.
+// What they already watch or favourite comes back as buttons of its own.
+const KEYS = {
+  '📈 Markets': 'markets', '👛 Wallets': 'wallets', '🔔 Alerts': 'alerts', '💧 Liquidity': 'liquidity',
+  '🔎 Look up': 'lookup', '☀️ Daily': 'daily', '❓ FAQ': 'faq', '☰ Menu': 'main',
+};
+const KEYBOARD = { keyboard: [['📈 Markets', '👛 Wallets'], ['🔔 Alerts', '💧 Liquidity'], ['🔎 Look up', '☀️ Daily'], ['❓ FAQ', '☰ Menu']],
+  resize_keyboard: true, is_persistent: true };
+const back = (to = 'main') => [btn('⬅️ Back', `mn:${to}`)];
+// What a question is waiting for: an action, answered by the next message.
+const ASKS = {
+  '/watch': ['Which WAX account should I watch?', 'e.g. myaccount.wam'],
+  '/wallet': ['Which account?', 'e.g. myaccount.wam'],
+  '/price': ['Which token?', 'e.g. CHEESE, TLM or SYM@contract'],
+  '/fav': ['Which token should be a favourite?', 'e.g. CHEESE'],
+  '/move': ['Which token? I will write every time it moves 10%.', 'e.g. CHEESE'],
+  '/whale': ['Which token? I will show every swap above $250.', 'e.g. TLM'],
+  '/liq': ['Which token? I will tell you every time liquidity goes in or out of its pools.', 'e.g. CHEESE'],
+  '/liquidity': ['Which token?', 'e.g. CHEESE'],
+  '/holders': ['Which token?', 'e.g. CHEESE'],
+  '/nfts': ['Which account?', 'e.g. myaccount.wam'],
+  '/pool': ['Which Alcor pool number? It is the number at the end of the pool’s link.', 'e.g. 1252'],
+  '/track': ['Which account should I follow? You can add filters after it, e.g. “somewhale out >500”.', 'account [filters]'],
+  '/floor': ['Which collection, and below what price in WAX? e.g. “alien.worlds below 5” — add a template number to narrow it: “alien.worlds 19552 below 5”.', 'collection below WAX'],
+  '#alert': ['Which token should the price alert be for?', 'e.g. CHEESE'],
+  '#tx': ['Whose transfers?', 'e.g. myaccount.wam'],
+  '#liqlvl': ['Which token, and what total? e.g. “CHEESE above 10000” or “CHEESE below 2000”.', 'TOKEN above|below dollars'],
+};
+async function ask(env, B, chat, action, extra = '') {
+  const [q, ph] = ASKS[action.split(':')[0]] || ['Type your answer:', ''];
+  await DB(env).prepare('UPDATE chats SET pending = ?, pending_at = ? WHERE chat_id = ?').bind(action, Date.now(), chat).run();
+  return say(env, B, chat, `✏️ ${extra || q}`, { force_reply: true, input_field_placeholder: ph.slice(0, 64) });
+}
+// The answer to a question: run what it was waiting for.
+async function answer(env, B, chat, action, text, isPrivate) {
+  await DB(env).prepare("UPDATE chats SET pending = '' WHERE chat_id = ?").bind(chat).run();
+  const t0 = text.trim();
+  if (action === '#alert') {
+    const t = await resolve(env, B, t0.split(/\s+/)[0]);
+    if (!t) return say(env, B, chat, `No token <b>${esc(t0.toUpperCase())}</b> that I know.`, kb([[btn('✏️ Try again', 'ask:#alert')]]));
+    return menu(env, B, chat, `pa:${t.id}`);
+  }
+  if (action.startsWith('#alertx:')) {
+    const id = action.slice(8), t = await resolve(env, B, id);
+    const words = t0.toLowerCase().split(/\s+/);
+    let dir = words.find(w => w === 'above' || w === 'below');
+    const value = Number((words.find(w => /^\$?\d/.test(w)) || '').replace(/[$,]/g, ''));
+    const unit = words.includes('wax') ? 'wax' : 'usd';
+    if (!(value > 0)) return say(env, B, chat, 'I need a price, like <code>0.012</code> or <code>1.5 wax</code>.', kb([[btn('✏️ Try again', `ax:${id}`)]]));
+    if (!dir) { const lv = await live(B, t); const nowV = unit === 'wax' ? lv?.wax : lv?.usd; dir = nowV != null && value < nowV ? 'below' : 'above'; }
+    return command(env, B, chat, `/alert ${id} ${dir} ${value}${unit === 'wax' ? ' wax' : ''}`, { isPrivate });
+  }
+  if (action === '#tx') {
+    const a = t0.toLowerCase().split(/\s+/)[0];
+    if (!ACCOUNT_RE.test(a)) return say(env, B, chat, 'That is not a WAX account name.', kb([[btn('✏️ Try again', 'ask:#tx')]]));
+    return menu(env, B, chat, `tx:${a}`);
+  }
+  if (action === '#liqlvl') return command(env, B, chat, `/liq ${t0}`, { isPrivate });
+  return command(env, B, chat, `${action} ${t0}`, { isPrivate });
+}
+
+// ---- the menus --------------------------------------------------------------
+async function menu(env, B, chat, name, edit = null) {
+  const [key, ...rest] = name.split(':');
+  const arg = rest.join(':');
+  const c = await chatRow(env, chat);
+  const watched = (await DB(env).prepare('SELECT account FROM watches WHERE chat_id = ?').bind(chat).all()).results.map(r => r.account);
+  let text, rows;
+  switch (key) {
+    case 'main':
+      text = '<b>WaxEDGE</b> — what would you like?';
+      rows = [[btn('📈 Markets', 'mn:markets'), btn('👛 Wallets', 'mn:wallets')],
+        [btn('🔔 Alerts', 'mn:alerts'), btn('💧 Liquidity', 'mn:liquidity')],
+        [btn('🔎 Look up an account', 'mn:lookup'), btn('☀️ Daily', 'mn:daily')],
+        [btn('❓ FAQ', 'mn:faq'), btn('⚙️ This chat', 'mn:chat')]];
+      break;
+    case 'markets': {
+      const favs = j(c.favs, []);
+      text = `📈 <b>Markets</b>${favs.length ? '\nYour favourites — tap one for its card:' : ''}`;
+      const fb = favs.map(id => btn(`⭐ ${id.split('@')[0]}`, `tk:${id}`));
+      rows = [];
+      for (let i = 0; i < fb.length; i += 4) rows.push(fb.slice(i, i + 4));
+      rows.push([btn('🔍 Price of a token', 'ask:/price')],
+        [btn('📈 Top movers', 'm:/top'), btn('🌾 Best farms', 'm:/farms'), btn('💲 WAX', 'm:/wax')],
+        [btn('⭐ Favourites board', 'm:/favs'), btn('➕ Add a favourite', 'ask:/fav')], back());
+      break;
+    }
+    case 'wallets':
+      text = watched.length ? '👛 <b>Wallets</b> — tap one:' : '👛 <b>Wallets</b>\nWatch your wallet and I will tell you when a position leaves its range, fees are ready to compound, money moves, or CPU runs low.';
+      rows = [...watched.map(a => [btn(`👛 ${a}`, `mn:w:${a}`)]),
+        [btn('➕ Watch a wallet', 'ask:/watch')], [btn('👀 Look at any wallet', 'ask:/wallet')], back()];
+      break;
+    case 'w':
+      text = `👛 <b>${esc(arg)}</b>`;
+      rows = [[btn('📊 Positions', `m:/status ${arg}`), btn('💰 Value', `m:/wallet ${arg}`), btn('⚙️ CPU / RAM', `m:/res ${arg}`)],
+        [btn('🧾 Transfers', `mn:tx:${arg}`), btn('🖼 NFTs', `m:/nfts ${arg}`)],
+        watched.includes(arg) ? [btn('🔔 Which alerts', `s:${arg}`), btn('❌ Stop watching', `mn:unw:${arg}`)] : [btn('👀 Watch this wallet', `m:/watch ${arg}`)],
+        back('wallets')];
+      break;
+    case 'unw':
+      text = `Stop watching <b>${esc(arg)}</b>?`;
+      rows = [[btn('Yes, stop', `m:/unwatch ${arg}`), btn('No', `mn:w:${arg}`)]];
+      break;
+    case 'tx':
+      text = `🧾 <b>Transfers of ${esc(arg)}</b> — which ones?`;
+      rows = [[btn('All', `m:/tx ${arg}`), btn('📥 In', `m:/tx ${arg} in`), btn('📤 Out', `m:/tx ${arg} out`)],
+        [btn('🔁 Swaps', `m:/tx ${arg} swaps`), btn('🖼 NFTs', `m:/tx ${arg} nfts`), btn('💵 Over $100', `m:/tx ${arg} >100`)],
+        [btn('✏️ My own filter', `ax2:${arg}`)],
+        [btn('🔎 Alert me on every move', `m:/track ${arg}`)], [btn('🔎 Alert me on moves over $100', `m:/track ${arg} >100`)],
+        back('lookup')];
+      break;
+    case 'alerts':
+      text = '🔔 <b>Alerts</b> — what should I tell you about?';
+      rows = [[btn('📋 My alerts', 'm:/alerts')],
+        [btn('🔔 A price', 'ask:#alert'), btn('📊 Every ±10% move', 'ask:/move')],
+        [btn('🐋 Big swaps', 'ask:/whale'), btn('💧 Liquidity moves', 'ask:/liq')],
+        [btn('🆕 New pools', 'm:/newpools'), btn('🌾 New farms', 'm:/newfarms')],
+        [btn('🔎 An account moving', 'ask:/track'), btn('🖼 NFT floor', 'ask:/floor')],
+        [btn('👛 My wallet', 'mn:wallets'), btn('🔕 Mute', 'mn:mute')], back()];
+      break;
+    case 'pa': {
+      const t = await resolve(env, B, arg);
+      if (!t) { text = 'Unknown token.'; rows = [back('alerts')]; break; }
+      const lv = await live(B, t);
+      text = `🔔 <b>${tokLink(t)}</b> is ${fmtUsd(lv?.usd ?? t.usd)}${lv?.wax ? ` (${fmtAmt(lv.wax)} WAX)` : ''}.\nTell me once when it is…`;
+      rows = [[btn('+10%', `pa:${t.id}:10`), btn('+25%', `pa:${t.id}:25`), btn('+50%', `pa:${t.id}:50`), btn('×2', `pa:${t.id}:100`)],
+        [btn('−10%', `pa:${t.id}:-10`), btn('−25%', `pa:${t.id}:-25`), btn('−50%', `pa:${t.id}:-50`)],
+        [btn('✏️ An exact price', `ax:${t.id}`)], [btn('📊 Instead: every ±10%', `mv:${t.id}`)], back('alerts')];
+      break;
+    }
+    case 'mute':
+      text = c.mute_until > Date.now() ? `🔕 Muted until ${new Date(c.mute_until).toISOString().slice(0, 16).replace('T', ' ')} UTC.` : '🔕 Pause all alerts for…';
+      rows = [[btn('1 hour', 'm:/mute 1h'), btn('8 hours', 'm:/mute 8h'), btn('1 day', 'm:/mute 1d'), btn('1 week', 'm:/mute 7d')],
+        [btn('🔔 Unmute', 'm:/mute off')], back('alerts')];
+      break;
+    case 'liquidity':
+      text = '💧 <b>Liquidity</b>';
+      rows = [[btn('💧 Where is a token’s liquidity?', 'ask:/liquidity')],
+        [btn('🔔 Alert me when a token’s liquidity moves', 'ask:/liq')],
+        [btn('🐋 Any pool, $1,000+', 'm:/liq all 1000'), btn('🐋 Any pool, $10,000+', 'm:/liq all 10000')],
+        [btn('📏 When a token’s total crosses a line', 'ask:#liqlvl')],
+        [btn('🏊 One Alcor pool', 'ask:/pool')], back()];
+      break;
+    case 'lookup':
+      text = '🔎 <b>Look up</b> — any account, any token';
+      rows = [[btn('🧾 Transfers of an account', 'ask:#tx')], [btn('🔎 Follow an account', 'ask:/track')],
+        [btn('💰 Wallet value', 'ask:/wallet'), btn('🖼 NFTs', 'ask:/nfts')],
+        [btn('👥 Token holders', 'ask:/holders'), btn('🏊 Alcor pool', 'ask:/pool')], back()];
+      break;
+    case 'daily':
+      text = `☀️ <b>Daily</b>${c.digest_hour >= 0 ? `\nYour digest comes at ${String(c.digest_hour).padStart(2, '0')}:00 (UTC${c.tz >= 0 ? '+' : '−'}${Math.abs(c.tz / 60)}).` : '\nA morning message with WAX, your favourites, your wallets and the day’s movers.'}`;
+      rows = [[btn(c.digest_hour >= 0 ? '🕗 Change the time' : '☀️ Turn the digest on', 'mn:dg')],
+        ...(c.digest_hour >= 0 ? [[btn('Turn it off', 'm:/digest off')]] : []),
+        [btn('⭐ Favourites board', 'm:/favs'), btn('➕ Add a favourite', 'ask:/fav')], back()];
+      break;
+    case 'dg':
+      text = '🕗 At what time?';
+      rows = [[6, 7, 8, 9].map(h => btn(`${String(h).padStart(2, '0')}:00`, `mn:dgh:${h}`)), [10, 12, 18, 21].map(h => btn(`${h}:00`, `mn:dgh:${h}`)), back('daily')];
+      break;
+    case 'dgh':
+      text = `🌍 ${String(arg).padStart(2, '0')}:00 in which time zone?`;
+      rows = [[btn('UTC', `m:/digest ${arg} +0`), btn('UTC+1 (winter CET)', `m:/digest ${arg} +1`)],
+        [btn('UTC+2 (summer CEST)', `m:/digest ${arg} +2`), btn('UTC+3', `m:/digest ${arg} +3`)],
+        [btn('UTC−5 (New York)', `m:/digest ${arg} -5`), btn('UTC−8 (LA)', `m:/digest ${arg} -8`)],
+        [btn('UTC+8 (Asia)', `m:/digest ${arg} +8`), btn('UTC+10 (Sydney)', `m:/digest ${arg} +10`)], back('dg')];
+      break;
+    case 'chat':
+      text = '⚙️ <b>This chat</b>';
+      rows = [[btn('📋 Everything I send here', 'm:/alerts')], [btn('🔕 Mute', 'mn:mute')], [btn('🗑 Forget this chat', 'mn:stop')], back()];
+      break;
+    case 'stop':
+      text = 'Forget this chat? Every watched wallet, alert, favourite and the digest are deleted.';
+      rows = [[btn('Yes, forget everything', 'm:/stop'), btn('No', 'mn:chat')]];
+      break;
+    case 'faq':
+      text = '❓ <b>FAQ</b> — tap a question';
+      rows = [...FAQ.map((f, i) => [btn(f[0], `mn:fq:${i}`)]), back()];
+      break;
+    case 'fq': {
+      const f = FAQ[Number(arg)] || FAQ[0];
+      text = `❓ <b>${esc(f[0])}</b>\n\n${f[1]}`;
+      rows = [...(f[2] ? [f[2]] : []), back('faq')];
+      break;
+    }
+    default:
+      return menu(env, B, chat, 'main', edit);
+  }
+  const markup = kb(rows);
+  if (edit) return tg(env, B, 'editMessageText', { chat_id: chat, message_id: edit, text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: markup });
+  return say(env, B, chat, text, markup);
+}
+
+// ---- FAQ ------------------------------------------------------------------
+// [question, answer (HTML), optional row of buttons]
+const FAQ = [
+  ['What is this bot, and is it safe?',
+    'WaxEDGE watches WAX DeFi for you and tells you when something needs your attention. It only <b>reads</b> public blockchain data: it never asks for a private key, never connects a wallet, and cannot sign or move anything. The actions it points to (compound, claim, join a farm) happen on waxedge.app with your own wallet.'],
+  ['How do I get alerts for my wallet?',
+    'Tap <b>👛 Wallets → ➕ Watch a wallet</b> and send your account name. From then on I watch its Alcor positions, transfers, NFTs, CPU/NET/RAM and vote rewards. Under <b>🔔 Which alerts</b> you switch each kind on or off and set the dollar thresholds. Up to 5 wallets per chat.',
+    [btn('➕ Watch a wallet', 'ask:/watch')]],
+  ['What does “out of range” mean?',
+    'An Alcor position earns trading fees only while the price is inside the range you chose. When the price leaves it, the position turns entirely into one token and earns <b>nothing</b> until the price comes back — or until you move the range. I tell you when it leaves and when it returns. “Close to the edge” is the early warning: the position is already more than 92% one token.'],
+  ['What are “fees ready to compound”?',
+    'Trading fees collect inside your position; they do not grow on their own. Compounding puts them back into the position so they earn too. I tell you when the fees waiting pass your threshold ($5 by default); the link opens your wallet on waxedge.app where one button compounds them.'],
+  ['Why does a farm alert say “join the farm”?',
+    'On Alcor a farm pays only positions that are <b>staked</b> into it. Being in the pool is not enough. When a new farm starts on a pool you are in, I tell you, so you can stake your position and start earning the reward. I also warn you a day before a farm on your pool ends.'],
+  ['Why do I not see every transfer?',
+    'For a watched wallet I skip transfers below your threshold ($10 by default — change it under <b>🔔 Which alerts</b>, down to “all”) and tokens without a price, because unknown incoming tokens are almost always airdrop spam. A transaction that sends one token and receives another is shown as one swap line.'],
+  ['How do CPU, NET and RAM alerts work?',
+    'WAX transactions use CPU and NET, and storing data uses RAM. When one passes 90% your transactions start failing. I warn you once, and again only after it has dropped below 70% and climbs back. Top up via the Staking page on waxedge.app.'],
+  ['What are vote rewards?',
+    'Staked WAX that votes (or picks a proxy) earns vote rewards, claimable once every 24 hours. I remind you when they are ready. If you have staked WAX that is not voting, I tell you once, because it earns nothing that way.'],
+  ['What kinds of price alerts are there?',
+    '• <b>A price</b> — once, when a token goes above or below a price, in dollars or in WAX. Pick +10%, −25%… or type an exact price.\n• <b>Every ±10% move</b> — every time it moves that much from the last price I reported, up or down.\n• <b>Big swaps</b> — every swap of the token above $250 in its deepest Alcor pools, with who bought or sold.\nPrices are checked every two minutes against Alcor’s live price.',
+    [btn('🔔 Set a price alert', 'ask:#alert')]],
+  ['What are liquidity alerts?',
+    'Liquidity is the money in a token’s pools; it decides how much you can buy or sell without moving the price. I report every deposit and withdrawal on <b>Alcor</b> and <b>TacoSwap</b>: how much, by whom, and how big the pool is afterwards — flagged when it is 10% or more of the pool. A large withdrawal is often the first sign of trouble. You can also get one alert when a token’s total liquidity crosses a line.',
+    [btn('💧 Liquidity alerts', 'mn:liquidity')]],
+  ['Can I follow someone else’s account?',
+    'Yes — any account, it is all public. <b>🔎 Look up → Transfers of an account</b> shows its latest transfers with quick filters; <b>Follow an account</b> alerts you when it moves. Filters you can type: a token (<code>CHEESE</code>), <code>in</code> / <code>out</code>, <code>swaps</code>, <code>nfts</code>, a minimum like <code>&gt;500</code>, <code>from:account</code>, <code>to:account</code>, <code>memo:text</code>. Example: <code>somewhale CHEESE out &gt;500</code>.',
+    [btn('🔎 Look up an account', 'mn:lookup')]],
+  ['What are new pools, new farms and NFT floor alerts?',
+    '• <b>New pools</b> — every new Alcor pool, or only those with one token.\n• <b>New farms</b> — every new Alcor farm, with the reward and its dollar value.\n• <b>NFT floor</b> — one alert when a collection (or one template in it) is listed on AtomicHub at or below your price in WAX.'],
+  ['What is the daily digest?',
+    'One message a day at the time you choose: WAX, your favourite tokens, your watched wallets (value, out-of-range positions, fees to compound), the biggest movers and the best farm. Add favourites under <b>📈 Markets</b>.',
+    [btn('☀️ Set it up', 'mn:dg')]],
+  ['How fast are alerts, and how fresh are the numbers?',
+    'Checks run every minute, each doing part of the work, so most alerts arrive within 1–5 minutes. Prices for alerts are live from Alcor. The 24h changes, liquidity totals, top movers and farm figures come from the WaxEDGE snapshot, which is refreshed every one to two hours.'],
+  ['Are there limits?',
+    'Per chat: 5 watched wallets, 15 alerts and 12 favourites. Remove one under <b>🔔 Alerts → 📋 My alerts</b> to make room.'],
+  ['How do I pause or remove alerts, and what do you keep?',
+    '<b>🔔 Alerts → 📋 My alerts</b> lists everything with a ❌ button each. <b>Mute</b> pauses everything for a while. <b>⚙️ This chat → Forget this chat</b> deletes all of it. I keep only what an alert needs: this chat’s id, the accounts, tokens and settings you chose — nothing about you.'],
+  ['Can I add the bot to a group?',
+    'Yes. Add it, and anyone in the group can use the commands (type <code>/</code> to see them); alerts set there go to the group. In groups the bottom keyboard is not shown — use /start for the menu.'],
+  ['Does it cost anything?',
+    'No. The bot is free and has no premium tier.'],
+];
 
 // --------------------------------------------------------------- commands --
 async function command(env, B, chat, text, { isPrivate = true } = {}) {
@@ -439,9 +676,13 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   await chatRow(env, chat);
 
   if (cmd === '/start') {
-    return reply(`👋 <b>Welcome to WaxEDGE.</b>\n\nWatch a wallet and I will tell you when a position goes out of range, fees are ready to compound, a farm starts on your pool, money moves in or out, or CPU runs low.\n\nStart with /watch <i>youraccount</i> — or tap around below.`, MENU);
+    await reply(`👋 <b>Welcome to WaxEDGE.</b>\n\nI watch WAX DeFi for you: positions out of range, fees to compound, new farms, money moving, prices, liquidity, whales.\n\nEverything is a tap away — use the buttons below. No commands to remember.`,
+      isPrivate ? KEYBOARD : null);
+    return menu(env, B, chat, 'main');
   }
-  if (cmd === '/help') return reply(HELP, MENU);
+  if (cmd === '/menu') return menu(env, B, chat, 'main');
+  if (cmd === '/faq') return menu(env, B, chat, 'faq');
+  if (cmd === '/help') return reply(HELP, kb([[btn('☰ Menu', 'mn:main'), btn('❓ FAQ', 'mn:faq')]]));
 
   // ---- wallets ----
   if (cmd === '/watch') {
@@ -776,7 +1017,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     if (!(hour >= 0 && hour <= 23) || a === '' || !tzm) return reply('Usage: /digest <i>hour</i> [<i>UTC offset</i>] — e.g. /digest 8 +2 for 08:00 in Belgium in summer. /digest off to stop.');
     const tz = (tzm[1] === '-' ? -1 : 1) * (Number(tzm[2]) * 60 + Number(tzm[3] || 0));
     await DB(env).prepare('UPDATE chats SET digest_hour = ?, tz = ?, digest_day = ? WHERE chat_id = ?').bind(hour, tz, localDay(now, tz), chat).run();
-    return reply(`☀️ Every day at ${String(hour).padStart(2, '0')}:00 (UTC${tz >= 0 ? '+' : '−'}${Math.abs(tz / 60)}): WAX, your /favs, your watched wallets and the day's movers. Here is how it looks:`)
+    return reply(`☀️ Every day at ${String(hour).padStart(2, '0')}:00 (UTC${tz >= 0 ? '+' : '−'}${Math.abs(tz / 60)}): WAX, your favourite tokens, your watched wallets and the day's movers. Here is how it looks:`)
       .then(async () => say(env, B, chat, await digest(env, B, { chat_id: chat, favs: (await chatRow(env, chat)).favs, tz })));
   }
   if (cmd === '/mute') {
@@ -803,7 +1044,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     const t = await resolve(env, B, cmdRaw);
     if (t) { const c = await tokenCard(env, B, t); return reply(c.text, c.markup); }
   }
-  if (cmdRaw.startsWith('/') || isPrivate) return reply(HELP, MENU);
+  if (cmdRaw.startsWith('/') || isPrivate) return reply('I did not understand that. Tap a button below, or ☰ Menu.', kb([[btn('☰ Menu', 'mn:main'), btn('❓ FAQ', 'mn:faq')]]));
 }
 
 async function addMove(env, B, chat, t, p) {
@@ -879,6 +1120,25 @@ async function onCallback(env, B, cq) {
   await chatRow(env, chat);
   if (d === 'x') { await toast('Saved'); return tg(env, B, 'editMessageReplyMarkup', { chat_id: chat, message_id: mid, reply_markup: kb([]) }); }
   if (d.startsWith('m:')) { await toast(); return command(env, B, chat, d.slice(2), { isPrivate: cq.message.chat.type === 'private' }); }
+  if (d.startsWith('mn:')) { await toast(); return menu(env, B, chat, d.slice(3), mid); }
+  if (d.startsWith('ask:')) { await toast(); return ask(env, B, chat, d.slice(4)); }
+  if (d.startsWith('tk:')) {
+    await toast();
+    const t = await resolve(env, B, d.slice(3));
+    if (!t) return;
+    const c = await tokenCard(env, B, t);
+    return say(env, B, chat, c.text, c.markup);
+  }
+  if (d.startsWith('ax:')) { await toast(); return ask(env, B, chat, `#alertx:${d.slice(3)}`, `Type the price in dollars — or add “wax” for a price in WAX. e.g. <code>0.012</code> or <code>1.5 wax</code>. I work out above or below from today’s price.`); }
+  if (d.startsWith('ax2:')) { await toast(); return ask(env, B, chat, `/tx ${d.slice(4)}`, `Filters for ${esc(d.slice(4))}, any mix: a token, <code>in</code> / <code>out</code>, <code>swaps</code>, <code>nfts</code>, <code>&gt;100</code>, <code>from:acct</code>, <code>to:acct</code>, <code>memo:text</code> — e.g. <code>CHEESE in &gt;10</code>`); }
+  if (d.startsWith('pa:')) {
+    const [, id, pc] = d.split(':');
+    const t = await resolve(env, B, id), lv = t ? await live(B, t) : null;
+    if (!lv) return toast('No live price right now');
+    const value = Number((lv.usd * (1 + Number(pc) / 100)).toPrecision(4));
+    await toast();
+    return command(env, B, chat, `/alert ${t.id} ${Number(pc) > 0 ? 'above' : 'below'} ${value}`);
+  }
   if (d.startsWith('s:')) { await toast(); return settingsMessage(env, B, chat, d.slice(2)); }
   if (d.startsWith('o:')) {
     const [, acct, key] = d.split(':');
@@ -1286,7 +1546,22 @@ export default {
       const u = await req.json().catch(() => null);
       const B = budget(40);
       try {
-        if (u?.message?.text && (u.message.text.startsWith('/') || u.message.chat.type === 'private')) await command(env, B, u.message.chat.id, u.message.text, { isPrivate: u.message.chat.type === 'private' });
+        const m = u?.message;
+        if (m?.text) {
+          const chat = m.chat.id, isPrivate = m.chat.type === 'private', text = m.text.trim();
+          const toMe = isPrivate || text.startsWith('/') || m.reply_to_message?.from?.is_bot;
+          if (KEYS[text]) {
+            await DB(env).prepare("UPDATE chats SET pending = '' WHERE chat_id = ?").bind(chat).run().catch(() => {});
+            await menu(env, B, chat, KEYS[text]);
+          } else if (toMe && !text.startsWith('/')) {
+            const c = await chatRow(env, chat);
+            if (c.pending && Date.now() - (c.pending_at || 0) < 15 * 60e3) await answer(env, B, chat, c.pending, text, isPrivate);
+            else if (isPrivate) await command(env, B, chat, text, { isPrivate });
+          } else if (toMe) {
+            await DB(env).prepare("UPDATE chats SET pending = '' WHERE chat_id = ?").bind(chat).run().catch(() => {});
+            await command(env, B, chat, text, { isPrivate });
+          }
+        }
         else if (u?.callback_query) await onCallback(env, B, u.callback_query);
       } catch (e) { console.log('update failed', e?.message); }
       return new Response('ok');
