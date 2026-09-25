@@ -203,6 +203,144 @@ function resources(acc) {
 }
 const bar = v => `${'▰'.repeat(Math.round(v * 10))}${'▱'.repeat(10 - Math.round(v * 10))} ${(v * 100).toFixed(0)}%`;
 
+// ---------------------------------------------------------------- transfers --
+// One wallet's transfers, read as events: a transaction that both sends and
+// receives tokens is a swap and reads as one line; NFTs are their own kind.
+// Shared by the wallet watch, /track and /tx, so all three read alike.
+function eventsFrom(D, a, actions) {
+  const byTrx = new Map();
+  for (const x of actions) {
+    const dt = x.act?.data || {};
+    if (dt.from === dt.to || (dt.from !== a && dt.to !== a)) continue;
+    if (!byTrx.has(x.trx_id)) byTrx.set(x.trx_id, []);
+    byTrx.get(x.trx_id).push(x);
+  }
+  const events = [];
+  for (const [trx, xs] of byTrx) {
+    const at = Date.parse(`${String(xs[0].timestamp || '').replace(/Z?$/, 'Z')}`) || 0;
+    const seq = Math.max(...xs.map(x => Number(x.global_sequence) || 0));
+    const tok = [], nft = [];
+    for (const x of xs) {
+      const dt = x.act.data;
+      if (Array.isArray(dt.asset_ids)) { nft.push({ in: dt.to === a, n: dt.asset_ids.length, who: dt.to === a ? dt.from : dt.to, memo: dt.memo || '' }); continue; }
+      const q = parseQty(dt.quantity);
+      const id = `${q.sym}@${x.act.account}`;
+      const t = D.tok.get(id);
+      tok.push({ in: dt.to === a, n: q.n, sym: q.sym, id, t, usd: t ? q.n * t.usd : null, who: dt.to === a ? dt.from : dt.to, memo: dt.memo || '' });
+    }
+    const ins = tok.filter(x => x.in), outs = tok.filter(x => !x.in);
+    const name = x => `${fmtAmt(x.n)} ${x.t ? tokLink(x.t) : esc(x.sym)}`;
+    const base = { at, trx, seq };
+    if (ins.length && outs.length) {
+      const priced = ins.some(x => x.usd != null) || outs.some(x => x.usd != null);
+      const usd = priced ? Math.max(ins.reduce((t, x) => t + (x.usd || 0), 0), outs.reduce((t, x) => t + (x.usd || 0), 0)) : null;
+      events.push({ ...base, kind: 'swap', usd, ids: new Set(tok.map(x => x.id)), syms: new Set(tok.map(x => x.sym)),
+        parties: new Set(tok.map(x => x.who)), memo: tok.map(x => x.memo).join(' '),
+        text: `🔁 Swapped ${outs.map(name).join(' + ')} → ${ins.map(name).join(' + ')}${usd != null ? ` (${fmtUsd(usd)})` : ''}` });
+    } else {
+      for (const x of tok) {
+        events.push({ ...base, kind: x.in ? 'in' : 'out', usd: x.usd, ids: new Set([x.id]), syms: new Set([x.sym]), parties: new Set([x.who]), memo: x.memo,
+          text: `${x.in ? '📥 Received' : '📤 Sent'} ${name(x)}${x.usd != null ? ` (${fmtUsd(x.usd)})` : ''} ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>${x.memo && x.memo.length <= 60 ? ` — “${esc(x.memo)}”` : ''}` });
+      }
+    }
+    for (const x of nft) {
+      events.push({ ...base, kind: 'nft', usd: null, ids: new Set(), syms: new Set(), parties: new Set([x.who]), memo: x.memo, dir: x.in ? 'in' : 'out',
+        text: `🖼 ${x.in ? 'Received' : 'Sent'} ${x.n} NFT${x.n === 1 ? '' : 's'} ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>` });
+    }
+  }
+  return events.sort((x, y) => x.seq - y.seq);
+}
+
+// The filter language shared by /tx and /track, e.g.
+//   CHEESE in >50 from:liquidcheese memo:fee     swaps     nfts out
+async function parseFilter(env, B, words) {
+  const f = {};
+  for (const w0 of words) {
+    const w = w0.trim(); const lw = w.toLowerCase();
+    if (!w) continue;
+    if (['in', 'received', 'incoming'].includes(lw)) f.dir = 'in';
+    else if (['out', 'sent', 'outgoing'].includes(lw)) f.dir = 'out';
+    else if (['swap', 'swaps'].includes(lw)) f.kind = 'swap';
+    else if (['nft', 'nfts'].includes(lw)) f.kind = 'nft';
+    else if (/^(>|>=|\$|min:?)\d/.test(lw) || /^\d+(\.\d+)?\$$/.test(lw)) f.min = Number(lw.replace(/[^0-9.]/g, ''));
+    else if (/^(from|to|with):[a-z1-5.]{1,12}$/.test(lw)) { const [k, v] = lw.split(':'); f.party = v; f.partyDir = k === 'from' ? 'in' : k === 'to' ? 'out' : null; }
+    else if (/^memo:/.test(lw)) f.memo = w.slice(5).toLowerCase();
+    else {
+      const t = await resolve(env, B, w);
+      if (!t) return { error: `I do not understand “${esc(w)}” — not a token, and not a filter word.` };
+      f.tok = t.id; f.sym = t.sym;
+    }
+  }
+  return f;
+}
+function matches(e, f) {
+  if (f.kind && e.kind !== f.kind) return false;
+  if (f.dir && !(e.kind === f.dir || (e.kind === 'nft' && e.dir === f.dir))) return false;
+  if (f.tok && !e.ids.has(f.tok)) return false;
+  if (f.min && !(e.usd != null && e.usd >= f.min)) return false;
+  if (f.party && !e.parties.has(f.party)) return false;
+  if (f.partyDir && e.kind !== 'swap' && !(e.kind === f.partyDir || e.dir === f.partyDir)) return false;
+  if (f.memo && !String(e.memo || '').toLowerCase().includes(f.memo)) return false;
+  return true;
+}
+const filterText = f => [f.kind === 'swap' ? 'swaps' : f.kind === 'nft' ? 'NFTs' : '', f.dir ? (f.dir === 'in' ? 'incoming' : 'outgoing') : '',
+  f.sym ? esc(f.sym) : '', f.min ? `≥ ${fmtUsd(f.min)}` : '', f.party ? `${f.partyDir === 'in' ? 'from' : f.partyDir === 'out' ? 'to' : 'with'} ${esc(f.party)}` : '',
+  f.memo ? `memo “${esc(f.memo)}”` : ''].filter(Boolean).join(' · ') || 'everything';
+// The server narrows what it can — counterparty and token contract — and the
+// rest is filtered here.
+function txQuery(a, f, tokContract, limit) {
+  const q = new URLSearchParams({ account: a, limit: String(limit), sort: 'desc' });
+  q.set('filter', f.kind === 'nft' ? 'atomicassets:transfer' : tokContract ? `${tokContract}:transfer` : '*:transfer');
+  if (f.party && f.partyDir === 'in') q.set('transfer.from', f.party);
+  if (f.party && f.partyDir === 'out') q.set('transfer.to', f.party);
+  return `/v2/history/get_actions?${q}`;
+}
+
+// --------------------------------------------------------------- liquidity --
+// Liquidity going in or out, from the contracts' own records: Alcor logs every
+// deposit (logmint) and withdrawal (logburn) with exact amounts and the pool's
+// reserves after; TacoSwap only records the LP amount, which is turned into
+// the two tokens with the pair's supply and reserves.
+const codeKey = code => { let v = 0n; for (let i = 0; i < code.length; i++) v |= BigInt(code.charCodeAt(i)) << BigInt(8 * i); return v.toString(); };
+async function alcorPoolInfo(B, D, pid) {
+  const known = D.poolById.get(`alcor:${pid}`);
+  if (known) return known;
+  const pr = (await chain(B, 'get_table_rows', { code: 'swap.alcor', scope: 'swap.alcor', table: 'pools', json: true, limit: 1, lower_bound: String(pid) }))?.rows?.[0];
+  if (!pr || String(pr.id) !== String(pid)) return null;
+  const a = parseQty(pr.tokenA.quantity), b = parseQty(pr.tokenB.quantity);
+  return { dex: 'alcor', id: String(pid), a: a.sym, b: b.sym, ia: `${a.sym}@${pr.tokenA.contract}`, ib: `${b.sym}@${pr.tokenB.contract}`, fee: pr.fee / 100, tvl: null };
+}
+async function liqEvent(B, D, x) {
+  const d = x.act.data, name = x.act.name;
+  const at = Date.parse(`${String(x.timestamp || '').replace(/Z?$/, 'Z')}`) || 0;
+  if (x.act.account === 'swap.alcor') {
+    const pl = await alcorPoolInfo(B, D, d.poolId);
+    if (!pl) return null;
+    const qa = parseQty(d.tokenA), qb = parseQty(d.tokenB), ra = parseQty(d.reserveA), rb = parseQty(d.reserveB);
+    const pa = D.tok.get(pl.ia)?.usd, pb = D.tok.get(pl.ib)?.usd;
+    const usd = pa != null && pb != null ? qa.n * pa + qb.n * pb : pa != null ? qa.n * pa * 2 : pb != null ? qb.n * pb * 2 : null;
+    const after = pa != null && pb != null ? ra.n * pa + rb.n * pb : null;
+    return { at, seq: Number(x.global_sequence), add: name === 'logmint', dex: 'alcor', pool: pl, who: d.owner, a: qa.n, b: qb.n, usd, after,
+      range: Math.abs(d.tickLower) >= 443000 && Math.abs(d.tickUpper) >= 443000 ? 'full range' : 'a range' };
+  }
+  // TacoSwap: LP amount → share of the pair, from the pair as it is now.
+  const q = parseQty(name === 'addliquidity' ? d.to_buy : d.to_sell);
+  const r = (await chain(B, 'get_table_rows', { code: 'swap.taco', scope: 'swap.taco', table: 'pairs', json: true, limit: 1, lower_bound: codeKey(q.sym) }))?.rows?.[0];
+  if (!r || r.id !== q.sym) return null;
+  const sup = parseQty(r.supply).n, A = parseQty(r.pool1.quantity), Bq = parseQty(r.pool2.quantity);
+  if (!(sup > 0)) return null;
+  const share = q.n / sup;
+  const pl = { dex: 'taco', id: r.id, a: A.sym, b: Bq.sym, ia: `${A.sym}@${r.pool1.contract}`, ib: `${Bq.sym}@${r.pool2.contract}` };
+  const pa = D.tok.get(pl.ia)?.usd, pb = D.tok.get(pl.ib)?.usd;
+  const a = A.n * share, b = Bq.n * share;
+  const usd = pa != null && pb != null ? a * pa + b * pb : pa != null ? a * pa * 2 : pb != null ? b * pb * 2 : null;
+  const after = pa != null ? A.n * pa * 2 : pb != null ? Bq.n * pb * 2 : null;
+  return { at, seq: Number(x.global_sequence), add: name === 'addliquidity', dex: 'taco', pool: pl, who: d.user, a, b, usd, after, range: 'full range' };
+}
+const liqText = e => `${e.add ? '💧 <b>Added</b>' : '🔻 <b>Removed</b>'} ${e.usd != null ? `<b>${fmtUsd(e.usd)}</b> ` : ''}${e.add ? 'to' : 'from'} ${poolLink(e.dex, e.pool.id, `${e.pool.a}/${e.pool.b}`)} ${VENUE[e.dex]}
+   ${fmtAmt(e.a)} ${esc(e.pool.a)} + ${fmtAmt(e.b)} ${esc(e.pool.b)} · ${e.range} · <code>${esc(e.who)}</code>${e.after != null ? ` · pool now ${fmtBig(e.after)}` : ''}`;
+const LIQ_FEEDS = [['swap.alcor:logmint', 'lq:m'], ['swap.alcor:logburn', 'lq:b'], ['swap.taco:addliquidity', 'lq:ta'], ['swap.taco:remliquidity', 'lq:tr']];
+
 // --------------------------------------------------------------- database --
 const DB = env => env.DB;
 async function chatRow(env, chat) {
@@ -246,7 +384,8 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
   return { text: lines.join('\n'), markup: kb([
     [btn('🔔 Alert me on ±10%', `mv:${t.id}`), btn('🐋 Whale swaps', `wh:${t.id}`)],
-    [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Pools', `m:/pools ${t.id}`), btn('🌾 Farms', `m:/farms ${t.sym}`)],
+    [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
+    [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
   ]) };
 }
 
@@ -265,6 +404,17 @@ const HELP = [
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
   '/whale <i>SYM</i> [<i>250</i>] — swaps above $250',
   '/newpools [<i>SYM</i>] · /newfarms [<i>SYM</i>]',
+  '',
+  '<b>🔎 Any account</b>',
+  '/tx <i>account</i> [filters] — its transfers, filtered',
+  '/track <i>account</i> [filters] — alert when it moves',
+  '  filters: <i>SYM</i> · in · out · swaps · nfts · &gt;100 · from:<i>acct</i> · to:<i>acct</i> · memo:<i>text</i>',
+  '/nfts <i>account</i> · /holders <i>SYM</i>',
+  '',
+  '<b>💧 Liquidity</b>',
+  '/liquidity <i>SYM</i> — where it sits, recent adds and removes',
+  '/liq <i>SYM</i> [<i>min $</i>] [add|remove] — alert on every move · /liq all 1000',
+  '/liq <i>SYM</i> above|below <i>$</i> — total crosses a line · /pool <i>id</i>',
   '/floor <i>collection</i> [<i>template</i>] below <i>WAX</i>',
   '',
   '<b>☀️ Daily</b>',
@@ -473,6 +623,126 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     return reply(`🖼 I will tell you once when <b>${esc(col)}${tpl ? ` template ${tpl}` : ''}</b> is listed at ${fmtAmt(below)} WAX or less.${nowP != null ? ` Cheapest now: ${fmtAmt(nowP)} WAX (${esc(s.assets?.[0]?.name || '')}).` : ''}`);
   }
 
+  // ---- any account's transfers ----
+  if (cmd === '/tx' || cmd === '/transfers' || cmd === '/track') {
+    const acct = String(args[0] || '').toLowerCase();
+    if (!ACCOUNT_RE.test(acct)) {
+      return reply(`Usage: ${cmd === '/track' ? '/track' : '/tx'} <i>account</i> [filters]\nFilters, any mix: a token (<code>CHEESE</code>), <code>in</code> / <code>out</code>, <code>swaps</code>, <code>nfts</code>, <code>&gt;100</code> (dollars), <code>from:acct</code> <code>to:acct</code> <code>with:acct</code>, <code>memo:text</code>\ne.g. <code>/tx hole.cheese CHEESE in &gt;1</code> · <code>/track somewhale out &gt;500</code>`);
+    }
+    const f = await parseFilter(env, B, args.slice(1));
+    if (f.error) return reply(f.error);
+    if (cmd === '/track') {
+      if (!(await account(B, acct))) return reply(`There is no WAX account <b>${esc(acct)}</b>.`);
+      const err = await addAlert(env, chat, 'track', acct, acct, f);
+      return reply(err || `🔎 Tracking <b>${esc(acct)}</b>: ${filterText(f)}. I will write when it moves — within a few minutes.`);
+    }
+    const D = await data(env, B);
+    const tc = f.tok ? f.tok.split('@')[1] : null;
+    const d = await hyp(B, txQuery(acct, f, tc, 100));
+    if (!d?.actions) return reply('The history index did not answer. Try again in a minute.');
+    const ev = eventsFrom(D, acct, d.actions).filter(e => matches(e, f)).reverse();
+    if (!ev.length) return reply(`Nothing matching in the last ${d.actions.length} transfers of <b>${esc(acct)}</b> <i>(${filterText(f)})</i>.`);
+    const when = ms => new Date(ms).toISOString().slice(5, 16).replace('T', ' ');
+    const tot = ev.filter(e => e.usd != null);
+    const inUsd = tot.filter(e => e.kind === 'in').reduce((t, e) => t + e.usd, 0), outUsd = tot.filter(e => e.kind === 'out').reduce((t, e) => t + e.usd, 0);
+    return reply([`🧾 <b>${esc(acct)}</b> — ${filterText(f)}`, ...ev.slice(0, 15).map(e => `<code>${when(e.at)}</code> ${e.text}`),
+      ev.length > 15 ? `… ${ev.length - 15} more` : '',
+      inUsd || outUsd ? `\nIn ${fmtUsd(inUsd)} · out ${fmtUsd(outUsd)} <i>(at today's prices)</i>` : '',
+      `\n${walletLink(acct)}`].filter(Boolean).join('\n'),
+    kb([[btn('🔎 Alert me on these', `m:/track ${[acct, ...args.slice(1)].join(' ')}`)]]));
+  }
+
+  // ---- liquidity ----
+  if (cmd === '/liq') {
+    // /liq SYM|poolId|all [min $] [add|remove]   or   /liq SYM above|below $
+    const what = String(args[0] || '');
+    if (!what) return reply('Usage:\n/liq <i>SYM</i> [<i>min $</i>] [add|remove] — every time liquidity goes in or out of its pools\n/liq <i>pool id</i> … — one Alcor pool\n/liq all 1000 — any pool, $1,000 and up\n/liq <i>SYM</i> above|below <i>$</i> — total liquidity crosses a line\n/liquidity <i>SYM</i> — where its liquidity is now');
+    const rest = args.slice(1).map(x => x.toLowerCase());
+    if (rest[0] === 'above' || rest[0] === 'below') {
+      const value = Number(String(rest[1] || '').replace(/[$,k]/g, '')) * (/k$/.test(rest[1] || '') ? 1000 : 1);
+      const t = await resolve(env, B, what);
+      if (!t || !(value > 0)) return reply('Usage: /liq <i>SYM</i> above|below <i>dollars</i> — e.g. /liq CHEESE above 10000');
+      const err = await addAlert(env, chat, 'liqlvl', t.id, t.sym, { dir: rest[0], value });
+      return reply(err || `💧 I will tell you once when ${tokLink(t)} has ${rest[0]} ${fmtBig(value)} of liquidity. Now ${fmtBig(t.liq || 0)}.`);
+    }
+    const min = Number((rest.find(x => /^\$?\d/.test(x)) || '0').replace(/[$,]/g, '')) || 0;
+    const side = rest.includes('add') || rest.includes('adds') ? 'add' : rest.includes('remove') || rest.includes('removes') ? 'remove' : 'both';
+    let target, label;
+    if (what.toLowerCase() === 'all') { target = '*'; label = 'any pool'; }
+    else if (/^\d+$/.test(what)) { const pl = await alcorPoolInfo(B, await data(env, B), what); if (!pl) return reply(`No Alcor pool ${esc(what)}.`); target = `alcor:${what}`; label = `${pl.a}/${pl.b}`; }
+    else { const t = await resolve(env, B, what); if (!t) return reply(`No token <b>${esc(what.toUpperCase())}</b>.`); target = t.id; label = t.sym; }
+    if (target === '*' && min < 100) return reply('For every pool, set a floor of at least $100: /liq all 1000');
+    const err = await addAlert(env, chat, 'liq', target, label, { min, side });
+    return reply(err || `💧 I will tell you when liquidity is ${side === 'add' ? 'added to' : side === 'remove' ? 'taken out of' : 'added to or taken out of'} ${esc(label)}${target.startsWith('alcor:') || target === '*' ? '' : '’s pools'}${min ? `, from ${fmtUsd(min)}` : ''} — Alcor and TacoSwap.`);
+  }
+  if (cmd === '/liquidity') {
+    if (!args[0]) return reply('Usage: /liquidity <i>SYM</i>');
+    const t = await resolve(env, B, args[0]);
+    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    const D = await data(env, B);
+    const ps = poolsOf(D, t.id);
+    const byVenue = {};
+    for (const p of ps) byVenue[p.dex] = (byVenue[p.dex] || 0) + p.tvl;
+    const all = ps.reduce((x, p) => x + p.tvl, 0);
+    const lines = [`💧 <b>${tokLink(t)}</b> — ${fmtBig(all)} in pools with it · its own side ≈ ${fmtBig(t.liq || 0)}`,
+      Object.entries(byVenue).sort((a, b) => b[1] - a[1]).map(([d, v]) => `${VENUE[d] || d} ${fmtBig(v)}`).join(' · '), '',
+      ...ps.slice(0, 6).map(p => `• ${poolLink(p.dex, p.id, `${p.a}/${p.b}`)} ${VENUE[p.dex] || p.dex} · ${fmtBig(p.tvl)} · ${fmtBig(p.vol)} traded`)];
+    // Recent moves on Alcor in its pools: the global feed, filtered here.
+    const ids = new Set(ps.filter(p => p.dex === 'alcor').map(p => p.id));
+    const recent = [];
+    for (const [flt] of LIQ_FEEDS.slice(0, 2)) {
+      const d = await hyp(B, `/v2/history/get_actions?filter=${flt}&limit=100&sort=desc`);
+      for (const x of d?.actions || []) if (ids.has(String(x.act.data.poolId))) recent.push(x);
+    }
+    const evs = [];
+    for (const x of recent.sort((a, b) => b.global_sequence - a.global_sequence).slice(0, 6)) { const e = await liqEvent(B, D, x); if (e) evs.push(e); }
+    if (evs.length) lines.push('', '<b>Recent moves</b>', ...evs.map(e => `<code>${new Date(e.at).toISOString().slice(5, 16).replace('T', ' ')}</code> ${liqText(e)}`));
+    return reply(lines.join('\n'), kb([[btn('🔔 Alert on liquidity moves', `m:/liq ${t.id}`)]]));
+  }
+
+  // ---- tokens: holders, supply ----
+  if (cmd === '/holders') {
+    if (!args[0]) return reply('Usage: /holders <i>SYM</i>');
+    const t = await resolve(env, B, args[0]);
+    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    const [h, st] = [await hyp(B, `/v2/state/get_top_holders?contract=${t.c}&symbol=${t.sym}&limit=15`), await chain(B, 'get_currency_stats', { code: t.c, symbol: t.sym })];
+    const sup = parseQty(st?.[t.sym]?.supply).n, max = parseQty(st?.[t.sym]?.max_supply).n;
+    if (!h?.holders?.length) return reply('The holder index did not answer. Try again in a minute.');
+    const tag = a => (/^(swap\.|alcor|waxdaolocker|lock|burn|eosio\.null)/.test(a) ? ' <i>(contract/lock)</i>' : '');
+    return reply([`👥 <b>Top holders of ${tokLink(t)}</b>`, sup ? `Supply ${fmtAmt(sup)}${max && max !== sup ? ` of max ${fmtAmt(max)}` : ''}${t.usd ? ` · market cap ${fmtBig(sup * t.usd)}` : ''}` : '', '',
+      ...h.holders.map((x, i) => `${i + 1}. <code>${esc(x.owner)}</code> ${fmtAmt(x.amount)}${sup ? ` · ${(x.amount / sup * 100).toFixed(2)}%` : ''}${tag(x.owner)}`)].filter(x => x !== '').join('\n'),
+    kb([[btn('🧾 Transfers of #1', `m:/tx ${h.holders[0].owner} ${t.id}`)]]));
+  }
+  if (cmd === '/pool') {
+    const id = String(args[0] || '');
+    if (!/^\d+$/.test(id)) return reply('Usage: /pool <i>Alcor pool id</i> — the number in the pool’s link');
+    const D = await data(env, B);
+    const pl = await alcorPoolInfo(B, D, id);
+    if (!pl) return reply(`No Alcor pool ${esc(id)}.`);
+    const api = await get(B, `${ALCOR}/swap/pools/${id}`, { ttl: 60 });
+    const pa = D.tok.get(pl.ia), pb = D.tok.get(pl.ib);
+    const ra = api?.tokenA?.quantity, rb = api?.tokenB?.quantity;
+    const tvl = ra != null && pa && pb ? ra * pa.usd + rb * pb.usd : pl.tvl;
+    const fs = D.farms.filter(f => f.pd === 'alcor' && f.pi === id);
+    return reply([`🏊 <b>${poolLink('alcor', id, `${pl.a}/${pl.b}`)}</b> · Alcor #${esc(id)} · ${((api?.fee ?? pl.fee * 100) / 10000).toFixed(2)}% fee`,
+      tvl != null ? `In it: ${fmtAmt(ra ?? 0)} ${esc(pl.a)} + ${fmtAmt(rb ?? 0)} ${esc(pl.b)} · <b>${fmtBig(tvl)}</b>` : '',
+      api ? `Volume 24h ${fmtBig(api.volumeUSD24 || 0)} · week ${fmtBig(api.volumeUSDWeek || 0)} · price 24h ${pct(api.change24)}` : '',
+      tvl > 0 && api ? `Fee APR ~${((api.volumeUSD24 || 0) * ((api.fee || 3000) / 1e6) / tvl * 365 * 100).toFixed(1)}%` : '',
+      ...fs.map(f => `🌾 farm in ${esc(f.rs)} · ${f.apr?.toFixed(0)}% · ${fmtUsd(f.usdDay)}/day · ends in ${ago(f.end - Date.now())}`)].filter(Boolean).join('\n'),
+    kb([[btn('💧 Liquidity alerts', `m:/liq ${id}`), btn('🐋 Big swaps', `wh:${pl.ia === 'WAX@eosio.token' ? pl.ib : pl.ia}`)]]));
+  }
+  if (cmd === '/nfts') {
+    const acct = String(args[0] || '').toLowerCase();
+    if (!ACCOUNT_RE.test(acct)) return reply('Usage: /nfts <i>account</i>');
+    const d = await get(B, `${AA}/atomicassets/v1/accounts/${acct}`);
+    const cols = (d?.data?.collections || []).sort((a, b) => Number(b.assets) - Number(a.assets));
+    if (!d) return reply('AtomicAssets did not answer. Try again in a minute.');
+    return reply([`🖼 <b>${esc(acct)}</b> — ${Number(d.data.assets).toLocaleString('en-US')} NFTs in ${cols.length} collection${cols.length === 1 ? '' : 's'}`,
+      ...cols.slice(0, 12).map(c => `• ${esc(c.collection.collection_name)} — ${c.assets}`), cols.length > 12 ? `… and ${cols.length - 12} more` : '',
+      `\n<a href="https://wax.atomichub.io/profile/wax-mainnet/${acct}">Open on AtomicHub</a>`].filter(Boolean).join('\n'),
+    kb([[btn('🔎 Alert on NFTs in/out', `m:/track ${acct} nfts`)]]));
+  }
+
   // ---- daily ----
   if (cmd === '/fav' || cmd === '/unfav') {
     const c = await chatRow(env, chat);
@@ -564,6 +834,9 @@ async function alertsMessage(env, B, chat, edit = null) {
       case 'newpool': return `🆕 new pools${x.label !== 'any' ? ` with ${x.label}` : ''}`;
       case 'newfarm': return `🌾 new farms${x.label !== 'any' ? ` with ${x.label}` : ''}`;
       case 'floor': return `🖼 ${x.label} under ${fmtAmt(p.below)} WAX`;
+      case 'track': return `🔎 ${x.label}: ${filterText(p).replace(/<[^>]+>|&[a-z]+;/g, '')}`;
+      case 'liq': return `💧 ${x.label} liquidity ${p.side === 'add' ? 'added' : p.side === 'remove' ? 'removed' : 'in/out'}${p.min ? ` ≥ ${fmtUsd(p.min)}` : ''}`;
+      case 'liqlvl': return `💧 ${x.label} liquidity ${p.dir} ${fmtBig(p.value)}`;
       default: return x.kind;
     }
   };
@@ -747,55 +1020,75 @@ async function tick(env, when) {
     }
   });
 
-  // ---- transfers, swaps and NFTs --------------------------------------------
+  // ---- transfers, swaps and NFTs: watched wallets and /track ----------------
+  const tracks = A.filter(x => x.kind === 'track');
   jobs.push(async () => {
-    const want = accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.xfer >= 0 || o.nft; }));
-    for (const a of rotate('act', want, 4)) {
-      const d = await hyp(B, `/v2/history/get_actions?account=${a}&filter=*:transfer&limit=30&sort=desc`);
+    const want = [...new Set([
+      ...accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.xfer >= 0 || o.nft; })),
+      ...tracks.map(x => x.target)])].sort();
+    for (const a of rotate('act', want, 5)) {
+      // When everyone asking about this account wants one direction only, the
+      // server filters on it: an account that is also a token contract is
+      // otherwise notified of every transfer of its token, which fills the page.
+      const dirs = new Set([...watchesOf(a).map(() => 'both'), ...tracks.filter(y => y.target === a).map(y => j(y.params).dir || 'both')]);
+      const only = dirs.size === 1 && !dirs.has('both') ? [...dirs][0] : null;
+      const d = await hyp(B, `/v2/history/get_actions?account=${a}&filter=*:transfer&limit=40&sort=desc${only ? `&transfer.${only === 'in' ? 'to' : 'from'}=${a}` : ''}`);
       if (!d?.actions) continue;
       const seen = cur.get(`seq:${a}`);
       const top = Math.max(0, ...d.actions.map(x => Number(x.global_sequence) || 0));
       if (top) setCur(`seq:${a}`, Math.max(top, seen || 0));
       if (!seen) continue;                           // first look: remember where we are, tell nothing
-      const fresh = [...new Map(d.actions.filter(x => Number(x.global_sequence) > seen).map(x => [x.global_sequence, x])).values()]
-        .sort((x, y) => x.global_sequence - y.global_sequence);
-      const byTrx = new Map();
-      for (const x of fresh) {
-        const dt = x.act.data || {};
-        if (dt.from === dt.to || (dt.from !== a && dt.to !== a)) continue;
-        if (!byTrx.has(x.trx_id)) byTrx.set(x.trx_id, []);
-        byTrx.get(x.trx_id).push(x);
-      }
-      const events = [];
-      for (const [, xs] of byTrx) {
-        const tok = [], nft = [];
-        for (const x of xs) {
-          const dt = x.act.data;
-          if (Array.isArray(dt.asset_ids)) { nft.push({ in: dt.to === a, n: dt.asset_ids.length, who: dt.to === a ? dt.from : dt.to }); continue; }
-          const q = parseQty(dt.quantity);
-          const t = D.tok.get(`${q.sym}@${x.act.account}`);
-          tok.push({ in: dt.to === a, n: q.n, sym: q.sym, t, usd: t ? q.n * t.usd : null, who: dt.to === a ? dt.from : dt.to, memo: dt.memo });
-        }
-        const ins = tok.filter(x => x.in), outs = tok.filter(x => !x.in);
-        const name = x => `${fmtAmt(x.n)} ${x.t ? tokLink(x.t) : esc(x.sym)}`;
-        if (ins.length && outs.length) {
-          const usd = Math.max(ins.reduce((s, x) => s + (x.usd || 0), 0), outs.reduce((s, x) => s + (x.usd || 0), 0));
-          const priced = ins.some(x => x.usd != null) || outs.some(x => x.usd != null);
-          events.push({ kind: 'x', usd: priced ? usd : null, text: `🔁 Swapped ${outs.map(name).join(' + ')} → ${ins.map(name).join(' + ')}${priced ? ` (${fmtUsd(usd)})` : ''}` });
-        } else {
-          for (const x of tok) {
-            if (x.usd == null) continue;                 // unpriced incoming tokens are nearly always airdrop spam
-            events.push({ kind: 'x', usd: x.usd, text: `${x.in ? '📥 Received' : '📤 Sent'} ${name(x)} (${fmtUsd(x.usd)}) ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>${x.memo && x.memo.length <= 60 ? ` — “${esc(x.memo)}”` : ''}` });
-          }
-        }
-        for (const x of nft) events.push({ kind: 'n', text: `🖼 ${x.in ? 'Received' : 'Sent'} ${x.n} NFT${x.n === 1 ? '' : 's'} ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>` });
-      }
+      const fresh = [...new Map(d.actions.filter(x => Number(x.global_sequence) > seen).map(x => [x.global_sequence, x])).values()];
+      const events = eventsFrom(D, a, fresh);
       if (!events.length) continue;
+      const list = es => `${es.slice(0, 8).map(e => e.text).join('\n')}${es.length > 8 ? `\n… and ${es.length - 8} more` : ''}`;
       for (const w of watchesOf(a)) {
         const o = optsOf(w);
-        const mine = events.filter(e => (e.kind === 'n' ? o.nft : o.xfer >= 0 && e.usd != null && e.usd >= o.xfer));
-        if (!mine.length) continue;
-        await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${mine.slice(0, 8).map(e => e.text).join('\n')}${mine.length > 8 ? `\n… and ${mine.length - 8} more` : ''}\n\n${walletLink(a)}`);
+        // A watched wallet skips unpriced tokens: incoming ones are nearly always airdrop spam.
+        const mine = events.filter(e => (e.kind === 'nft' ? o.nft : o.xfer >= 0 && e.usd != null && e.usd >= o.xfer));
+        if (mine.length) await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${list(mine)}\n\n${walletLink(a)}`);
+      }
+      for (const x of tracks.filter(y => y.target === a)) {
+        const f = j(x.params);
+        const mine = events.filter(e => matches(e, f));
+        if (mine.length) await send(x.chat_id, `🔎 <b>${esc(a)}</b> <i>(${filterText(f)})</i>\n${list(mine)}\n\n${walletLink(a)}`);
+      }
+    }
+  });
+
+  // ---- liquidity in and out (even minutes) ----------------------------------
+  const liqAlerts = A.filter(x => x.kind === 'liq');
+  if (minute % 2 === 0 && liqAlerts.length) jobs.push(async () => {
+    const needTaco = liqAlerts.some(x => !x.target.startsWith('alcor:'));
+    for (const [filter, key] of LIQ_FEEDS.filter(([fl]) => needTaco || fl.startsWith('swap.alcor'))) {
+      const d = await hyp(B, `/v2/history/get_actions?filter=${filter}&limit=40&sort=desc`);
+      if (!d?.actions) continue;
+      const seen = cur.get(key);
+      const top = Math.max(0, ...d.actions.map(x => Number(x.global_sequence) || 0));
+      if (top) setCur(key, Math.max(top, seen || 0));
+      if (!seen) continue;
+      const fresh = d.actions.filter(x => Number(x.global_sequence) > seen).sort((p, q) => p.global_sequence - q.global_sequence).slice(-12);
+      // Only events somebody asked about are valued: each costs at most one read.
+      const wanted = x => {
+        const dt = x.act.data;
+        if (x.act.account === 'swap.alcor') {
+          const pl = D.poolById.get(`alcor:${dt.poolId}`);
+          return liqAlerts.some(y => y.target === '*' || y.target === `alcor:${dt.poolId}` || !pl || y.target === pl.ia || y.target === pl.ib);
+        }
+        return liqAlerts.some(y => !y.target.startsWith('alcor:'));
+      };
+      for (const x of fresh.filter(wanted)) {
+        const e = await liqEvent(B, D, x);
+        if (!e) continue;
+        for (const y of liqAlerts) {
+          const p = j(y.params);
+          const hit = y.target === '*' || y.target === `${e.dex}:${e.pool.id}` || y.target === e.pool.ia || y.target === e.pool.ib;
+          if (!hit || (p.side === 'add' && !e.add) || (p.side === 'remove' && e.add)) continue;
+          if ((p.min || 0) > 0 && !(e.usd != null && e.usd >= p.min)) continue;
+          // A share of the pool, so "big for this pool" is visible even when the dollars are small.
+          const big = e.after > 0 && e.usd != null ? e.usd / (e.add ? e.after : e.after + e.usd) : null;
+          await send(y.chat_id, `${liqText(e)}${big != null && big >= 0.1 ? `\n   ⚡ that is ${(big * 100).toFixed(0)}% of the pool` : ''}`);
+        }
       }
     }
   });
@@ -950,6 +1243,20 @@ async function tick(env, when) {
       const price = Number(s.price.amount) / 10 ** s.price.token_precision;
       if (price > p.below) continue;
       if (await send(x.chat_id, `🖼 <b>${esc(x.label)}</b> listed at <b>${fmtAmt(price)} WAX</b> (your line: ${fmtAmt(p.below)})\n${esc(s.assets?.[0]?.name || '')} #${esc(s.assets?.[0]?.template_mint || '')}\n<a href="https://wax.atomichub.io/market/sale/wax-mainnet/${s.sale_id}">Open the sale</a>`)) {
+        writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
+      }
+    }
+  });
+
+  // ---- total liquidity crossing a line (from the snapshot; no requests) -----
+  const levels = A.filter(x => x.kind === 'liqlvl');
+  if (minute % 5 === 1 && levels.length) jobs.push(async () => {
+    for (const x of levels) {
+      const p = j(x.params), t = D.tok.get(x.target);
+      const v = t?.liq ?? 0;
+      if (!(p.dir === 'above' ? v >= p.value : v <= p.value)) continue;
+      if (await send(x.chat_id, `💧 <b>${t ? tokLink(t) : esc(x.label)}</b> liquidity is ${p.dir} ${fmtBig(p.value)} — now <b>${fmtBig(v)}</b> across its pools.`,
+        kb([[btn('💧 Pools', `m:/liquidity ${x.target}`)]]))) {
         writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
       }
     }
