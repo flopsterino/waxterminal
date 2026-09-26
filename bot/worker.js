@@ -383,7 +383,7 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   }
   if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
   return { text: lines.join('\n'), markup: kb([
-    [btn('📈 Chart', `ch:${t.id}:7d`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
+    [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
     [btn('🐋 Big swaps', `wh:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
     [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
@@ -397,13 +397,19 @@ async function tokenCard(env, B, t, { full = true } = {}) {
 // itself. The history is Alcor's candles for the token's deepest WAX pool,
 // asked for one window only (7 days hourly is 169 rows), turned into dollars
 // with WAX/WAXUSDC candles (pool 314) for the same window.
+// Timeframes the way a trading chart has them: the candle size, about a
+// hundred of them, as @TreeCapitalBot-style buttons that redraw the same message.
 const PERIODS = {
-  '1d': { res: '30', secs: 86400, label: '24 hours' },
-  '7d': { res: '240', secs: 7 * 86400, label: '7 days' },
-  '30d': { res: '1D', secs: 30 * 86400, label: '30 days' },
-  '90d': { res: '1D', secs: 90 * 86400, label: '90 days' },
-  '1y': { res: '1W', secs: 365 * 86400, label: 'a year' },
+  '5m': { res: '5', secs: 100 * 300, label: '5m candles · 8 hours' },
+  '15m': { res: '15', secs: 100 * 900, label: '15m candles · 25 hours' },
+  '1h': { res: '60', secs: 100 * 3600, label: '1h candles · 4 days' },
+  '4h': { res: '240', secs: 100 * 14400, label: '4h candles · 17 days' },
+  '1D': { res: '1D', secs: 100 * 86400, label: 'daily candles · 100 days' },
+  '1W': { res: '1W', secs: 104 * 604800, label: 'weekly candles · 2 years' },
 };
+// Old buttons and typed periods still work.
+const PERIOD_ALIAS = { '1d': '15m', '24h': '15m', '7d': '1h', '30d': '4h', '90d': '1D', '1y': '1W', d: '1D', w: '1W', '1m': '5m', '30m': '15m' };
+const periodKey = k => { const x = String(k || '').trim(); return PERIODS[x] ? x : PERIOD_ALIAS[x.toLowerCase()] || (PERIODS[x.toUpperCase()] ? x.toUpperCase() : null) || '1h'; };
 const WAX_USD_POOL = '314';
 // [time, open, high, low, close]
 async function candles(B, pool, p) {
@@ -441,8 +447,8 @@ async function priceSeries(env, B, t, p) {
   }).filter(Boolean);
   return { usd, wax: quoteIsWax ? own : null, pool };
 }
-async function chartImage(B, t, s, p) {
-  const pts = s.usd.slice(-120);
+async function chartImage(B, t, s, p, unit = 'usd') {
+  const pts = (unit === 'wax' && s.wax ? s.wax : s.usd).slice(-120);
   const first = pts[0][1], last = pts[pts.length - 1][4];
   const sig = v => Number(v.toPrecision(5));
   const cfg = {
@@ -453,8 +459,8 @@ async function chartImage(B, t, s, p) {
       layout: { padding: { left: 14, right: 8, top: 8, bottom: 4 } },
       plugins: {
         legend: { display: false },
-        title: { display: true, text: `${t.sym}  $${Number(last.toPrecision(4))}  ${pct((last / first - 1) * 100)} · ${p.label}`, color: '#f0f3f6', font: { size: 22, weight: 'bold' }, align: 'start' },
-        subtitle: { display: true, text: `${t.c} · in USD · waxedge.app`, color: '#8b949e', font: { size: 13 }, align: 'start', padding: { bottom: 10 } },
+        title: { display: true, text: `${t.sym}  ${unit === 'wax' && s.wax ? `${Number(last.toPrecision(4))} WAX` : `$${Number(last.toPrecision(4))}`}  ${pct((last / first - 1) * 100)} · ${p.label}`, color: '#f0f3f6', font: { size: 22, weight: 'bold' }, align: 'start' },
+        subtitle: { display: true, text: `${t.c} · in ${unit === 'wax' && s.wax ? 'WAX' : 'USD'} · waxedge.app`, color: '#8b949e', font: { size: 13 }, align: 'start', padding: { bottom: 10 } },
       },
       scales: {
         x: { type: 'timeseries', ticks: { color: '#8b949e', maxTicksLimit: 7, maxRotation: 0 }, grid: { color: 'rgba(255,255,255,0.05)' } },
@@ -465,28 +471,42 @@ async function chartImage(B, t, s, p) {
   const r = await get(B, 'https://quickchart.io/chart/create', { body: { chart: cfg, version: '3', width: 900, height: 480, backgroundColor: '#0d1117', format: 'png' } });
   return r?.url || null;
 }
-async function sendChart(env, B, chat, input, periodIn = '7d') {
-  const p = PERIODS[String(periodIn || '7d').toLowerCase()] || PERIODS['7d'];
-  const key = Object.keys(PERIODS).find(k => PERIODS[k] === p);
+async function sendChart(env, B, chat, input, periodIn = '1h', { unit = 'usd', edit = null } = {}) {
+  const key = periodKey(periodIn), p = PERIODS[key];
   const t = await resolve(env, B, input);
   if (!t) return say(env, B, chat, `No token <b>${esc(String(input).toUpperCase())}</b> that I know.`);
   const s = await priceSeries(env, B, t, p);
-  if (!s || s.usd.length < 2) return say(env, B, chat, `Not enough trading on Alcor to draw ${esc(t.sym)} over ${p.label}.`);
-  const [url, stats, lv] = [await chartImage(B, t, s, p), t.id === 'WAX@eosio.token' ? null : await chain(B, 'get_currency_stats', { code: t.c, symbol: t.sym }), await live(B, t)];
+  if (!s || s.usd.length < 2) {
+    const msg = `Not enough trading on Alcor to draw ${esc(t.sym)} in ${p.label}.`;
+    return edit ? tg(env, B, 'answerCallbackQuery', { callback_query_id: edit.cq, text: msg.replace(/<[^>]+>/g, ''), show_alert: true }) : say(env, B, chat, msg);
+  }
+  const u = unit === 'wax' && s.wax ? 'wax' : 'usd';
+  const [url, stats, lv] = [await chartImage(B, t, s, p, u), t.id === 'WAX@eosio.token' ? null : await chain(B, 'get_currency_stats', { code: t.c, symbol: t.sym }), await live(B, t)];
   const usd = lv?.usd ?? s.usd[s.usd.length - 1][4];
   const supply = parseQty(stats?.[t.sym]?.supply).n;
-  const hi = Math.max(...s.usd.map(x => x[2])), lo = Math.min(...s.usd.map(x => x[3]));
+  const ser = u === 'wax' ? s.wax : s.usd;
+  const hi = Math.max(...ser.map(x => x[2])), lo = Math.min(...ser.map(x => x[3]));
+  const fmtU = v => (u === 'wax' ? `${fmtAmt(v)} WAX` : fmtUsd(v));
   const ch = (s.usd[s.usd.length - 1][4] / s.usd[0][1] - 1) * 100;
   const chWax = s.wax && s.wax.length > 1 ? (s.wax[s.wax.length - 1][4] / s.wax[0][1] - 1) * 100 : null;
   const caption = [
     `📈 <b>${tokLink(t)}</b> <b>${fmtUsd(usd)}</b>${lv?.wax && t.sym !== 'WAX' ? ` · ${fmtAmt(lv.wax)} WAX` : ''}`,
-    `${p.label}: ${arrow(ch)} ${pct(ch)} in $${chWax != null ? ` · ${pct(chWax)} in WAX` : ''} · high ${fmtUsd(hi)} · low ${fmtUsd(lo)}`,
+    `${p.label}: ${arrow(ch)} ${pct(ch)} in $${chWax != null ? ` · ${pct(chWax)} in WAX` : ''} · high ${fmtU(hi)} · low ${fmtU(lo)}`,
     [t.liq ? `Liquidity ${fmtBig(t.liq)}` : '', t.vol ? `volume 24h ${fmtBig(t.vol)}` : '', supply && usd ? `market cap ${fmtBig(supply * usd)}` : ''].filter(Boolean).join(' · '),
-    s.pool ? `<i>from ${esc(s.pool.a)}/${esc(s.pool.b)} on Alcor</i>` : '',
+    `<i>${s.pool ? `${esc(s.pool.a)}/${esc(s.pool.b)} on Alcor · ` : ''}${new Date().toISOString().slice(11, 16)} UTC</i>`,
   ].filter(Boolean).join('\n');
-  const markup = kb([Object.keys(PERIODS).map(k => btn(k === key ? `• ${k}` : k, `ch:${t.id}:${k}`)),
-    [btn('🔔 Price alert', `mn:pa:${t.id}`), btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`)]]);
+  // Callback data: ch:<token>:<timeframe>:<unit>
+  const cb = (k, uu = u) => `ch:${t.id}:${k}:${uu}`;
+  const markup = kb([
+    Object.keys(PERIODS).map(k => btn(k === key ? `• ${k}` : k, cb(k))),
+    [...(s.wax && t.id !== 'WAX@eosio.token' ? [btn(u === 'usd' ? '• $' : '$', cb(key, 'usd')), btn(u === 'wax' ? '• WAX' : 'WAX', cb(key, 'wax'))] : []), btn('🔄', cb(key))],
+    [btn('🔔 Alert', `mn:pa:${t.id}`), btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`)],
+  ]);
   if (!url) return say(env, B, chat, `${caption}\n\n<i>The chart service did not answer; the numbers above are current.</i>`, markup);
+  if (edit) {
+    const r = await tg(env, B, 'editMessageMedia', { chat_id: chat, message_id: edit.mid, media: { type: 'photo', media: url, caption, parse_mode: 'HTML' }, reply_markup: markup });
+    if (r?.ok) return r;
+  }
   return tg(env, B, 'sendPhoto', { chat_id: chat, photo: url, caption, parse_mode: 'HTML', reply_markup: markup });
 }
 
@@ -500,7 +520,7 @@ const HELP = [
   '/status · /wallet <i>account</i> · /res <i>account</i>',
   '',
   '<b>📈 Markets</b>',
-  '/chart <i>SYM</i> [1d|7d|30d|90d|1y] — a price chart picture',
+  '/chart <i>SYM</i> [5m|15m|1h|4h|1D|1W] — a candle chart; tap another timeframe to redraw it',
   '/price <i>SYM</i> · /top · /pools <i>SYM</i> · /farms [<i>SYM</i>] · /wax',
   '/alert <i>SYM</i> above|below <i>price</i> [wax]',
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
@@ -543,7 +563,7 @@ const ASKS = {
   '/watch': ['Which WAX account should I watch?', 'e.g. myaccount.wam'],
   '/wallet': ['Which account?', 'e.g. myaccount.wam'],
   '/price': ['Which token?', 'e.g. CHEESE, TLM or SYM@contract'],
-  '/chart': ['Chart of which token? Add a period if you like: 1d, 7d, 30d, 90d, 1y.', 'e.g. CHEESE 30d'],
+  '/chart': ['Chart of which token? Add a timeframe if you like: 5m, 15m, 1h, 4h, 1D, 1W.', 'e.g. CHEESE 4h'],
   '/fav': ['Which token should be a favourite?', 'e.g. CHEESE'],
   '/move': ['Which token? I will write every time it moves 10%.', 'e.g. CHEESE'],
   '/whale': ['Which token? I will show every swap above $250.', 'e.g. TLM'],
@@ -1243,9 +1263,12 @@ async function onCallback(env, B, cq) {
   if (d.startsWith('mn:')) { await toast(); return menu(env, B, chat, d.slice(3), mid); }
   if (d.startsWith('ask:')) { await toast(); return ask(env, B, chat, d.slice(4)); }
   if (d.startsWith('ch:')) {
-    const i = d.lastIndexOf(':');
-    await toast('Drawing…');
-    return sendChart(env, B, chat, d.slice(3, i), d.slice(i + 1));
+    // ch:<SYM@contract>:<timeframe>[:<unit>] — redraws the chart in the same message.
+    const parts = d.slice(3).split(':');
+    const unit = ['usd', 'wax'].includes(parts[parts.length - 1]) ? parts.pop() : 'usd';
+    const tf = parts.pop();
+    await toast(`${tf}…`);
+    return sendChart(env, B, chat, parts.join(':'), tf, { unit, edit: cq.message?.photo ? { mid, cq: cq.id } : null });
   }
   if (d.startsWith('tk:')) {
     await toast();
