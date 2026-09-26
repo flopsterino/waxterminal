@@ -774,6 +774,8 @@ async function boot() {
     // Money left mid-flight outranks anything else on the page.
     resumeBanner().catch(() => {});
     renderBanner().catch(() => {});
+    // A new day's slot starts at 14:00 UTC; a page left open picks it up.
+    setInterval(() => { if (!document.hidden) renderBanner().catch(() => {}); }, 30 * 60e3);
   } else {
     banner(`<div class="err"><b>Could not load any data.</b> ${esc(loadError?.message || 'unknown')}<br>
       The public WAX nodes may be rate-limiting. Reloading usually fixes it.</div>`);
@@ -3115,46 +3117,68 @@ const forPeriod = sec => {
 // 580x150 and shown whole — stretched across the page and cropped to 140px, the
 // artwork lost its top and bottom.
 let bannerMarkup = null;   // null: not read yet; '': nothing to show
+// What rotates: one entry per sold position, each with its creatives — two
+// when a shared spot has both halves sold. Every ROTATE_MS the positions trade
+// places (a phone shows only the first) and a shared spot shows its other
+// half. It used to be a coin per page load, and this is a single-page app: one
+// load per visit, so a visitor saw one banner the whole time.
+let bannerPool = [], bannerTick = 0, bannerTimer = null;
+const ROTATE_MS = 10000;
+function bannerTilesHtml() {
+  if (!bannerPool.length) return '';
+  const n = bannerPool.length;
+  const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
+  return Array.from({ length: n }, (_, i) => bannerPool[(i + bannerTick) % n]).map(pos => {
+    const b = pos.creatives[bannerTick % pos.creatives.length];
+    return `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
+      <img src="${esc(ipfs(b.img))}" alt="Banner by ${esc(b.user)}" width="580" height="150" onerror="${esc(ipfsFallback(b.img, giveUp))}"></a>`;
+  }).join('');
+}
 function paintBanners() {
   if (bannerMarkup == null) return;
   document.querySelectorAll('[data-banner-host]').forEach(host => {
     host.hidden = !bannerMarkup;
     if (bannerMarkup && !host.firstElementChild) host.innerHTML = bannerMarkup;
   });
+  if (bannerTimer == null && (bannerPool.length > 1 || bannerPool.some(p => p.creatives.length > 1))) {
+    bannerTimer = setInterval(() => {
+      if (document.hidden) return;
+      bannerTick++;
+      const html = bannerTilesHtml();
+      document.querySelectorAll('[data-banner-host] .bannertiles').forEach(t => { t.innerHTML = html; });
+    }, ROTATE_MS);
+  }
 }
 
 async function renderBanner() {
   let got = null;
   try { got = await currentBanners(); } catch {}
-  // A shared position alternates between its two buyers; a coin per page load
-  // is the same thing over enough visits. A spot rented as shared whose other
-  // half nobody has bought still shows its banner every time — the half that
-  // was paid for is never hidden — and the header says the spot is shared with
-  // its other half for rent, so it does not read as a whole spot.
+  // A spot rented as shared whose other half nobody has bought shows its one
+  // banner every time — the half that was paid for is never hidden — and the
+  // header says the spot is shared with its other half for rent.
   let openHalves = 0;
-  const sold = (got?.banners || []).slice(0, 2)
-    .map(b => {
-      if (b.shared?.img) return Math.random() < 0.5 ? { ...b, ...b.shared } : b;
-      if (b.rentalShared) openHalves++;
-      return b;
-    });
-  // Which of two sold banners leads is also a coin: a phone shows only the
-  // first, and both buyers paid for the same slot.
-  if (sold.length === 2 && Math.random() < 0.5) sold.reverse();
+  bannerPool = (got?.banners || []).slice(0, 2).map(b => {
+    if (b.rentalShared && !b.shared?.img) openHalves++;
+    const creatives = [b];
+    if (b.shared?.img) creatives.push({ ...b, ...b.shared });
+    return { creatives };
+  });
+  // Where it starts is still a coin, so the first view is not always spot 1.
+  bannerTick = Math.floor(Math.random() * 4);
+  const sold = bannerPool.flatMap(p => p.creatives);
   const free = got?.free || 0;
   if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
-  const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
-  const tiles = sold.map(b => `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
-      <img src="${esc(ipfs(b.img))}" alt="Banner by ${esc(b.user)}" width="580" height="150" onerror="${esc(ipfsFallback(b.img, giveUp))}"></a>`);
   const users = [...new Set(sold.map(b => b.user))];
   // An unsold slot is a line, not a banner-sized box: a page should not be
   // mostly advertising, least of all for advertising.
-  bannerMarkup = `<div class="card bannerslot${tiles.length ? '' : ' empty'}">
+  bannerMarkup = `<div class="card bannerslot${bannerPool.length ? '' : ' empty'}">
     <div class="bannerhead"><span class="sponsored">Sponsored</span>
       <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}${openHalves ? ' &middot; shared spot, other half free' : ''}`
         : 'this CheeseHub banner spot is free today'}</span>
-      <a class="more" href="${routePath('ads')}" data-ads>${openHalves ? 'Join it' : tiles.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
-    ${tiles.length ? `<div class="bannertiles">${tiles.join('')}</div>` : ''}</div>`;
+      <a class="more" href="${routePath('ads')}" data-ads>${openHalves ? 'Join it' : bannerPool.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
+    ${bannerPool.length ? `<div class="bannertiles">${bannerTilesHtml()}</div>` : ''}</div>`;
+  // Re-read (the half-hourly refresh): hosts already showing the old slot are redrawn.
+  document.querySelectorAll('[data-banner-host]').forEach(h => { h.innerHTML = ''; });
   paintBanners();
 }
 
