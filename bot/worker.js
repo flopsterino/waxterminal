@@ -37,11 +37,12 @@ const DAY = 86400e3, HOUR = 3600e3;
 
 // What a watched wallet alerts on, until someone changes it in /settings.
 // fees and xfer are dollar thresholds; -1 / 0 switches them off.
-const OPT_DEF = { range: 1, edge: 1, fees: 5, farm: 1, xfer: 10, nft: 1, res: 1, claim: 1 };
+const OPT_DEF = { range: 1, edge: 1, fees: 5, farm: 1, xfer: 10, nft: 1, offers: 1, drops: 1, res: 1, claim: 1 };
 const OPT_CYCLE = { fees: [0, 1, 5, 25, 100], xfer: [-1, 0, 1, 10, 100, 1000] };
 const OPT_NAME = {
   range: 'Out of range / back in range', edge: 'Close to the edge of its range', fees: 'Fees ready to compound',
   farm: 'Farms starting or ending on my pools', xfer: 'Transfers and swaps', nft: 'NFTs in and out',
+  offers: 'NFT buy offers and trade offers', drops: 'Airdrops (tokens and NFTs)',
   res: 'CPU / NET / RAM running low', claim: 'Vote rewards ready to claim',
 };
 
@@ -247,7 +248,7 @@ function eventsFrom(D, a, actions) {
     }
     for (const x of nft) {
       events.push({ ...base, kind: 'nft', usd: null, ids: new Set(), syms: new Set(), parties: new Set([x.who]), memo: x.memo, dir: x.in ? 'in' : 'out',
-        text: `🖼 ${x.in ? 'Received' : 'Sent'} ${x.n} NFT${x.n === 1 ? '' : 's'} ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>` });
+        text: `🖼 ${x.in ? 'Received' : 'Sent'} ${x.n} NFT${x.n === 1 ? '' : 's'} ${x.in ? 'from' : 'to'} <code>${esc(x.who)}</code>${x.memo && x.memo.length <= 120 && !/^(deposit|withdraw|sale|auction)$/i.test(x.memo) ? `\n     💬 “${esc(x.memo)}”` : ''}` });
     }
   }
   return events.sort((x, y) => x.seq - y.seq);
@@ -343,6 +344,83 @@ const liqText = e => `${e.add ? '💧 <b>Added</b>' : '🔻 <b>Removed</b>'} ${e
    ${fmtAmt(e.a)} ${esc(e.pool.a)} + ${fmtAmt(e.b)} ${esc(e.pool.b)} · ${e.range} · <code>${esc(e.who)}</code>${e.after != null ? ` · pool now ${fmtBig(e.after)}` : ''}`;
 const LIQ_FEEDS = [['swap.alcor:logmint', 'lq:m'], ['swap.alcor:logburn', 'lq:b'], ['swap.taco:addliquidity', 'lq:ta'], ['swap.taco:remliquidity', 'lq:tr']];
 
+// ---------------------------------------------------------------- airdrops --
+// What landed without the wallet doing anything: NFTs minted to it in a
+// transaction where it sent nothing (a blend or a pack opening sends first),
+// and incoming tokens that are unpriced or say "airdrop" in the memo. These
+// were silently dropped as spam before; now they are one grouped line each.
+const DROP_MEMO = /air ?drop|free|gift|giveaway|claim|reward|bonus/i;
+function airdropsFrom(D, a, actions) {
+  const sentIn = new Set(actions.filter(x => x.act?.name === 'transfer' && x.act.data?.from === a).map(x => x.trx_id));
+  const nft = new Map(), tok = [];
+  for (const x of actions) {
+    const d = x.act?.data || {};
+    if (x.act?.name === 'logmint' && d.new_asset_owner === a && d.authorized_minter !== a && !sentIn.has(x.trx_id)) {
+      const k = `${d.collection_name}:${d.authorized_minter}`;
+      const m = nft.get(k) || { col: d.collection_name, minter: d.authorized_minter, n: 0, tpl: d.template_id };
+      m.n++; nft.set(k, m);
+    }
+    if (x.act?.name === 'transfer' && d.to === a && d.from !== a && d.quantity && !sentIn.has(x.trx_id)) {
+      const q = parseQty(d.quantity), id = `${q.sym}@${x.act.account}`;
+      const t = D.tok.get(id);
+      if (!t || DROP_MEMO.test(d.memo || '')) tok.push({ q, id, t, from: d.from, memo: d.memo || '' });
+    }
+  }
+  const lines = [
+    ...[...nft.values()].map(m => `🎁 ${m.n} new NFT${m.n === 1 ? '' : 's'} from <b>${esc(m.col)}</b>${m.tpl > 0 ? ` (template ${m.tpl})` : ''} · minted by <code>${esc(m.minter)}</code>`),
+    ...tok.slice(0, 6).map(x => {
+      // Same symbol as a token with a market, another contract: an imitation,
+      // the usual shape of a scam airdrop. Said plainly, with the real one.
+      const real = !x.t ? (D.bySym.get(x.q.sym) || []).filter(r => r.id !== x.id).sort((p, q2) => (q2.liq || 0) - (p.liq || 0))[0] : null;
+      return `🪂 ${fmtAmt(x.q.n)} ${x.t ? tokLink(x.t) : `<b>${esc(x.q.sym)}</b> <code>${esc(x.id.split('@')[1])}</code>`}${x.t ? ` (${fmtUsd(x.q.n * x.t.usd)})` : ' · no market'} from <code>${esc(x.from)}</code>${x.memo && x.memo.length <= 80 ? ` — “${esc(x.memo)}”` : ''}`
+        + (real ? `\n     ⚠️ <b>imitation</b> — the real ${esc(x.q.sym)} is <code>${esc(real.c)}</code>. Do not trade it or follow its links.` : '');
+    }),
+  ];
+  if (tok.length > 6) lines.push(`… and ${tok.length - 6} more tokens`);
+  return lines;
+}
+
+// Who did a dump: the biggest sellers in the token's deepest Alcor pools in
+// the window, and who took liquidity out of them. Swaps are the pools' own
+// feed; withdrawals Alcor's logburn records.
+async function dumpCause(B, D, t, windowMs) {
+  const since = Date.now() - windowMs;
+  const pools = poolsOf(D, t.id).filter(p => p.dex === 'alcor').slice(0, 2);
+  const sellers = new Map(), pulled = new Map();
+  for (const pl of pools) {
+    const rows = await get(B, `${ALCOR}/swap/pools/${pl.id}/swaps?limit=100`);
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (!(Date.parse(r.time) >= since)) continue;
+      // Positive = the token went INTO the pool: somebody sold it.
+      const amt = pl.ia === t.id ? Number(r.tokenA) : Number(r.tokenB);
+      if (!(amt > 0)) continue;
+      const who = r.recipient && r.recipient !== 'swap.alcor' ? r.recipient : r.sender;
+      const m = sellers.get(who) || { usd: 0, amt: 0, n: 0 };
+      m.usd += Number(r.totalUSDVolume) || 0; m.amt += amt; m.n++;
+      sellers.set(who, m);
+    }
+  }
+  const ids = new Set(pools.map(p => p.id));
+  const burns = await hyp(B, '/v2/history/get_actions?filter=swap.alcor:logburn&limit=100&sort=desc');
+  for (const x of burns?.actions || []) {
+    const d = x.act.data;
+    if (!ids.has(String(d.poolId)) || !(Date.parse(`${x.timestamp}Z`) >= since)) continue;
+    const pl = D.poolById.get(`alcor:${d.poolId}`);
+    const qa = parseQty(d.tokenA), qb = parseQty(d.tokenB);
+    const usd = (qa.n * (D.tok.get(pl.ia)?.usd || 0)) + (qb.n * (D.tok.get(pl.ib)?.usd || 0));
+    const m = pulled.get(d.owner) || { usd: 0, pools: new Set() };
+    m.usd += usd; m.pools.add(`${pl.a}/${pl.b}`);
+    pulled.set(d.owner, m);
+  }
+  const top = [...sellers].sort((a, b) => b[1].usd - a[1].usd).slice(0, 3);
+  const pull = [...pulled].sort((a, b) => b[1].usd - a[1].usd).slice(0, 3);
+  const lines = [];
+  if (top.length) lines.push(`<b>Biggest sellers</b>: ${top.map(([w, m]) => `<code>${esc(w)}</code> ${fmtUsd(m.usd)}${m.n > 1 ? ` in ${m.n} swaps` : ''}`).join(' · ')}`);
+  if (pull.length) lines.push(`<b>Liquidity pulled</b>: ${pull.map(([w, m]) => `<code>${esc(w)}</code> ${fmtUsd(m.usd)} from ${[...m.pools].map(esc).join(', ')}`).join(' · ')}`);
+  if (!lines.length) lines.push('<i>No large Alcor sells or withdrawals found in the window — the move may have come from another exchange.</i>');
+  return { lines, topSeller: top[0]?.[0] || null, topPuller: pull[0]?.[0] || null };
+}
+
 // --------------------------------------------------------------- database --
 const DB = env => env.DB;
 async function chatRow(env, chat) {
@@ -383,8 +461,16 @@ async function tokenCard(env, B, t, { full = true } = {}) {
     const fs = D.farms.filter(f => f.rs === t.sym);
     if (fs.length) lines.push(`🌾 ${fs.length} live farm${fs.length === 1 ? ' pays' : 's pay'} in ${esc(t.sym)} — /farms ${esc(t.sym)}`);
   }
-  if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
+  // Other tokens with the same symbol, from another contract: named, with a
+  // button each, so the one that is meant is a tap away — and a copy of a
+  // well-known token is seen for what it is.
+  const namesakes = (D.bySym.get(t.sym) || []).filter(x => x.id !== t.id).sort((a, b) => (b.liq || 0) - (a.liq || 0));
+  if (namesakes.length) {
+    lines.push('', `⚠️ <b>${namesakes.length + 1} tokens are called ${esc(t.sym)}.</b> This one is <code>${esc(t.c)}</code>${(t.liq || 0) >= (namesakes[0].liq || 0) ? ' — the most traded' : ''}. Check the contract before you trade.`);
+  }
+  const sameName = namesakes.slice(0, 3).map(x => [btn(`↔️ ${x.sym} from ${x.c}${x.liq ? ` · ${fmtBig(x.liq)}` : ''}`, `tk:${x.id}`)]);
   return { text: lines.join('\n'), markup: kb([
+    ...sameName,
     [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
     [btn('🖼 Card', `cd:t:${t.id}:30d`), btn('🐋 Big swaps', `wh:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
@@ -626,6 +712,7 @@ const HELP = [
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
   '/whale <i>SYM</i> [<i>250</i>] — swaps above $250',
   '/newpools [<i>SYM</i>] · /newfarms [<i>SYM</i>]',
+  '/dumps [<i>60</i>] — any token that drops 60%+ · /dumps off',
   '',
   '<b>🔎 Any account</b>',
   '/tx <i>account</i> [filters] — its transfers, filtered',
@@ -771,6 +858,7 @@ async function menu(env, B, chat, name, edit = null) {
         [btn('🐋 Big swaps', 'ask:/whale'), btn('💧 Liquidity moves', 'ask:/liq')],
         [btn('🆕 New pools', 'm:/newpools'), btn('🌾 New farms', 'm:/newfarms')],
         [btn('🔎 An account moving', 'ask:/track'), btn('🖼 NFT floor', 'ask:/floor')],
+        [btn('🚨 Dumps on any token', 'mn:dumps')],
         [btn('👛 My wallet', 'mn:wallets'), btn('🔕 Mute', 'mn:mute')], back()];
       break;
     case 'pa': {
@@ -781,6 +869,13 @@ async function menu(env, B, chat, name, edit = null) {
       rows = [[btn('+10%', `pa:${t.id}:10`), btn('+25%', `pa:${t.id}:25`), btn('+50%', `pa:${t.id}:50`), btn('×2', `pa:${t.id}:100`)],
         [btn('−10%', `pa:${t.id}:-10`), btn('−25%', `pa:${t.id}:-25`), btn('−50%', `pa:${t.id}:-50`)],
         [btn('✏️ An exact price', `ax:${t.id}`)], [btn('📊 Instead: every ±10%', `mv:${t.id}`)], back('alerts')];
+      break;
+    }
+    case 'dumps': {
+      const cur2 = (await DB(env).prepare("SELECT params FROM alerts WHERE chat_id = ? AND kind = 'dump' LIMIT 1").bind(chat).first());
+      const on = cur2 ? j(cur2.params).pct : null;
+      text = `🚨 <b>Dump alerts</b>\nA message when any token with $300+ liquidity falls this far — within about an hour, or over 24 hours. Checked every 5 minutes; each token at most once in 12 hours.\n\n${on ? `Now: <b>${on}%</b> or more.` : 'Now: off.'}`;
+      rows = [[40, 50, 60, 80].map(v => btn(on === v ? `• ${v}%` : `${v}%`, `m:/dumps ${v}`)), ...(on ? [[btn('🔕 Turn off', 'm:/dumps off')]] : []), back('alerts')];
       break;
     }
     case 'mute':
@@ -874,6 +969,13 @@ const FAQ = [
   ['Can I follow someone else’s account?',
     'Yes — any account, it is all public. <b>🔎 Look up → Transfers of an account</b> shows its latest transfers with quick filters; <b>Follow an account</b> alerts you when it moves. Filters you can type: a token (<code>CHEESE</code>), <code>in</code> / <code>out</code>, <code>swaps</code>, <code>nfts</code>, a minimum like <code>&gt;500</code>, <code>from:account</code>, <code>to:account</code>, <code>memo:text</code>. Example: <code>somewhale CHEESE out &gt;500</code>.',
     [btn('🔎 Look up an account', 'mn:lookup')]],
+  ['What are dump alerts?',
+    'A message when <b>any</b> token with at least $300 of liquidity falls hard — 60% by default, or 40/50/80% as you choose — within about an hour or over 24 hours. Prices are Alcor’s live prices, checked every 5 minutes; each token at most once in 12 hours. The alert names the token <b>and its contract</b>, and has buttons for the chart and for who pulled liquidity.',
+    [btn('🚨 Set up dump alerts', 'mn:dumps')]],
+  ['What NFT alerts are there — offers, trades, messages?',
+    'For a watched wallet: <b>buy offers</b> on its NFTs (who, how much, for which NFT), <b>trade offers</b> it receives (what they give, what they ask, or that it is a gift), and NFTs sent in or out. The memo sent with an offer or an NFT — the message AtomicHub shows — is included. Accept or decline on AtomicHub; the bot only tells you. Switch them off per wallet under <b>🔔 Which alerts</b>.'],
+  ['What are airdrop alerts, and what is an imitation token?',
+    'For a watched wallet: NFTs minted to it without it doing anything (a blend or opening a pack is not counted), and incoming tokens with no market or with “airdrop” in the memo. <b>Several tokens can have the same name</b> — anyone can issue a “CHEESE” from their own contract. When an airdropped token copies the name of a real one, the alert says so and names the real contract. Always check the contract before you trade; token cards show every namesake as a button.'],
   ['What are new pools, new farms and NFT floor alerts?',
     '• <b>New pools</b> — every new Alcor pool, or only those with one token.\n• <b>New farms</b> — every new Alcor farm, with the reward and its dollar value.\n• <b>NFT floor</b> — one alert when a collection (or one template in it) is listed on AtomicHub at or below your price in WAX.'],
   ['What is the daily digest?',
@@ -1023,6 +1125,15 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     const shown = pos.filter(p => p.value >= 1).slice(0, 12);
     return reply(`🖼 <b>${esc(acct)}</b> — which position? A card shows its profit since it was opened.`,
       kb(shown.map(p => [btn(`${p.inRange ? '✅' : '⚠️'} ${p.pair} · ${fmtUsd(p.value)}`, `cx:${acct}:${p.id}:wax`)])));
+  }
+  if (cmd === '/dumps' || cmd === '/dump') {
+    const a = String(args[0] || '').toLowerCase().replace('%', '');
+    if (a === 'off') { await DB(env).prepare("DELETE FROM alerts WHERE chat_id = ? AND kind = 'dump'").bind(chat).run(); return reply('🔕 No more dump alerts.'); }
+    if (!a) return menu(env, B, chat, 'dumps');
+    const pctv = Math.max(20, Math.min(95, Number(a) || 60));
+    await DB(env).prepare("DELETE FROM alerts WHERE chat_id = ? AND kind = 'dump'").bind(chat).run();
+    const err = await addAlert(env, chat, 'dump', '*', 'all tokens', { pct: pctv });
+    return reply(err || `🚨 I will tell you when any token with $300+ liquidity drops <b>${pctv}%</b> or more — within about an hour, or over 24 hours.`, kb([[btn('⚙️ Change', 'mn:dumps')]]));
   }
   if (cmd === '/chart' || cmd === '/c') {
     if (!args[0]) return ask(env, B, chat, '/chart');
@@ -1337,6 +1448,7 @@ async function alertsMessage(env, B, chat, edit = null) {
       case 'track': return `🔎 ${x.label}: ${filterText(p).replace(/<[^>]+>|&[a-z]+;/g, '')}`;
       case 'liq': return `💧 ${x.label} liquidity ${p.side === 'add' ? 'added' : p.side === 'remove' ? 'removed' : 'in/out'}${p.min ? ` ≥ ${fmtUsd(p.min)}` : ''}`;
       case 'liqlvl': return `💧 ${x.label} liquidity ${p.dir} ${fmtBig(p.value)}`;
+      case 'dump': return `🚨 dumps of ${p.pct}%+ on any token`;
       default: return x.kind;
     }
   };
@@ -1563,7 +1675,7 @@ async function tick(env, when) {
   const tracks = A.filter(x => x.kind === 'track');
   jobs.push(async () => {
     const want = [...new Set([
-      ...accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.xfer >= 0 || o.nft; })),
+      ...accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.xfer >= 0 || o.nft || o.drops; })),
       ...tracks.map(x => x.target)])].sort();
     for (const a of rotate('act', want, 5)) {
       // When everyone asking about this account wants one direction only, the
@@ -1571,14 +1683,18 @@ async function tick(env, when) {
       // otherwise notified of every transfer of its token, which fills the page.
       const dirs = new Set([...watchesOf(a).map(() => 'both'), ...tracks.filter(y => y.target === a).map(y => j(y.params).dir || 'both')]);
       const only = dirs.size === 1 && !dirs.has('both') ? [...dirs][0] : null;
-      const d = await hyp(B, `/v2/history/get_actions?account=${a}&filter=*:transfer&limit=40&sort=desc${only ? `&transfer.${only === 'in' ? 'to' : 'from'}=${a}` : ''}`);
+      const d = await hyp(B, `/v2/history/get_actions?account=${a}&filter=*:transfer,atomicassets:logmint&limit=40&sort=desc${only ? `&transfer.${only === 'in' ? 'to' : 'from'}=${a}` : ''}`);
       if (!d?.actions) continue;
       const seen = cur.get(`seq:${a}`);
       const top = Math.max(0, ...d.actions.map(x => Number(x.global_sequence) || 0));
       if (top) setCur(`seq:${a}`, Math.max(top, seen || 0));
       if (!seen) continue;                           // first look: remember where we are, tell nothing
       const fresh = [...new Map(d.actions.filter(x => Number(x.global_sequence) > seen).map(x => [x.global_sequence, x])).values()];
-      const events = eventsFrom(D, a, fresh);
+      const events = eventsFrom(D, a, fresh.filter(x => x.act?.name === 'transfer'));
+      const drops = watchesOf(a).some(w => optsOf(w).drops) ? airdropsFrom(D, a, fresh) : [];
+      if (drops.length) for (const w of watchesOf(a).filter(w => optsOf(w).drops)) {
+        await send(w.chat_id, `🪂 <b>Airdrop — ${esc(a)}</b>\n${drops.join('\n')}`, kb([[btn('🔕 No airdrop alerts', `o:${a}:drops`)]]));
+      }
       if (!events.length) continue;
       const list = es => `${es.slice(0, 8).map(e => e.text).join('\n')}${es.length > 8 ? `\n… and ${es.length - 8} more` : ''}`;
       for (const w of watchesOf(a)) {
@@ -1797,6 +1913,86 @@ async function tick(env, when) {
       if (await send(x.chat_id, `💧 <b>${t ? tokLink(t) : esc(x.label)}</b> liquidity is ${p.dir} ${fmtBig(p.value)} — now <b>${fmtBig(v)}</b> across its pools.`,
         kb([[btn('💧 Pools', `m:/liquidity ${x.target}`)]]))) {
         writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
+      }
+    }
+  });
+
+  // ---- NFT buy offers and trade offers (every 5 minutes, offset 4) ----------
+  // AtomicMarket buy offers on the wallet's NFTs, and AtomicAssets trade offers
+  // sent to it — with the memo, which is the message AtomicHub shows with it.
+  if (minute % 5 === 4) jobs.push(async () => {
+    const want = accounts.filter(a => watchesOf(a).some(w => optsOf(w).offers));
+    for (const a of rotate('off', want, 4)) {
+      const [bo, to] = [await get(B, `${AA}/atomicmarket/v1/buyoffers?seller=${a}&state=0&sort=created&order=desc&limit=10`),
+        await get(B, `${AA}/atomicassets/v1/offers?recipient=${a}&state=0&sort=created&order=desc&limit=10`)];
+      const lastB = cur.get(`bo:${a}`), lastT = cur.get(`to:${a}`);
+      const bos = bo?.data || [], tos = (to?.data || []).filter(x => !x.is_sender_contract);
+      const topB = Math.max(0, ...bos.map(x => Number(x.created_at_time) || 0)), topT = Math.max(0, ...tos.map(x => Number(x.created_at_time) || 0));
+      if (bo && topB) setCur(`bo:${a}`, Math.max(topB, lastB || 0));
+      if (to && topT) setCur(`to:${a}`, Math.max(topT, lastT || 0));
+      const names = as => { const n = as.map(x => x.name || x.template?.immutable_data?.name || `#${x.asset_id}`); return n.slice(0, 3).map(esc).join(', ') + (n.length > 3 ? ` +${n.length - 3}` : ''); };
+      const lines = [];
+      if (lastB) for (const x of bos.filter(y => Number(y.created_at_time) > lastB).reverse()) {
+        const amt = Number(x.price.amount) / 10 ** x.price.token_precision;
+        const t = D.tok.get(`${x.price.token_symbol}@${x.price.token_contract}`);
+        lines.push(`🤝 <b>Buy offer</b>: <code>${esc(x.buyer)}</code> offers <b>${fmtAmt(amt)} ${esc(x.price.token_symbol)}</b>${t ? ` (${fmtUsd(amt * t.usd)})` : ''} for ${names(x.assets)} · ${esc(x.collection?.collection_name || '')}`
+          + `${x.memo ? `\n     💬 “${esc(String(x.memo).slice(0, 140))}”` : ''}\n     <a href="https://wax.atomichub.io/explorer/asset/wax-mainnet/${x.assets[0]?.asset_id}">See the NFT</a>`);
+      }
+      if (lastT) for (const x of tos.filter(y => Number(y.created_at_time) > lastT).reverse()) {
+        const give = x.sender_assets || [], want2 = x.recipient_assets || [];
+        lines.push(`🔁 <b>Trade offer</b> from <code>${esc(x.sender_name)}</code>: ${give.length ? `they give ${names(give)}` : 'they give nothing'}${want2.length ? ` for your ${names(want2)}` : ' — a gift, nothing asked back'}`
+          + `${x.memo ? `\n     💬 “${esc(String(x.memo).slice(0, 140))}”` : ''}`);
+      }
+      if (!lines.length) continue;
+      for (const w of watchesOf(a).filter(w => optsOf(w).offers)) {
+        await send(w.chat_id, `🖼 <b>${esc(a)}</b>\n${lines.slice(0, 6).join('\n')}${lines.length > 6 ? `\n… and ${lines.length - 6} more` : ''}\n\n<a href="https://wax.atomichub.io/profile/wax-mainnet/${esc(a)}">Open on AtomicHub</a> to accept or decline.`,
+          kb([[btn('🔕 No offer alerts', `o:${a}:offers`)]]));
+      }
+    }
+  });
+
+  // ---- dumps: any token down 60% (or the chat's own line) ------------------
+  // Every 5 minutes, Alcor's live price for every token against 24 hours ago
+  // (the snapshot's price and 24h change) and against about an hour ago (kept
+  // in the cache). Tokens with at least $300 of liquidity only — below that a
+  // single trade is a "dump" — stablecoins left out, each token at most once
+  // in 12 hours. Keyed by symbol AND contract, so an imitation token's dump
+  // never reads as the real one's.
+  const dumpAlerts = A.filter(x => x.kind === 'dump');
+  if (minute % 5 === 3 && dumpAlerts.length) jobs.push(async () => {
+    const all = await get(B, `${ALCOR}/tokens`, { ttl: 120 });
+    if (!Array.isArray(all)) return;
+    const hour = Math.floor(now / HOUR);
+    const keyOf = h => new Request(`https://dumps.waxedge.invalid/h${h}`);
+    const prevH = await caches.default.match(keyOf(hour - 1)).then(r => (r ? r.json() : null)).catch(() => null);
+    const minPct = Math.min(...dumpAlerts.map(x => j(x.params).pct || 60));
+    const snap = {}, hits = [];
+    for (const x of all) {
+      if (x.is_scam || !(Number(x.usd_price) > 0)) continue;
+      const id = `${x.symbol}@${x.contract}`, t = D.tok.get(id);
+      if (!t || (t.liq || 0) < 300 || (/USD|EUR|JPY/.test(t.sym) && t.usd > 0.2)) continue;
+      const live = Number(x.usd_price);
+      snap[id] = live;
+      const ref24 = t.ch != null && t.ch > -99 ? t.usd / (1 + t.ch / 100) : null, ref1 = prevH?.[id];
+      const d24 = ref24 > 0 ? (1 - live / ref24) * 100 : 0, d1 = ref1 > 0 ? (1 - live / ref1) * 100 : 0;
+      const drop = Math.max(d24, d1);
+      if (drop >= minPct) hits.push({ t, id, live, drop, win: d1 >= d24 ? 'about an hour' : '24 hours', ref: d1 >= d24 ? ref1 : ref24 });
+    }
+    if (!(await caches.default.match(keyOf(hour)).catch(() => null))) {
+      await caches.default.put(keyOf(hour), new Response(JSON.stringify(snap), { headers: { 'cache-control': 'max-age=10800', 'content-type': 'application/json' } })).catch(() => {});
+    }
+    for (const h of hits.sort((a, b) => (b.t.liq || 0) - (a.t.liq || 0)).slice(0, 5)) {
+      if (now - (cur.get(`dump:${h.id}`) || 0) < 12 * HOUR) continue;
+      setCur(`dump:${h.id}`, now);
+      const same = (D.bySym.get(h.t.sym) || []).length > 1;
+      const cause = await dumpCause(B, D, h.t, h.win === '24 hours' ? DAY : 2 * HOUR).catch(() => ({ lines: [], topSeller: null, topPuller: null }));
+      for (const x of dumpAlerts) {
+        const p = j(x.params);
+        if (h.drop < (p.pct || 60) || (x.target !== '*' && x.target !== h.id)) continue;
+        await send(x.chat_id, `🚨 <b>DUMP</b> ${tokLink(h.t)} <code>${esc(h.t.c)}</code> <b>${pct(-h.drop)}</b> in ${h.win}\n${fmtUsd(h.ref)} → <b>${fmtUsd(h.live)}</b> · liquidity ${fmtBig(h.t.liq || 0)}${same ? `\n<i>More tokens are called ${esc(h.t.sym)} — this is the one from ${esc(h.t.c)}.</i>` : ''}${cause.lines.length ? `\n\n${cause.lines.join('\n')}` : ''}`,
+          kb([[btn('📈 Chart', `ch:${h.id}:15m:usd`), btn('💧 Liquidity', `m:/liquidity ${h.id}`)],
+            ...(cause.topSeller || cause.topPuller ? [[btn(`🔎 Follow ${cause.topSeller || cause.topPuller}`, `m:/track ${cause.topSeller || cause.topPuller} out`)]] : []),
+            [btn('⚙️ Dump alert settings', 'mn:dumps')]]));
       }
     }
   });
