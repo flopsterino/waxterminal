@@ -12,7 +12,7 @@ import { areaChart, columns, donut, bars, histogram, rangeBar, hideTip, bubbleMa
 import { candleChart, histogramChart, lineSeriesChart } from './tvchart.js';
 import { liquidityBands, bandValues } from './math.js';
 import { loadTokenMeta, pairMark, tokenMark, tokenMeta, tokenLogo } from './tokens.js';
-import { drawShareCard, shareOrSave } from './sharecard.js';
+import { drawShareCard, shareOrSave, drawMarketCard, copyImage } from './sharecard.js';
 import { livePair, quoteV2, buildV2Add, buildV2Remove, planV2Zap, buildV2Zap, buildV2Create, neftyNewPairPlan } from './v2lp.js';
 import { neftyIndex, neftyCollection, neftyLive, neftyCandidates, neftyProof, buildNeftyBlend } from './nefty.js';
 import { debounce, quote as routeQuote } from './router.js';
@@ -7285,6 +7285,92 @@ async function openShare(spec, account, filename) {
   await draw();
 }
 
+// ---- market share cards ---------------------------------------------------
+// A token or a pair as a picture: price, moves, a candle chart and four
+// figures. The candles are Alcor's, for the market the page itself reads the
+// token in; turned into dollars bar by bar with WAX/WAXUSDC (open at WAX's
+// open, close at WAX's close), the same as the Telegram bot's charts.
+const SHARE_PERIODS = { '7d': { bucket: 14400, days: 7, label: '7 days · 4h candles' }, '30d': { bucket: 86400, days: 30, label: '30 days · daily candles' }, '90d': { bucket: 86400, days: 90, label: '90 days · daily candles' } };
+async function shareCandles(pool, baseId, per, { usd = true } = {}) {
+  if (!pool || pool.dex !== 'alcor') return [];
+  const since = Date.now() / 1000 - per.days * 86400;
+  const raw = (await alcorCandles(pool.id, per.bucket).catch(() => [])).filter(c => c.time >= since);
+  const baseIsA = pool.tokenA === baseId;
+  const own = raw.map(c => (baseIsA ? { t: c.time, o: c.open, h: c.high, l: c.low, c: c.close }
+    : { t: c.time, o: 1 / c.open, h: 1 / c.low, l: 1 / c.high, c: 1 / c.close }));
+  const quote = baseIsA ? pool.tokenB : pool.tokenA;
+  if (!usd) return own;
+  if (quote === WAX_ID) {
+    const wax = (await alcorCandles('314', per.bucket).catch(() => [])).filter(c => c.time >= since - per.bucket);
+    let j = 0;
+    return own.map(c => {
+      while (j + 1 < wax.length && wax[j + 1].time <= c.t) j++;
+      const w = wax[j];
+      if (!w) return null;
+      const O = c.o * w.open, C = c.c * w.close;
+      return { t: c.t, o: O, c: C, h: Math.max(O, C, c.h * Math.max(w.open, w.close)), l: Math.min(O, C, c.l * Math.min(w.open, w.close)) };
+    }).filter(Boolean);
+  }
+  const k = state.prices.get(quote)?.usd;
+  return k ? own.map(c => ({ t: c.t, o: c.o * k, h: c.h * k, l: c.l * k, c: c.c * k })) : own;
+}
+const pctMove = (cs, days) => {
+  if (!cs.length) return null;
+  const since = Date.now() / 1000 - days * 86400;
+  const first = cs.find(c => c.t >= since);
+  return first ? (cs[cs.length - 1].c / first.o - 1) * 100 : null;
+};
+
+async function openMarketShare(build, filename) {
+  document.querySelector('.sharemodal')?.remove();
+  const m = document.createElement('div');
+  m.className = 'sharemodal';
+  m.innerHTML = `<div class="sharebox" role="dialog" aria-label="Share as an image">
+      <div class="toolbar" style="margin:0 0 10px"><span class="sub">Chart</span>
+        ${Object.keys(SHARE_PERIODS).map(k => `<button class="chip" data-sper="${k}" aria-pressed="${k === '30d'}">${k}</button>`).join('')}</div>
+      <div class="shareimg"><div class="loading"><span class="spinner"></span><span>Drawing…</span></div></div>
+      <div class="sharebar">
+        <span class="dim" id="shareMsg" style="font-size:12px"></span>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="shareClose">Close</button>
+        <button class="btn ghost" id="shareCopy">Copy image</button>
+        <button class="btn ghost" id="shareDl">Download</button>
+        ${navigator.canShare ? '<button class="btn" id="shareGo">Share</button>' : ''}
+        <a class="btn" id="shareTg" target="_blank" rel="noopener">Telegram</a>
+      </div></div>`;
+  document.body.appendChild(m);
+  let blob = null, url = null, per = '30d';
+  const msg = t => { const e = m.querySelector('#shareMsg'); if (e) e.textContent = t; };
+  const draw = async () => {
+    m.querySelector('.shareimg').innerHTML = '<div class="loading"><span class="spinner"></span><span>Drawing…</span></div>';
+    const spec = await build(SHARE_PERIODS[per]);
+    blob = await drawMarketCard(spec);
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(blob);
+    m.querySelector('.shareimg').innerHTML = `<img src="${url}" alt="The image that will be shared">`;
+    // Telegram's share link carries a page and a line of text; the picture
+    // itself goes with Share (phone) or Copy / Download.
+    m.querySelector('#shareTg').href = `https://t.me/share/url?url=${encodeURIComponent(location.href)}&text=${encodeURIComponent(spec.shareText || spec.title)}`;
+  };
+  const close = () => { m.remove(); if (url) URL.revokeObjectURL(url); };
+  m.addEventListener('click', e => { if (e.target === m) close(); });
+  m.querySelector('#shareClose').onclick = close;
+  m.querySelectorAll('[data-sper]').forEach(b => b.onclick = () => {
+    per = b.dataset.sper;
+    m.querySelectorAll('[data-sper]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    draw().catch(e => msg(e.message));
+  });
+  m.querySelector('#shareCopy').onclick = async () => { if (blob) msg(await copyImage(blob) ? 'Copied — paste it into a chat.' : 'This browser cannot copy images; use Download.'); };
+  m.querySelector('#shareDl').onclick = () => {
+    if (!blob) return;
+    const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  const go = m.querySelector('#shareGo');
+  if (go) go.onclick = async () => { if (blob) { const how = await shareOrSave(blob, { filename, text: location.href }); if (how === 'shared') close(); } };
+  await draw().catch(e => msg(e.message));
+}
+
 function positionCard(p, mine = false) {
   const pool = p.pool;
   const share = pool.tvl > 0 ? Math.min(1, p.valueUsd / pool.tvl) : null;
@@ -9978,6 +10064,7 @@ async function openToken(id) {
       <span class="dim ph-meta">${esc(t.contract)}${t.bornAt ? ` &middot; first pooled ${age(t.bornAt)} ago` : ''}</span>
       <div class="ph-act">
         ${ratingBar(`t:${id}`)}
+        <button class="btn ghost" id="tokShare" data-share title="Share this token as an image">Share</button>
         <a class="btn ghost" href="https://waxblock.io/tokens/${esc(t.contract)}/${esc(t.symbol)}" target="_blank" rel="noopener">Contract &nearr;</a>
         ${deepest ? `<a class="btn" href="${swapUrl(deepest)}" target="_blank" rel="noopener">Trade ${esc(t.symbol)} &nearr;</a>` : ''}
       </div>
@@ -10221,6 +10308,27 @@ async function openToken(id) {
 
   // ---- how many hold it at all --------------------------------------------
   let holderTotal = null;
+  // Share as a picture: the market the page reads the token in, in dollars.
+  $('#tokShare')?.addEventListener('click', () => {
+    const txt = sel => ($(sel)?.textContent || '').trim();
+    const logo = tokenLogo(id);
+    const chartPool = deepest?.dex === 'alcor' ? deepest : tradePools.find(p2 => p2.dex === 'alcor') || null;
+    openMarketShare(async per => {
+      const cs = await shareCandles(chartPool, id, per);
+      const daily = per.bucket === 86400 && per.days >= 30 ? cs : await shareCandles(chartPool, id, SHARE_PERIODS['30d']);
+      const src = pools.filter(p2 => p2.change24 != null && p2.vol24 > 0).sort((a, b) => (b.vol24 || 0) - (a.vol24 || 0))[0];
+      const ch24 = src ? (src.tokenB === id ? -src.change24 : src.change24) : null;
+      return {
+        title: t.symbol, kicker: `${t.contract}${chartPool ? ` · ${chartPool.symA}/${chartPool.symB} on Alcor` : ''}`,
+        logos: logo ? [logo] : [],
+        price: t.price != null ? px(t.price) : '—', priceSub: inWax != null ? `${qty(inWax)} WAX` : '',
+        changes: [['24h', ch24], ['7d', pctMove(daily, 7)], ['30d', pctMove(daily, 30)]],
+        candles: cs, chartLabel: `${t.symbol} in USD · ${per.label}`,
+        stats: [['Market cap', txt('#tokCap') || '—'], ['Holders', txt('#tokHolderN') || '—'], ['Pooled', usd(t.tvl)], ['Volume 24h', t.vol24 > 0 ? usd(t.vol24) : '—']],
+        shareText: `${t.symbol} ${t.price != null ? px(t.price) : ''} on WaxEDGE`,
+      };
+    }, `${t.symbol}-waxedge.png`);
+  });
   holderCount(t.contract, t.symbol).then(n => {
     if (stale()) return;
     if (n == null) return;
@@ -12038,6 +12146,7 @@ async function openPool(key) {
       <div class="ph-act">
         <a class="btn" href="${swapUrl(p)}" target="_blank" rel="noopener">Trade &nearr;</a>
         <button class="btn" id="poolAddLiq">Add liquidity</button>
+        <button class="btn ghost" id="poolShare" data-share title="Share this pair as an image">Share</button>
         <button class="btn ghost" id="poolNewFarm">Create a farm</button>
         <a class="btn ghost" href="${venueUrl[p.dex]?.(p) || '#'}" target="_blank" rel="noopener">${esc(venueName[p.dex] || p.dex)} &nearr;</a>
       </div>
@@ -12081,6 +12190,24 @@ async function openPool(key) {
     <div id="newFarmBox" style="margin-top:12px"></div>
     <div id="farmParts" style="margin-top:12px"></div>
     ${promoteBox('p', key, `${p.symA}/${p.symB}`)}`;
+  $('#poolShare')?.addEventListener('click', () => {
+    const logos = [tokenLogo(o.baseId), tokenLogo(o.quoteId)].filter(Boolean);
+    openMarketShare(async per => {
+      const cs = await shareCandles(p, o.baseId, per, { usd: false });
+      const daily = per.bucket === 86400 && per.days >= 30 ? cs : await shareCandles(p, o.baseId, SHARE_PERIODS['30d'], { usd: false });
+      const hi = cs.length ? Math.max(...cs.slice(-6).map(c => c.h)) : null;
+      return {
+        title: `${o.baseSym} / ${o.quoteSym}`, kicker: `${venueName[p.dex] || p.dex} #${p.id} · ${(p.feeBps / 100).toFixed(2)}% fee`,
+        logos,
+        price: inQuote != null ? `${pxNum(inQuote)} ${o.quoteSym}` : '—', priceSub: nowUsd != null ? `${px(nowUsd)} per ${o.baseSym}` : '',
+        changes: [['24h', pctMove(daily.length ? daily : cs, 1) ?? ch24], ['7d', pctMove(daily, 7)], ['30d', pctMove(daily, 30)]],
+        candles: cs, chartLabel: `${o.quoteSym} per ${o.baseSym} · ${per.label}`,
+        stats: [['Liquidity', usd(p.tvlReal)], ['Volume 24h', p.vol24 > 0 ? usd(p.vol24) : '—'], ['Fee APR', fee != null ? pct(fee) : '—'], ['Farm APR', farmRate != null ? pct(farmRate) : 'no farm']],
+        shareText: `${o.baseSym}/${o.quoteSym} on WaxEDGE`,
+        _hi: hi,
+      };
+    }, `${o.baseSym}-${o.quoteSym}-waxedge.png`);
+  });
 
   // Where the money sits across price. One ticks read for the pool you opened,
   // which is a detail page and can afford it. The reconstruction is checked in
