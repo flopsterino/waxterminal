@@ -38,7 +38,7 @@ import { csvButton } from './csv.js';
 import { watchStar, watchedOf, sinceSeen, markSeen, watchCount, onWatchChange } from './watch.js';
 import { configurePromotion, promotionConfigured, promotionTerms, activePromotions, promotionStanding } from './promote.js';
 import { configureRatings, ratingsConfigured, ratingTerms, buildRatingVote, loadRatings, applyLocalVote, ratingsFor, myVote, VOTES } from './ratings.js';
-import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT, bannerCalendar, buildBannerRent, buildBannerEdit, RENT_LEAD_SEC, JOIN_LEAD_SEC } from './cheese.js';
+import { buildCheesePowerup, buildCheeseRam, powerupStats, currentBanners, BANNER_ACCOUNT, CHEESE as CHEESE_TOKEN, POWERUP_ACCOUNT, RAM_ACCOUNT, bannerCalendar, buildBannerRent, buildBannerEdit, RENT_LEAD_SEC, JOIN_LEAD_SEC } from './cheese.js';
 import { sqrtPriceFromX64, depositRatio, amountsForLiquidity, liquidityForAmounts, concentration } from './math.js';
 
 // ------------------------------------------------------------ formatting ----
@@ -3117,69 +3117,140 @@ const forPeriod = sec => {
 // 580x150 and shown whole — stretched across the page and cropped to 140px, the
 // artwork lost its top and bottom.
 let bannerMarkup = null;   // null: not read yet; '': nothing to show
-// What rotates: one entry per sold position, each with its creatives — two
-// when a shared spot has both halves sold. Every ROTATE_MS the positions trade
-// places (a phone shows only the first) and a shared spot shows its other
-// half. It used to be a coin per page load, and this is a single-page app: one
-// load per visit, so a visitor saw one banner the whole time.
-let bannerPool = [], bannerTick = 0, bannerTimer = null;
-const ROTATE_MS = 10000;
-function bannerTilesHtml() {
-  if (!bannerPool.length) return '';
-  const n = bannerPool.length;
-  const giveUp = "const h=this.closest('[data-banner-host]');this.closest('.bannertile').remove();if(h&&!h.querySelector('.bannertile'))h.hidden=true";
-  return Array.from({ length: n }, (_, i) => bannerPool[(i + bannerTick) % n]).map(pos => {
-    const b = pos.creatives[bannerTick % pos.creatives.length];
-    return `<a class="bannertile" href="${esc(b.url || CHEESEHUB)}" target="_blank" rel="noopener nofollow sponsored" title="${esc(b.url || CHEESEHUB)}">
-      <img src="${esc(ipfs(b.img))}" alt="Banner by ${esc(b.user)}" width="580" height="150" onerror="${esc(ipfsFallback(b.img, giveUp))}"></a>`;
-  }).join('');
+// Shown the way CheeseHub shows the same slots (its BannerDisplay): the two
+// positions side by side, each rotating through its OWN banners every 20
+// seconds with a half-second fade — the renter's, the shared renter's, and for
+// a shared spot whose other half is unsold a placeholder (the first WaxEDGE's,
+// the second the GPK Collection Manager's, as there). Position 2 starts one
+// step on, so two halves never change together. An unrented position is a
+// dashed "Slot N — Available". Each banner carries a small AD mark, a link to a
+// site outside asks before it leaves, and the rotation carries on across pages.
+const BANNER_ROTATE_MS = 20000;
+const BANNER_BLOCKED = new Set(['walletconnect-dapp.org', 'wax-cloud.com', 'waxcloudwallet.net', 'claim-airdrop.io', 'free-nft-drop.com']);
+const bannerBlocked = url => {
+  try {
+    const parts = new URL(String(url).trim()).hostname.toLowerCase().split('.');
+    for (let i = 0; i < parts.length - 1; i++) if (BANNER_BLOCKED.has(parts.slice(i).join('.'))) return true;
+  } catch { /* not a URL: not blocked */ }
+  return false;
+};
+const BANNER_PLACEHOLDERS = [
+  { local: 'brand/banner-580x150.png', url: 'https://waxedge.app', user: 'placeholder-waxedge', alt: 'WaxEDGE' },
+  { local: 'brand/placeholder-gpk-banner.png', url: 'https://gpkonwax.github.io/collection-manager/', user: 'placeholder-gpk-collection-manager', alt: 'Unofficial GPK Collection Manager' },
+];
+let bannerPos = [];                          // [{ position, banners: [...] }]
+const bannerIdx = {};                        // position -> { index, lastTick }
+let bannerTimers = [];
+function bannersOf(slot, placeholderNo) {
+  const out = [];
+  if (slot.suspended) return out;
+  if (slot.user !== BANNER_ACCOUNT && slot.ipfs && !bannerBlocked(slot.url)) out.push({ ipfs: slot.ipfs, url: slot.url, user: slot.user });
+  if (slot.shared && slot.sharedUser && slot.sharedIpfs && !bannerBlocked(slot.sharedUrl)) out.push({ ipfs: slot.sharedIpfs, url: slot.sharedUrl || '#', user: slot.sharedUser });
+  if (slot.shared && slot.user !== BANNER_ACCOUNT && !slot.sharedUser) out.push({ ...BANNER_PLACEHOLDERS[(placeholderNo - 1) % 2], placeholder: true });
+  return out;
+}
+function bannerPositionHtml(p) {
+  if (!p.banners.length) {
+    return `<a class="bannerpos empty" href="${routePath('ads')}" data-ads>&#128227; Slot ${p.position} &mdash; Available</a>`;
+  }
+  const cur = bannerIdx[p.position]?.index ?? 0;
+  const giveUp = "this.closest('.bannerlayer').classList.add('broken')";
+  return `<div class="bannerpos" data-bpos="${p.position}">${p.banners.map((b, i) => `<a class="bannerlayer${i === cur ? ' on' : ''}" href="${esc(b.url)}"
+      data-bannerurl="${esc(b.url)}" target="_blank" rel="noopener nofollow sponsored" tabindex="${i === cur ? 0 : -1}">
+      <img src="${esc(b.local || ipfs(b.ipfs))}" alt="${esc(b.alt || `Banner by ${b.user}`)}" width="580" height="150"
+        ${b.local ? '' : `onerror="${esc(ipfsFallback(b.ipfs, giveUp))}"`}>${b.placeholder ? '' : '<span class="adtag">AD</span>'}</a>`).join('')}</div>`;
+}
+function bannerShow(position) {
+  const st = bannerIdx[position];
+  document.querySelectorAll(`[data-banner-host] [data-bpos="${position}"]`).forEach(el => {
+    el.querySelectorAll('.bannerlayer').forEach((l, i) => { l.classList.toggle('on', i === st.index); l.tabIndex = i === st.index ? 0 : -1; });
+  });
+}
+function startBannerRotation() {
+  bannerTimers.forEach(clearTimeout); bannerTimers = [];
+  for (const p of bannerPos) {
+    if (p.banners.length <= 1) continue;
+    const st = bannerIdx[p.position];
+    const wait = Math.max(0, BANNER_ROTATE_MS - ((Date.now() - st.lastTick) % BANNER_ROTATE_MS));
+    const step = () => {
+      if (!document.hidden) {
+        st.index = (st.index + 1) % p.banners.length;
+        st.lastTick = Date.now();
+        bannerShow(p.position);
+      }
+      bannerTimers.push(setTimeout(step, BANNER_ROTATE_MS));
+    };
+    bannerTimers.push(setTimeout(step, wait));
+  }
 }
 function paintBanners() {
   if (bannerMarkup == null) return;
   document.querySelectorAll('[data-banner-host]').forEach(host => {
     host.hidden = !bannerMarkup;
     if (bannerMarkup && !host.firstElementChild) host.innerHTML = bannerMarkup;
+    // Hosts painted later (another page) show the position where it is now.
+    if (bannerMarkup) bannerPos.forEach(p => { if (bannerIdx[p.position]) bannerShow(p.position); });
   });
-  if (bannerTimer == null && (bannerPool.length > 1 || bannerPool.some(p => p.creatives.length > 1))) {
-    bannerTimer = setInterval(() => {
-      if (document.hidden) return;
-      bannerTick++;
-      const html = bannerTilesHtml();
-      document.querySelectorAll('[data-banner-host] .bannertiles').forEach(t => { t.innerHTML = html; });
-    }, ROTATE_MS);
-  }
 }
+// A banner that leaves the site asks first, as on CheeseHub; its own pages and
+// ours are not "leaving".
+document.addEventListener('click', e => {
+  const a = e.target.closest?.('.bannerlayer');
+  if (!a) return;
+  const url = a.dataset.bannerurl || '';
+  let host = '';
+  try { host = new URL(url, location.href).hostname.toLowerCase(); } catch { return; }
+  if (host === location.hostname || host === 'waxedge.app' || host === 'www.waxedge.app') {
+    e.preventDefault();
+    const u = new URL(url, location.href);
+    history.pushState(null, '', u.pathname + u.search + u.hash);
+    dispatchEvent(new PopStateEvent('popstate'));
+    return;
+  }
+  if (['cheesehubwax.github.io', 'cheesehub.app', 'www.cheesehub.app'].includes(host)) return;
+  e.preventDefault();
+  document.querySelector('.leavemodal')?.remove();
+  const m = document.createElement('div');
+  m.className = 'sharemodal leavemodal';
+  m.innerHTML = `<div class="sharebox" role="alertdialog" aria-label="You are leaving WaxEDGE" style="max-width:440px">
+    <h3 style="margin:0 0 8px">&#9888;&#65039; You are leaving WaxEDGE</h3>
+    <p class="sub" style="margin:0 0 6px">This advert goes to a website WaxEDGE does not control. Proceed at your own risk.</p>
+    <p class="mono" style="margin:0 0 14px;word-break:break-all">${esc(host)}</p>
+    <div class="toolbar" style="margin:0;justify-content:flex-end"><button class="btn ghost" data-lv="no">Cancel</button><button class="btn" data-lv="go">Continue</button></div></div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  m.addEventListener('click', ev => { if (ev.target === m) close(); });
+  m.querySelector('[data-lv="no"]').onclick = close;
+  m.querySelector('[data-lv="go"]').onclick = () => { window.open(url, '_blank', 'noopener,noreferrer'); close(); };
+});
 
 async function renderBanner() {
   let got = null;
   try { got = await currentBanners(); } catch {}
-  // A spot rented as shared whose other half nobody has bought shows its one
-  // banner every time — the half that was paid for is never hidden — and the
-  // header says the spot is shared with its other half for rent.
-  let openHalves = 0;
-  bannerPool = (got?.banners || []).slice(0, 2).map(b => {
-    if (b.rentalShared && !b.shared?.img) openHalves++;
-    const creatives = [b];
-    if (b.shared?.img) creatives.push({ ...b, ...b.shared });
-    return { creatives };
+  let placeholders = 0;
+  bannerPos = (got?.positions || []).filter(s => s.position === 1 || s.position === 2).map(s => {
+    const banners = bannersOf(s, placeholders + 1);
+    if (banners.some(b => b.placeholder)) placeholders++;
+    return { position: s.position, banners };
   });
-  // Where it starts is still a coin, so the first view is not always spot 1.
-  bannerTick = Math.floor(Math.random() * 4);
-  const sold = bannerPool.flatMap(p => p.creatives);
-  const free = got?.free || 0;
-  if (!sold.length && !free) { bannerMarkup = ''; paintBanners(); return; }
-  const users = [...new Set(sold.map(b => b.user))];
-  // An unsold slot is a line, not a banner-sized box: a page should not be
-  // mostly advertising, least of all for advertising.
-  bannerMarkup = `<div class="card bannerslot${bannerPool.length ? '' : ' empty'}">
-    <div class="bannerhead"><span class="sponsored">Sponsored</span>
-      <span class="dim">${users.length ? `via CheeseHub &middot; ${users.map(esc).join(' &amp; ')}${openHalves ? ' &middot; shared spot, other half free' : ''}`
-        : 'this CheeseHub banner spot is free today'}</span>
-      <a class="more" href="${routePath('ads')}" data-ads>${openHalves ? 'Join it' : bannerPool.length ? 'Advertise' : 'Rent it'} &rarr;</a></div>
-    ${bannerPool.length ? `<div class="bannertiles">${bannerTilesHtml()}</div>` : ''}</div>`;
-  // Re-read (the half-hourly refresh): hosts already showing the old slot are redrawn.
+  if (!bannerPos.length) { bannerMarkup = ''; paintBanners(); return; }
+  // Where each position stands: kept across a re-read, else position 2 one
+  // step on so a shared half and a placeholder do not change together.
+  for (const p of bannerPos) {
+    const saved = bannerIdx[p.position];
+    if (saved && p.banners.length) {
+      saved.index = (saved.index + Math.floor((Date.now() - saved.lastTick) / BANNER_ROTATE_MS)) % p.banners.length;
+    } else bannerIdx[p.position] = { index: p.position === 2 && p.banners.length > 1 ? 1 : 0, lastTick: Date.now() };
+  }
+  // CheeseHub leaves an empty position out when the other one has a banner.
+  const any = bannerPos.some(p => p.banners.length);
+  const shown = any ? bannerPos.filter(p => p.banners.length) : bannerPos;
+  bannerMarkup = `<div class="bannerslot">
+    <div class="bannerrow">${shown.map(bannerPositionHtml).join('')}</div>
+    <a class="bannermore" href="${routePath('ads')}" data-ads>&#128227; Advertise with CHEESEHub</a></div>`;
   document.querySelectorAll('[data-banner-host]').forEach(h => { h.innerHTML = ''; });
   paintBanners();
+  startBannerRotation();
 }
 
 // ------------------------------------------------------------- ADVERTISE ---

@@ -82,7 +82,17 @@ export async function currentBanners({ now = Date.now() } = {}) {
       rentalShared: Number(r.rental_type) === 1,
     }))
     .sort((a, b) => a.position - b.position);
-  return { slot: slot * 1000, banners, free: here.length - banners.length };
+  // Every position of the running day as CheeseHub reads it (its
+  // BannerDisplay): the renter's banner, the shared renter's, and whether a
+  // shared spot still has an unsold half.
+  const positions = here.map(r => ({
+    position: Number(r.position),
+    suspended: !!Number(r.suspended) || r.suspended === true,
+    user: r.user, ipfs: r.ipfs_hash || '', url: r.website_url || '',
+    shared: Number(r.rental_type) === 1,
+    sharedUser: r.shared_user || '', sharedIpfs: r.shared_ipfs_hash || '', sharedUrl: r.shared_website_url || '',
+  })).sort((a, b) => a.position - b.position);
+  return { slot: slot * 1000, banners, positions, free: here.length - banners.length };
 }
 
 // ------------------------------------------------------------ renting a slot --
