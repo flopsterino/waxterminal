@@ -31,7 +31,7 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, waxdaoStakerCount, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
-  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, buildFusionStakeLiquify, buildFusionRedeemFromLswax, redemptionEpochs, planRequest } from './fusion.js';
+  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, fusionYield, buildFusionStakeLiquify, buildFusionRedeemFromLswax, redemptionEpochs, planRequest } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -4711,7 +4711,7 @@ async function renderFusion() {
   const flow = `<div class="fuflow">
     <div class="fustep"><span class="k">bring</span><b>WAX</b></div>
     <div class="fuarrow"><span>stake</span><i></i></div>
-    <div class="fustep on"><span class="k">hold</span><b>sWAX</b><span class="s">${st.aprPct != null ? `${st.aprPct.toFixed(2)}% a year` : 'pays WAX'}</span></div>
+    <div class="fustep on"><span class="k">hold</span><b>sWAX</b><span class="s" data-fyield="swax">pays WAX</span></div>
     <div class="fuarrow two"><span>liquify</span><i></i><span class="back">unliquify</span></div>
     <div class="fustep alt"><span class="k">or hold</span><b>LSWAX</b><span class="s">1 = ${st.lswaxInSwax.toFixed(4)} sWAX</span></div>
     <div class="fuarrow"><span>redeem</span><i></i></div>
@@ -4734,8 +4734,8 @@ async function renderFusion() {
       <div class="stats">
         <div class="stat lead"><span class="v">${qty(st.forRedemption / st.lswaxInSwax)} LSWAX</span><span class="k">can be redeemed instantly right now</span>
           <span class="sub">= ${qty(st.forRedemption)} sWAX &rarr; ${qty(st.forRedemption * (1 - st.feePct / 100))} WAX after the ${st.feePct}% fee${waxUsd ? ` &middot; ${usd(st.forRedemption * waxUsd)}` : ''}</span></div>
-        <div class="stat"><span class="v">${st.aprPct != null ? `${st.aprPct.toFixed(2)}%` : '—'}</span><span class="k">staking rate</span>
-          <span class="sub">capped at ${st.aprCapPct ?? 12}%</span></div>
+        <div class="stat"><span class="v" data-fyield="lswax30">…</span><span class="k">LSWAX yield a year, measured over the last 30 days</span>
+          <span class="sub"><span data-fyield="swax30">sWAX …</span> &middot; today's reward rate ${st.aprPct != null ? `${st.aprPct < 0.1 ? st.aprPct.toFixed(3) : st.aprPct.toFixed(2)}%` : '—'} (${qty(st.rewardsPerDay)} WAX/day to all stakers)</span></div>
         <div class="stat"><span class="v">${st.lswaxInSwax.toFixed(6)}</span><span class="k">sWAX per LSWAX</span>
           <span class="sub">rises every compound</span></div>
         <div class="stat"><span class="v">${qty(st.staked)} WAX</span><span class="k">staked with it</span>
@@ -4782,6 +4782,13 @@ async function renderFusion() {
       </div>
     </div>`;
 
+  // Realized yield, from the contract's own history (two reads each).
+  fusionYield(30).then(y => {
+    const f = v => (v == null ? '—' : `${v < 0.1 && v > -0.1 ? v.toFixed(3) : v.toFixed(2)}% a year`);
+    document.querySelectorAll('[data-fyield="lswax30"]').forEach(el => { el.textContent = y.lswaxPct == null ? '—' : f(y.lswaxPct).replace(' a year', ''); });
+    document.querySelectorAll('[data-fyield="swax30"]').forEach(el => { el.textContent = `sWAX ${f(y.swaxPct)}`; });
+    document.querySelectorAll('[data-fyield="swax"]').forEach(el => { el.textContent = y.swaxPct != null ? `earned ${f(y.swaxPct)} (30d)` : 'pays WAX'; });
+  }).catch(() => document.querySelectorAll('[data-fyield]').forEach(el => { el.textContent = '—'; }));
   paintKeeperTiming(st);
   drawFusionPrice(st).catch(() => {});
   out.querySelectorAll('[data-keeper]').forEach(b => b.onclick = async () => {

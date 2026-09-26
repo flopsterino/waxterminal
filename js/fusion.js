@@ -28,7 +28,7 @@
 // and the protocol depends on somebody doing it.
 // =============================================================================
 
-import { getRows, balanceOf } from './chain.js';
+import { getRows, balanceOf, hyperion } from './chain.js';
 
 export const FUSION = 'dapp.fusion';
 export const SWAX = { symbol: 'SWAX', decimals: 8 };
@@ -65,15 +65,19 @@ export async function fusionState({ now = Date.now() } = {}) {
   const openEpoch = epochs.find(e => e.windowFrom <= now && now < e.windowTo) || null;
   const nextEpoch = epochs.filter(e => e.windowFrom > now).sort((a, b) => a.windowFrom - b.windowFrom)[0] || null;
 
-  // Synthetix-shaped reward accounting: a rate per second against the staked
-  // total, both in 1e-8 units. The rate carries its own scale of 1e3, not 1e6:
-  // read as 1e6 it pays the 3.1M staked sWAX 0.83 WAX a day and the page said
-  // 0.01% a year, while the contract's own totals show stakers paid 1.01M WAX
-  // over 779 days — 1,299 a day. At 1e3 the current rate is 829 WAX a day,
-  // 9.7% a year, under the 12% cap it is meant to sit under.
-  const rate = r ? Number(r.rewardRate) / 1e3 : 0;
-  const supply = r ? Number(r.totalSupply) : 0;
-  const aprPct = supply > 0 ? (rate * 31536000 / supply) * 100 : null;
+  // Synthetix-shaped reward accounting. rewardPerTokenStored grows by
+  // rewardRate·1e8/totalSupply a second (measured between two updates), and a
+  // staker earns balance·Δ(rewardPerToken)/1e16 WAX — pinned on a real claim:
+  // vesro.wam, 2,100 sWAX, claimable 3.2636 WAX on 10 Dec, paid 46.4736 WAX on
+  // 16 Aug, Δ = 2.0576e14 → exactly 1e16. So the pool pays rewardRate/1e16 WAX
+  // a second. (This page first read the rate at 1e3 and showed 9.7%, then
+  // 19,599% once a big revenue lump arrived: both wrong by powers of ten.)
+  // The rate is set for one day at a time from whatever revenue came in, so
+  // it swings; realized yield over weeks is the honest number (fusionYield).
+  const periodLive = r && Number(r.periodFinish) * 1000 > now;
+  const supply = r ? Number(r.totalSupply) / 1e8 : 0;
+  const waxPerSec = periodLive ? Number(r.rewardRate) / 1e16 : 0;
+  const aprPct = supply > 0 ? (waxPerSec * 31536000 / supply) * 100 : null;
 
   const backing = amt(g.swax_currently_backing_lswax);
   const liquified = amt(g.liquified_swax);
@@ -110,7 +114,7 @@ export async function fusionState({ now = Date.now() } = {}) {
     epochSeconds: Number(g.seconds_between_epochs),
     rentalSeconds: Number(g.cpu_rental_epoch_length_seconds),
     windowSeconds: Number(g.redemption_period_length_seconds),
-    aprPct, aprCapPct: g2 ? (Number(g2.max_staker_apr_1e6) || 0) / 1e6 : null,
+    aprPct, rewardsPerDay: waxPerSec * 86400, aprCapPct: g2 ? (Number(g2.max_staker_apr_1e6) || 0) / 1e6 : null,
     paused: !!g2?.panic,
     epochs, openEpoch, nextEpoch,
     lastEpochStart: startedAt * 1000,
@@ -315,4 +319,26 @@ export function planRequest(st, swax, now = Date.now()) {
   }
   const now_ = Math.min(left, st.availableForRentals);
   return { parts, paidNow: now_ > 0 ? now_ : 0, impossible: left - now_ > 1e-8 ? left - now_ : 0 };
+}
+
+// ---- what holding actually earned ------------------------------------------
+// The contract's own history, two rows each: rewardPerTokenStored for sWAX (a
+// staker earns Δ/1e16 WAX per sWAX), and the sWAX behind each LSWAX for
+// LSWAX, now against `days` ago. Annualised, compounding for LSWAX.
+export async function fusionYield(days = 30) {
+  const q = (table, before) => hyperion(`/v2/history/get_deltas?code=${FUSION}&scope=${FUSION}&table=${table}&limit=1&sort=desc${before ? `&before=${before}` : ''}`)
+    .then(d => d?.deltas?.[0] || null);
+  const then = new Date(Date.now() - days * 86400e3).toISOString().slice(0, 19);
+  const [rNow, rThen, gNow, gThen] = await Promise.all([q('rewards'), q('rewards', then), q('global'), q('global', then)]);
+  const secs = (a, b) => (Date.parse(`${a.timestamp}Z`) - Date.parse(`${b.timestamp}Z`)) / 1000;
+  const out = { days };
+  if (rNow && rThen && secs(rNow, rThen) > 86400) {
+    const d = Number(BigInt(rNow.data.rewardPerTokenStored) - BigInt(rThen.data.rewardPerTokenStored)) / 1e16;
+    out.swaxPct = d / secs(rNow, rThen) * 31536000 * 100;
+  }
+  if (gNow && gThen && secs(gNow, gThen) > 86400) {
+    const ratio = g => amt(g.data.swax_currently_backing_lswax) / amt(g.data.liquified_swax);
+    out.lswaxPct = ((ratio(gNow) / ratio(gThen)) ** (31536000 / secs(gNow, gThen)) - 1) * 100;
+  }
+  return out;
 }
