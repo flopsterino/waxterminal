@@ -4732,8 +4732,8 @@ async function renderFusion() {
       ${flow}
 
       <div class="stats">
-        <div class="stat lead"><span class="v">${qty(st.forRedemption / st.lswaxInSwax)} LSWAX</span><span class="k">can be redeemed instantly right now</span>
-          <span class="sub">= ${qty(st.forRedemption)} sWAX &rarr; ${qty(st.forRedemption * (1 - st.feePct / 100))} WAX after the ${st.feePct}% fee${waxUsd ? ` &middot; ${usd(st.forRedemption * waxUsd)}` : ''}</span></div>
+        <div class="stat lead"><span class="v">${qty(st.instantCap / st.lswaxInSwax)} LSWAX</span><span class="k">can be redeemed instantly right now</span>
+          <span class="sub">= ${qty(st.instantCap)} WAX</span></div>
         <div class="stat"><span class="v" data-fyield="lswax30">…</span><span class="k">LSWAX yield a year, measured over the last 30 days</span>
           <span class="sub"><span data-fyield="swax30">sWAX …</span> &middot; today's reward rate ${st.aprPct != null ? `${st.aprPct < 0.1 ? st.aprPct.toFixed(3) : st.aprPct.toFixed(2)}%` : '—'} (${qty(st.rewardsPerDay)} WAX/day to all stakers)</span></div>
         <div class="stat"><span class="v">${st.lswaxInSwax.toFixed(6)}</span><span class="k">sWAX per LSWAX</span>
@@ -4923,7 +4923,7 @@ async function paintFusionUser(st, stale) {
   // Most people hold LSWAX, so it leads: what it is worth in WAX, and the
   // three ways out of it with what each pays today. sWAX and its claims show
   // only for those who have them.
-  const instantCapLswax = st.forRedemption / (st.lswaxInSwax * 0.999);
+  const instantCapLswax = st.instantCap / (st.lswaxInSwax * 0.999);
   const lsInstant = Math.min(u.lswax, instantCapLswax);
   you.innerHTML = `<h3>Your position</h3>
     ${has ? '' : '<p class="sub">Nothing of yours is in WaxFusion yet. <b>WAX → LSWAX</b> below stakes and liquifies in one go; LSWAX grows by itself and can be traded.</p>'}
@@ -4975,7 +4975,7 @@ async function paintFusionUser(st, stale) {
 
   // What selling the LSWAX on Alcor would pay, beside the contract's two ways.
   if (u.lswax > 0) swapLeg({ fromId: 'LSWAX@token.fusion', toId: 'WAX@eosio.token', amountIn: u.lswax, me, auth: [{ actor: me, permission: 'active' }] })
-    .then(l => { const el = $('#fusionAlcorOut'); if (el) el.textContent = l?.expect ? `${bal(l.expect)} WAX` : 'no route'; })
+    .then(l => { const el = $('#fusionAlcorOut'); if (el) el.innerHTML = l?.expect ? `${bal(l.expect)} WAX <span class="${l.expect < lswaxInWax * 0.97 ? 'neg' : 'dim'}" style="font-size:12px">${((l.expect / lswaxInWax - 1) * 100).toFixed(1)}%</span>` : 'no route'; })
     .catch(() => { const el = $('#fusionAlcorOut'); if (el) el.textContent = '—'; });
   const deskApi = drawFusionDesk(st, u);
   you.querySelectorAll('[data-fgo]').forEach(b => b.onclick = () => {
@@ -5018,13 +5018,13 @@ function drawFusionDesk(st, u) {
       ${mode === 'redeem' ? (() => {
         // The instant limit in the unit being typed. LSWAX is unliquified with
         // a 0.1% floor first, so a hair less of it fits than the plain ratio.
-        const capUnit = from === 'lswax' ? Math.floor(st.forRedemption / (st.lswaxInSwax * 0.999) * 1e4) / 1e4 : Math.floor(st.forRedemption * 1e4) / 1e4;
+        const capUnit = from === 'lswax' ? Math.floor(st.instantCap / (st.lswaxInSwax * 0.999) * 1e4) / 1e4 : Math.floor(st.instantCap * 1e4) / 1e4;
         const mine = u.account && u.account === wallet.account() ? cfg.have : null;
         return `<div class="furedeemcap big" id="fusionCap" data-cap="${capUnit}">
           <div class="capline"><span>Instantly redeemable right now</span>
             <b>${capUnit > 0 ? `${bal(capUnit)} ${redeemUnit}` : 'nothing'}</b></div>
-          <div class="dim">${capUnit > 0 ? `= ${bal(st.forRedemption)} sWAX &rarr; about ${bal(st.forRedemption * (1 - st.feePct / 100))} WAX after the ${st.feePct}% fee. It is shared by everyone and shrinks with every instant redeem.`
-            : 'The instant pool is empty. Request a redemption below; it pays out in full in its window.'}</div>
+          <div class="dim">${capUnit > 0 ? `= ${bal(st.instantCap)} WAX`
+            : 'Nothing right now.'}</div>
           ${mine != null ? `<div class="dim">${mine <= capUnit ? `All ${bal(mine)} ${redeemUnit} you hold fits.` : `You hold ${bal(mine)} ${redeemUnit}: ${bal(capUnit)} can go now, the other ${bal(mine - capUnit)} through a request.`}</div>` : ''}
           <div class="capbar"><i id="fusionCapFill" style="width:0%"></i></div>
           <div class="dim" id="fusionCapMsg"></div>
@@ -5097,7 +5097,7 @@ function drawFusionDesk(st, u) {
         : mode === 'stake' ? `${qty(v)} sWAX`
         : mode === 'liquify' ? `${qty(v / st.lswaxInSwax)} LSWAX`
         : mode === 'unliquify' ? `${qty(v * st.lswaxInSwax)} sWAX`
-        : sw > st.forRedemption
+        : sw > st.instantCap
         ? `${qty(sw)} WAX through a redemption period (too much for instant)`
         : `${qty(sw * (1 - st.feePct / 100))} WAX instantly, or ${qty(sw)} WAX through a redemption period`;
     };
@@ -5163,7 +5163,7 @@ function drawFusionDesk(st, u) {
       const short = need(v, cfg.have, cfg.unit);
       if (short) { box.innerHTML = `<div class="err">${short}</div>`; return; }
       const sw = asSwax(v);
-      if (sw > st.forRedemption) { const cap = Number($('#fusionCap')?.dataset.cap) || 0; box.innerHTML = `<div class="err">Only ${qty(cap)} ${esc(redeemUnit)} can be redeemed instantly right now, so ${qty(v)} would fail. Redeem ${qty(cap)} instantly, or request a redemption.</div>`; return; }
+      if (sw > st.instantCap) { const cap = Number($('#fusionCap')?.dataset.cap) || 0; box.innerHTML = `<div class="err">Only ${qty(cap)} ${esc(redeemUnit)} can be redeemed instantly right now, so ${qty(v)} would fail. Redeem ${qty(cap)} instantly, or request a redemption.</div>`; return; }
       if (from === 'lswax' && v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract unliquifies at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
       if (!wallet.account()) { try { await wallet.connect(); } catch { return; } }
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">

@@ -91,7 +91,15 @@ export async function fusionState({ now = Date.now() } = {}) {
     revenueDistributed: amt(g.total_revenue_distributed),
     rewardsClaimed: amt(g.total_rewards_claimed),
     pendingRevenue: amt(g.revenue_awaiting_distribution),
+    // WAX set aside to pay requests in their redemption period — NOT what an
+    // instant redeem draws on.
     forRedemption: amt(g.wax_for_redemption),
+    // What an instant redeem draws on: the rental pool (instaredeem checks and
+    // debits wax_available_for_rentals — contract source, and on chain:
+    // kk2.k.c.wam's 2.248 sWAX instaredeem on 25-09 took it 3.77 → 1.52 while
+    // wax_for_redemption did not move). New stakes refill it; bots that buy
+    // LSWAX below value on Alcor empty it again within a minute.
+    instantCap: amt(g.wax_available_for_rentals),
     availableForRentals: amt(g.wax_available_for_rentals),
     rentPricePerWax: amt(g.cost_to_rent_1_wax),
     cpuContract: g.current_cpu_contract,
