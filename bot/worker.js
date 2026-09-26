@@ -340,8 +340,8 @@ async function liqEvent(B, D, x) {
   const after = pa != null ? A.n * pa * 2 : pb != null ? Bq.n * pb * 2 : null;
   return { at, seq: Number(x.global_sequence), add: name === 'addliquidity', dex: 'taco', pool: pl, who: d.user, a, b, usd, after, range: 'full range' };
 }
-const liqText = e => `${e.add ? '💧 <b>Added</b>' : '🔻 <b>Removed</b>'} ${e.usd != null ? `<b>${fmtUsd(e.usd)}</b> ` : ''}${e.add ? 'to' : 'from'} ${poolLink(e.dex, e.pool.id, `${e.pool.a}/${e.pool.b}`)} ${VENUE[e.dex]}
-   ${fmtAmt(e.a)} ${esc(e.pool.a)} + ${fmtAmt(e.b)} ${esc(e.pool.b)} · ${e.range} · <code>${esc(e.who)}</code>${e.after != null ? ` · pool now ${fmtBig(e.after)}` : ''}`;
+const liqText = (e, wax = null) => `${e.add ? '💧 <b>Added</b>' : '🔻 <b>Removed</b>'} ${e.usd != null ? `<b>${wax > 0 ? `${fmtAmt(e.usd / wax)} WAX` : fmtUsd(e.usd)}</b>${wax > 0 ? ` (${fmtUsd(e.usd)})` : ''} ` : ''}${e.add ? 'to' : 'from'} ${poolLink(e.dex, e.pool.id, `${e.pool.a}/${e.pool.b}`)} ${VENUE[e.dex]}
+   ${fmtAmt(e.a)} ${esc(e.pool.a)} + ${fmtAmt(e.b)} ${esc(e.pool.b)} · ${e.range} · <code>${esc(e.who)}</code>${e.after != null ? ` · pool now ${wax > 0 ? `${fmtAmt(e.after / wax)} WAX` : fmtBig(e.after)}` : ''}`;
 const LIQ_FEEDS = [['swap.alcor:logmint', 'lq:m'], ['swap.alcor:logburn', 'lq:b'], ['swap.taco:addliquidity', 'lq:ta'], ['swap.taco:remliquidity', 'lq:tr']];
 
 // ---------------------------------------------------------------- airdrops --
@@ -446,6 +446,24 @@ function stateOf(w) {
   if (!s.r && Object.keys(s).length && Object.keys(s).every(k => /^\d+$/.test(k))) return { r: s };
   return { r: {}, e: {}, f: {}, fe: {}, rs: {}, ...s };
 }
+
+// ------------------------------------------------------------ amounts ----
+// On WAX people think in WAX: a threshold is WAX unless it says $. "10000",
+// "10k", "10000 wax" are WAX; "$250", "250$" dollars. Stored as minWax or
+// min (dollars), and turned into dollars at the WAX price of the moment.
+function parseAmount(words, def = 'wax') {
+  const w = words.map(x => String(x).toLowerCase());
+  const tok = w.find(x => /^\$?\d[\d,.]*k?\$?(wax)?$/.test(x));
+  if (!tok) return null;
+  let n = Number(tok.replace(/[$,]|wax/g, '').replace(/k$/, '')) * (/k(wax)?\$?$/.test(tok.replace('$', '')) ? 1000 : 1);
+  if (!(n > 0)) return null;
+  const unit = tok.includes('$') || w.includes('$') || w.includes('usd') ? 'usd' : tok.endsWith('wax') || w.includes('wax') ? 'wax' : def;
+  return { n, unit };
+}
+const amtParams = a => (a ? (a.unit === 'usd' ? { min: a.n } : { minWax: a.n }) : {});
+const floorUsd = (p, D) => (p.minWax ? p.minWax * (D.wax || 0) : (p.min || 0));
+const amtText = p => (p.minWax ? `${fmtAmt(p.minWax)} WAX` : p.min ? fmtUsd(p.min) : '');
+const inWax = (usd, D) => (D.wax > 0 ? `${fmtAmt(usd / D.wax)} WAX` : fmtUsd(usd));
 
 // ------------------------------------------------------------ gentle errors --
 // A typo or a wrong name is never a dead end: the bot says what it expected,
@@ -744,7 +762,7 @@ const HELP = [
   '/price <i>SYM</i> · /top · /pools <i>SYM</i> · /farms [<i>SYM</i>] · /wax',
   '/alert <i>SYM</i> above|below <i>price</i> [wax]',
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
-  '/whale <i>SYM</i> [<i>250</i>] — swaps above $250',
+  '/whale <i>SYM</i> [<i>10000</i>] — swaps of 10,000 WAX or more ($ for dollars)',
   '/newpools [<i>SYM</i>] · /newfarms [<i>SYM</i>]',
   '/dumps [<i>60</i>] — any token that drops 60%+ · /dumps off',
   '',
@@ -756,7 +774,7 @@ const HELP = [
   '',
   '<b>💧 Liquidity</b>',
   '/liquidity <i>SYM</i> — where it sits, recent adds and removes',
-  '/liq <i>SYM</i> [<i>min $</i>] [add|remove] — alert on every move · /liq all 1000',
+  '/liq <i>SYM</i> [<i>min WAX</i>] [add|remove] — alert on every move · /liq all 10000',
   '/liq <i>SYM</i> above|below <i>$</i> — total crosses a line · /pool <i>id</i>',
   '/floor <i>collection</i> [<i>template</i>] below <i>WAX</i>',
   '',
@@ -792,7 +810,7 @@ const ASKS = {
   '/chart': ['Chart of which token? Add a timeframe if you like: 5m, 15m, 1h, 4h, 1D, 1W.', 'e.g. CHEESE 4h'],
   '/fav': ['Which token should be a favourite?', 'e.g. CHEESE'],
   '/move': ['Which token? I will write every time it moves 10%.', 'e.g. CHEESE'],
-  '/whale': ['Which token? I will show every swap above $250.', 'e.g. TLM'],
+  '/whale': ['Which token? I will show every swap of 10,000 WAX or more. Add another amount if you like, e.g. “TLM 50000”.', 'e.g. TLM'],
   '/liq': ['Which token? I will tell you every time liquidity goes in or out of its pools.', 'e.g. CHEESE'],
   '/liquidity': ['Which token?', 'e.g. CHEESE'],
   '/holders': ['Which token?', 'e.g. CHEESE'],
@@ -920,7 +938,7 @@ async function menu(env, B, chat, name, edit = null) {
       if (!t) { text = 'Unknown token.'; rows = [back('alerts')]; break; }
       text = `🔔 <b>Alerts for ${tokLink(t)}</b> <code>${esc(t.c)}</code> — what should I tell you?`;
       rows = [[btn('🎯 When it reaches a price', `mn:pa:${t.id}`)], [btn('📊 Every time it moves 10%', `mv:${t.id}`)],
-        [btn('🐋 Every big swap ($250+)', `wh:${t.id}`)], [btn('💧 When liquidity goes in or out', `m:/liq ${t.id}`)],
+        [btn('🐋 Every big swap (10,000+ WAX)', `wh:${t.id}`)], [btn('💧 When liquidity goes in or out', `m:/liq ${t.id}`)],
         [btn('📋 My alerts', 'm:/alerts')]];
       break;
     }
@@ -940,7 +958,7 @@ async function menu(env, B, chat, name, edit = null) {
       text = '💧 <b>Liquidity</b>';
       rows = [[btn('💧 Where is a token’s liquidity?', 'ask:/liquidity')],
         [btn('🔔 Alert me when a token’s liquidity moves', 'ask:/liq')],
-        [btn('🐋 Big moves in any pool ($1k+)', 'm:/liq all 1000')], [btn('🐋 Very big moves in any pool ($10k+)', 'm:/liq all 10000')],
+        [btn('🐋 Big moves in any pool (10,000+ WAX)', 'm:/liq all 10000 wax')], [btn('🐋 Very big moves in any pool (100,000+ WAX)', 'm:/liq all 100000 wax')],
         [btn('📏 When a token’s total crosses a line', 'ask:#liqlvl')],
         [btn('🏊 One Alcor pool', 'ask:/pool')], back()];
       break;
@@ -1014,7 +1032,7 @@ const FAQ = [
   ['What are vote rewards?',
     'Staked WAX that votes (or picks a proxy) earns vote rewards, claimable once every 24 hours. I remind you when they are ready. If you have staked WAX that is not voting, I tell you once, because it earns nothing that way.'],
   ['What kinds of price alerts are there?',
-    '• <b>A price</b> — once, when a token goes above or below a price, in dollars or in WAX. Pick +10%, −25%… or type an exact price.\n• <b>Every ±10% move</b> — every time it moves that much from the last price I reported, up or down.\n• <b>Big swaps</b> — every swap of the token above $250 in its deepest Alcor pools, with who bought or sold.\nPrices are checked every two minutes against Alcor’s live price.',
+    '• <b>A price</b> — once, when a token goes above or below a price, in dollars or in WAX. Pick +10%, −25%… or type an exact price.\n• <b>Every ±10% move</b> — every time it moves that much from the last price I reported, up or down.\n• <b>Big swaps</b> — every swap of the token of 10,000 WAX or more in its deepest Alcor pools, with who bought or sold.\nPrices are checked every two minutes against Alcor’s live price.',
     [btn('🔔 Set a price alert', 'ask:#alert')]],
   ['What are liquidity alerts?',
     'Liquidity is the money in a token’s pools; it decides how much you can buy or sell without moving the price. I report every deposit and withdrawal on <b>Alcor</b> and <b>TacoSwap</b>: how much, by whom, and how big the pool is afterwards — flagged when it is 10% or more of the pool. A large withdrawal is often the first sign of trouble. You can also get one alert when a token’s total liquidity crosses a line.',
@@ -1261,7 +1279,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     if (!args[0]) return ask(env, B, chat, '/whale');
     const t = await resolve(env, B, args[0]);
     if (!t) return noToken(env, B, chat, args[0], cmd);
-    return reply(await addWhale(env, B, chat, t, Number(String(args[1] || '250').replace('$', '')) || 250));
+    return reply(await addWhale(env, B, chat, t, parseAmount(args.slice(1)) || undefined));
   }
   if (cmd === '/newpools' || cmd === '/newfarms') {
     const kind = cmd === '/newpools' ? 'newpool' : 'newfarm';
@@ -1340,15 +1358,17 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
       const err = await addAlert(env, chat, 'liqlvl', t.id, t.sym, { dir: rest[0], value });
       return reply(err || `💧 I will tell you once when ${tokLink(t)} has ${rest[0]} ${fmtBig(value)} of liquidity. Now ${fmtBig(t.liq || 0)}.`);
     }
-    const min = Number((rest.find(x => /^\$?\d/.test(x)) || '0').replace(/[$,]/g, '')) || 0;
+    const amt = parseAmount(rest);
     const side = rest.includes('add') || rest.includes('adds') ? 'add' : rest.includes('remove') || rest.includes('removes') ? 'remove' : 'both';
     let target, label;
     if (what.toLowerCase() === 'all') { target = '*'; label = 'any pool'; }
     else if (/^\d+$/.test(what)) { const pl = await alcorPoolInfo(B, await data(env, B), what); if (!pl) return reply(`No Alcor pool ${esc(what)}.`); target = `alcor:${what}`; label = `${pl.a}/${pl.b}`; }
     else { const t = await resolve(env, B, what); if (!t) return noToken(env, B, chat, what, cmd); target = t.id; label = t.sym; }
-    if (target === '*' && min < 100) return reply('For every pool, set a floor of at least $100: /liq all 1000');
-    const err = await addAlert(env, chat, 'liq', target, label, { min, side });
-    return reply(err || `💧 I will tell you when liquidity is ${side === 'add' ? 'added to' : side === 'remove' ? 'taken out of' : 'added to or taken out of'} ${esc(label)}${target.startsWith('alcor:') || target === '*' ? '' : '’s pools'}${min ? `, from ${fmtUsd(min)}` : ''} — Alcor and TacoSwap.`);
+    const D0 = await data(env, B);
+    const params = { ...amtParams(amt), side };
+    if (target === '*' && floorUsd(params, D0) < 15) return reply('For every pool, pick a floor of at least 2,500 WAX — otherwise it is a message a minute.', kb([[btn('🐋 10,000+ WAX', 'm:/liq all 10000 wax'), btn('🐋 100,000+ WAX', 'm:/liq all 100000 wax')]]));
+    const err = await addAlert(env, chat, 'liq', target, label, params);
+    return reply(err || `💧 I will tell you when liquidity is ${side === 'add' ? 'added to' : side === 'remove' ? 'taken out of' : 'added to or taken out of'} ${esc(label)}${target.startsWith('alcor:') || target === '*' ? '' : '’s pools'}${amtText(params) ? `, from ${amtText(params)}` : ''} — Alcor and TacoSwap.`);
   }
   if (cmd === '/liquidity') {
     if (!args[0]) return ask(env, B, chat, '/liquidity');
@@ -1371,7 +1391,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     }
     const evs = [];
     for (const x of recent.sort((a, b) => b.global_sequence - a.global_sequence).slice(0, 6)) { const e = await liqEvent(B, D, x); if (e) evs.push(e); }
-    if (evs.length) lines.push('', '<b>Recent moves</b>', ...evs.map(e => `<code>${new Date(e.at).toISOString().slice(5, 16).replace('T', ' ')}</code> ${liqText(e)}`));
+    if (evs.length) lines.push('', '<b>Recent moves</b>', ...evs.map(e => `<code>${new Date(e.at).toISOString().slice(5, 16).replace('T', ' ')}</code> ${liqText(e, D.wax)}`));
     return reply(lines.join('\n'), kb([[btn('🔔 Alert on liquidity moves', `m:/liq ${t.id}`)]]));
   }
 
@@ -1500,12 +1520,13 @@ async function addMove(env, B, chat, t, p) {
   const err = await addAlert(env, chat, 'move', t.id, t.sym, { pct: pctv }, { ref: lv.usd });
   return err || `📊 I will tell you every time <b>${tokLink(t)}</b> moves ${pctv}% from the last price I reported — starting at ${fmtUsd(lv.usd)}.`;
 }
-async function addWhale(env, B, chat, t, min) {
+async function addWhale(env, B, chat, t, amt = { n: 10000, unit: 'wax' }) {
   const D = await data(env, B);
   const ps = poolsOf(D, t.id).filter(p => p.dex === 'alcor').slice(0, 3).map(p => p.id);
   if (!ps.length) return `${esc(t.sym)} has no Alcor pool with liquidity to watch.`;
-  const err = await addAlert(env, chat, 'whale', t.id, t.sym, { min: Math.max(10, min), pools: ps });
-  return err || `🐋 I will tell you about every ${tokLink(t)} swap above ${fmtUsd(Math.max(10, min))} in its ${ps.length} deepest Alcor pool${ps.length === 1 ? '' : 's'}.`;
+  const params = { ...amtParams(amt || { n: 10000, unit: 'wax' }), pools: ps };
+  const err = await addAlert(env, chat, 'whale', t.id, t.sym, params);
+  return err || `🐋 I will tell you about every ${tokLink(t)} swap of ${amtText(params)} or more in its ${ps.length} deepest Alcor pool${ps.length === 1 ? '' : 's'}.`;
 }
 
 async function alertsMessage(env, B, chat, edit = null) {
@@ -1517,12 +1538,12 @@ async function alertsMessage(env, B, chat, edit = null) {
     switch (x.kind) {
       case 'price': return `🔔 ${x.label} ${p.dir} ${p.unit === 'wax' ? `${fmtAmt(p.value)} WAX` : fmtUsd(p.value)}`;
       case 'move': return `📊 ${x.label} every ±${p.pct}%`;
-      case 'whale': return `🐋 ${x.label} swaps above ${fmtUsd(p.min)}`;
+      case 'whale': return `🐋 ${x.label} swaps of ${amtText(p)}+`;
       case 'newpool': return `🆕 new pools${x.label !== 'any' ? ` with ${x.label}` : ''}`;
       case 'newfarm': return `🌾 new farms${x.label !== 'any' ? ` with ${x.label}` : ''}`;
       case 'floor': return `🖼 ${x.label} under ${fmtAmt(p.below)} WAX`;
       case 'track': return `🔎 ${x.label}: ${filterText(p).replace(/<[^>]+>|&[a-z]+;/g, '')}`;
-      case 'liq': return `💧 ${x.label} liquidity ${p.side === 'add' ? 'added' : p.side === 'remove' ? 'removed' : 'in/out'}${p.min ? ` ≥ ${fmtUsd(p.min)}` : ''}`;
+      case 'liq': return `💧 ${x.label} liquidity ${p.side === 'add' ? 'added' : p.side === 'remove' ? 'removed' : 'in/out'}${amtText(p) ? ` ≥ ${amtText(p)}` : ''}`;
       case 'liqlvl': return `💧 ${x.label} liquidity ${p.dir} ${fmtBig(p.value)}`;
       case 'dump': return `🚨 dumps of ${p.pct}%+ on any token`;
       default: return x.kind;
@@ -1632,7 +1653,7 @@ async function onCallback(env, B, cq) {
     if (!t) return toast('Unknown token');
     if (d.startsWith('fv:')) { await toast(); return command(env, B, chat, `/fav ${t.id}`); }
     await toast();
-    return say(env, B, chat, d.startsWith('mv:') ? await addMove(env, B, chat, t, 10) : await addWhale(env, B, chat, t, 250));
+    return say(env, B, chat, d.startsWith('mv:') ? await addMove(env, B, chat, t, 10) : await addWhale(env, B, chat, t));
   }
   return toast();
 }
@@ -1817,10 +1838,11 @@ async function tick(env, when) {
           const p = j(y.params);
           const hit = y.target === '*' || y.target === `${e.dex}:${e.pool.id}` || y.target === e.pool.ia || y.target === e.pool.ib;
           if (!hit || (p.side === 'add' && !e.add) || (p.side === 'remove' && e.add)) continue;
-          if ((p.min || 0) > 0 && !(e.usd != null && e.usd >= p.min)) continue;
+          const fl = floorUsd(p, D);
+          if (fl > 0 && !(e.usd != null && e.usd >= fl)) continue;
           // A share of the pool, so "big for this pool" is visible even when the dollars are small.
           const big = e.after > 0 && e.usd != null ? e.usd / (e.add ? e.after : e.after + e.usd) : null;
-          await send(y.chat_id, `${liqText(e)}${big != null && big >= 0.1 ? `\n   ⚡ that is ${(big * 100).toFixed(0)}% of the pool` : ''}`);
+          await send(y.chat_id, `${liqText(e, D.wax)}${big != null && big >= 0.1 ? `\n   ⚡ that is ${(big * 100).toFixed(0)}% of the pool` : ''}`);
         }
       }
     }
@@ -1900,7 +1922,7 @@ async function tick(env, when) {
       for (const x of whales.filter(y => (j(y.params).pools || []).includes(pid))) {
         const p = j(x.params);
         const isA = pl.ia === x.target;
-        const big = fresh.filter(r => (Number(r.totalUSDVolume) || 0) >= p.min).slice(0, 5);
+        const big = fresh.filter(r => (Number(r.totalUSDVolume) || 0) >= floorUsd(p, D)).slice(0, 5);
         if (!big.length) continue;
         const t = D.tok.get(x.target) || { id: x.target, sym: x.label, c: x.target.split('@')[1] };
         // The pool's side of the swap: a negative amount left the pool, which
@@ -1909,7 +1931,7 @@ async function tick(env, when) {
           const amt = isA ? Number(r.tokenA) : Number(r.tokenB), other = isA ? Number(r.tokenB) : Number(r.tokenA);
           const buy = amt < 0;
           const who = r.recipient && r.recipient !== 'swap.alcor' ? r.recipient : r.sender;
-          return `${buy ? '🟢 BUY' : '🔴 SELL'} ${fmtAmt(Math.abs(amt))} ${esc(t.sym)} for ${fmtAmt(Math.abs(other))} ${esc(isA ? pl.b : pl.a)} · <b>${fmtUsd(Number(r.totalUSDVolume))}</b> · <code>${esc(who)}</code>`;
+          return `${buy ? '🟢 BUY' : '🔴 SELL'} ${fmtAmt(Math.abs(amt))} ${esc(t.sym)} for ${fmtAmt(Math.abs(other))} ${esc(isA ? pl.b : pl.a)} · <b>${inWax(Number(r.totalUSDVolume), D)}</b> (${fmtUsd(Number(r.totalUSDVolume))}) · <code>${esc(who)}</code>`;
         });
         await send(x.chat_id, `🐋 <b>${tokLink(t)}</b> on ${poolLink('alcor', pid, `${pl.a}/${pl.b}`)}\n${lines.join('\n')}`);
       }
