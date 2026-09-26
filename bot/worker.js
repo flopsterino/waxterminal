@@ -383,10 +383,111 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   }
   if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
   return { text: lines.join('\n'), markup: kb([
-    [btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`), btn('🐋 Big swaps', `wh:${t.id}`)],
+    [btn('📈 Chart', `ch:${t.id}:7d`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
+    [btn('🐋 Big swaps', `wh:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
     [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
   ]) };
+}
+
+// ------------------------------------------------------------------ charts --
+// A price chart as a picture. A Worker on the Free plan has ~10 ms of CPU, not
+// enough to draw a PNG, so QuickChart draws it: the Worker posts the Chart.js
+// config, gets a short image URL back, and Telegram fetches the picture
+// itself. The history is Alcor's candles for the token's deepest WAX pool,
+// asked for one window only (7 days hourly is 169 rows), turned into dollars
+// with WAX/WAXUSDC candles (pool 314) for the same window.
+const PERIODS = {
+  '1d': { res: '30', secs: 86400, label: '24 hours' },
+  '7d': { res: '240', secs: 7 * 86400, label: '7 days' },
+  '30d': { res: '1D', secs: 30 * 86400, label: '30 days' },
+  '90d': { res: '1D', secs: 90 * 86400, label: '90 days' },
+  '1y': { res: '1W', secs: 365 * 86400, label: 'a year' },
+};
+const WAX_USD_POOL = '314';
+// [time, open, high, low, close]
+async function candles(B, pool, p) {
+  const to = Date.now(), from = to - p.secs * 1000;
+  const d = await get(B, `${ALCOR}/swap/pools/${pool}/candles?resolution=${p.res}&from=${from}&to=${to}`, { ttl: 300 });
+  return Array.isArray(d) ? d.map(c => [Number(c.time), Number(c.open), Number(c.high), Number(c.low), Number(c.close)])
+    .filter(c => c[1] > 0 && c[2] > 0 && c[3] > 0 && c[4] > 0).sort((a, b) => a[0] - b[0]) : [];
+}
+// Candles in dollars (and the close in WAX when it is priced against WAX).
+async function priceSeries(env, B, t, p) {
+  const D = await data(env, B);
+  const WAX = 'WAX@eosio.token';
+  if (t.id === WAX) return { usd: await candles(B, WAX_USD_POOL, p), wax: null, pool: D.poolById.get(`alcor:${WAX_USD_POOL}`) };
+  const alcor = poolsOf(D, t.id).filter(x => x.dex === 'alcor');
+  const pool = alcor.find(x => x.ia === WAX || x.ib === WAX) || alcor[0];
+  if (!pool) return null;
+  const [raw, waxUsd] = await Promise.all([candles(B, pool.id, p), candles(B, WAX_USD_POOL, p)]);
+  // Candles are B per A: the token's own price when it is A, inverted (and
+  // high and low swapped) when it is B.
+  const own = raw.map(([ts, o, h, l, c]) => (pool.ia === t.id ? [ts, o, h, l, c] : [ts, 1 / o, 1 / l, 1 / h, 1 / c]));
+  const other = pool.ia === t.id ? pool.ib : pool.ia;
+  const quoteIsWax = other === WAX;
+  // Dollars: the open at WAX's open and the close at WAX's close for the same
+  // bar, so a candle's colour is the dollar move — on a week WAX rose 30% a
+  // token flat in WAX is up in dollars, and one WAX price per bar drew it red.
+  let j2 = 0;
+  const waxBar = ts => { while (j2 + 1 < waxUsd.length && waxUsd[j2 + 1][0] <= ts) j2++; return waxUsd[j2]; };
+  const qUsd = quoteIsWax ? null : D.tok.get(other)?.usd;
+  const usd = own.map(([ts, o, h, l, c]) => {
+    const w = quoteIsWax ? waxBar(ts) : null;
+    const ko = quoteIsWax ? w?.[1] : qUsd, kc = quoteIsWax ? w?.[4] : qUsd;
+    if (!ko || !kc) return null;
+    const O = o * ko, C = c * kc;
+    return [ts, O, Math.max(O, C, h * Math.max(ko, kc)), Math.min(O, C, l * Math.min(ko, kc)), C];
+  }).filter(Boolean);
+  return { usd, wax: quoteIsWax ? own : null, pool };
+}
+async function chartImage(B, t, s, p) {
+  const pts = s.usd.slice(-120);
+  const first = pts[0][1], last = pts[pts.length - 1][4];
+  const sig = v => Number(v.toPrecision(5));
+  const cfg = {
+    type: 'candlestick',
+    data: { datasets: [{ data: pts.map(([x, o, h, l, c]) => ({ x, o: sig(o), h: sig(h), l: sig(l), c: sig(c) })),
+      color: { up: '#3fb950', down: '#f85149', unchanged: '#8b949e' }, borderColor: { up: '#3fb950', down: '#f85149', unchanged: '#8b949e' } }] },
+    options: {
+      layout: { padding: { left: 14, right: 8, top: 8, bottom: 4 } },
+      plugins: {
+        legend: { display: false },
+        title: { display: true, text: `${t.sym}  $${Number(last.toPrecision(4))}  ${pct((last / first - 1) * 100)} · ${p.label}`, color: '#f0f3f6', font: { size: 22, weight: 'bold' }, align: 'start' },
+        subtitle: { display: true, text: `${t.c} · in USD · waxedge.app`, color: '#8b949e', font: { size: 13 }, align: 'start', padding: { bottom: 10 } },
+      },
+      scales: {
+        x: { type: 'timeseries', ticks: { color: '#8b949e', maxTicksLimit: 7, maxRotation: 0 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: { position: 'right', ticks: { color: '#8b949e', maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.07)' } },
+      },
+    },
+  };
+  const r = await get(B, 'https://quickchart.io/chart/create', { body: { chart: cfg, version: '3', width: 900, height: 480, backgroundColor: '#0d1117', format: 'png' } });
+  return r?.url || null;
+}
+async function sendChart(env, B, chat, input, periodIn = '7d') {
+  const p = PERIODS[String(periodIn || '7d').toLowerCase()] || PERIODS['7d'];
+  const key = Object.keys(PERIODS).find(k => PERIODS[k] === p);
+  const t = await resolve(env, B, input);
+  if (!t) return say(env, B, chat, `No token <b>${esc(String(input).toUpperCase())}</b> that I know.`);
+  const s = await priceSeries(env, B, t, p);
+  if (!s || s.usd.length < 2) return say(env, B, chat, `Not enough trading on Alcor to draw ${esc(t.sym)} over ${p.label}.`);
+  const [url, stats, lv] = [await chartImage(B, t, s, p), t.id === 'WAX@eosio.token' ? null : await chain(B, 'get_currency_stats', { code: t.c, symbol: t.sym }), await live(B, t)];
+  const usd = lv?.usd ?? s.usd[s.usd.length - 1][4];
+  const supply = parseQty(stats?.[t.sym]?.supply).n;
+  const hi = Math.max(...s.usd.map(x => x[2])), lo = Math.min(...s.usd.map(x => x[3]));
+  const ch = (s.usd[s.usd.length - 1][4] / s.usd[0][1] - 1) * 100;
+  const chWax = s.wax && s.wax.length > 1 ? (s.wax[s.wax.length - 1][4] / s.wax[0][1] - 1) * 100 : null;
+  const caption = [
+    `📈 <b>${tokLink(t)}</b> <b>${fmtUsd(usd)}</b>${lv?.wax && t.sym !== 'WAX' ? ` · ${fmtAmt(lv.wax)} WAX` : ''}`,
+    `${p.label}: ${arrow(ch)} ${pct(ch)} in $${chWax != null ? ` · ${pct(chWax)} in WAX` : ''} · high ${fmtUsd(hi)} · low ${fmtUsd(lo)}`,
+    [t.liq ? `Liquidity ${fmtBig(t.liq)}` : '', t.vol ? `volume 24h ${fmtBig(t.vol)}` : '', supply && usd ? `market cap ${fmtBig(supply * usd)}` : ''].filter(Boolean).join(' · '),
+    s.pool ? `<i>from ${esc(s.pool.a)}/${esc(s.pool.b)} on Alcor</i>` : '',
+  ].filter(Boolean).join('\n');
+  const markup = kb([Object.keys(PERIODS).map(k => btn(k === key ? `• ${k}` : k, `ch:${t.id}:${k}`)),
+    [btn('🔔 Price alert', `mn:pa:${t.id}`), btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`)]]);
+  if (!url) return say(env, B, chat, `${caption}\n\n<i>The chart service did not answer; the numbers above are current.</i>`, markup);
+  return tg(env, B, 'sendPhoto', { chat_id: chat, photo: url, caption, parse_mode: 'HTML', reply_markup: markup });
 }
 
 // ----------------------------------------------------------------- help ---
@@ -399,6 +500,7 @@ const HELP = [
   '/status · /wallet <i>account</i> · /res <i>account</i>',
   '',
   '<b>📈 Markets</b>',
+  '/chart <i>SYM</i> [1d|7d|30d|90d|1y] — a price chart picture',
   '/price <i>SYM</i> · /top · /pools <i>SYM</i> · /farms [<i>SYM</i>] · /wax',
   '/alert <i>SYM</i> above|below <i>price</i> [wax]',
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
@@ -441,6 +543,7 @@ const ASKS = {
   '/watch': ['Which WAX account should I watch?', 'e.g. myaccount.wam'],
   '/wallet': ['Which account?', 'e.g. myaccount.wam'],
   '/price': ['Which token?', 'e.g. CHEESE, TLM or SYM@contract'],
+  '/chart': ['Chart of which token? Add a period if you like: 1d, 7d, 30d, 90d, 1y.', 'e.g. CHEESE 30d'],
   '/fav': ['Which token should be a favourite?', 'e.g. CHEESE'],
   '/move': ['Which token? I will write every time it moves 10%.', 'e.g. CHEESE'],
   '/whale': ['Which token? I will show every swap above $250.', 'e.g. TLM'],
@@ -509,7 +612,7 @@ async function menu(env, B, chat, name, edit = null) {
       const fb = favs.map(id => btn(`⭐ ${id.split('@')[0]}`, `tk:${id}`));
       rows = [];
       for (let i = 0; i < fb.length; i += 4) rows.push(fb.slice(i, i + 4));
-      rows.push([btn('🔍 Price of a token', 'ask:/price')],
+      rows.push([btn('🔍 Price of a token', 'ask:/price'), btn('📈 Chart of a token', 'ask:/chart')],
         [btn('📈 Top movers', 'm:/top'), btn('🌾 Best farms', 'm:/farms'), btn('💲 WAX', 'm:/wax')],
         [btn('⭐ Favourites board', 'm:/favs'), btn('➕ Add a favourite', 'ask:/fav')], back());
       break;
@@ -781,6 +884,10 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     }
     const c = await tokenCard(env, B, t);
     return reply(c.text, c.markup);
+  }
+  if (cmd === '/chart' || cmd === '/c') {
+    if (!args[0]) return ask(env, B, chat, '/chart');
+    return sendChart(env, B, chat, args[0], args[1]);
   }
   if (cmd === '/wax') {
     const D = await data(env, B);
@@ -1135,6 +1242,11 @@ async function onCallback(env, B, cq) {
   if (d.startsWith('m:')) { await toast(); return command(env, B, chat, d.slice(2), { isPrivate: cq.message.chat.type === 'private' }); }
   if (d.startsWith('mn:')) { await toast(); return menu(env, B, chat, d.slice(3), mid); }
   if (d.startsWith('ask:')) { await toast(); return ask(env, B, chat, d.slice(4)); }
+  if (d.startsWith('ch:')) {
+    const i = d.lastIndexOf(':');
+    await toast('Drawing…');
+    return sendChart(env, B, chat, d.slice(3, i), d.slice(i + 1));
+  }
   if (d.startsWith('tk:')) {
     await toast();
     const t = await resolve(env, B, d.slice(3));
