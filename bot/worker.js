@@ -447,6 +447,41 @@ function stateOf(w) {
   return { r: {}, e: {}, f: {}, fe: {}, rs: {}, ...s };
 }
 
+// ------------------------------------------------------------ gentle errors --
+// A typo or a wrong name is never a dead end: the bot says what it expected,
+// offers what the person probably meant as buttons, and asks again.
+const lev = (a, b) => {
+  if (Math.abs(a.length - b.length) > 2) return 9;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[a.length][b.length];
+};
+function suggestTokens(D, input, n = 4) {
+  const q = String(input || '').split('@')[0].toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!q) return [];
+  const scored = [];
+  for (const t of D.tok.values()) {
+    const s2 = t.sym;
+    const score = s2 === q ? 0 : s2.startsWith(q) ? 1 : lev(s2, q) <= (q.length > 4 ? 2 : 1) ? 2 : s2.includes(q) && q.length >= 3 ? 3 : 9;
+    if (score < 9) scored.push([score, -(t.liq || 0), t]);
+  }
+  return scored.sort((a, b) => a[0] - b[0] || a[1] - b[1]).slice(0, n).map(x => x[2]);
+}
+async function noToken(env, B, chat, input, again = null) {
+  const D = await data(env, B);
+  const sug = suggestTokens(D, input);
+  return say(env, B, chat, `🤔 I don't know a token called <b>${esc(String(input).toUpperCase())}</b>.${sug.length ? ' Did you mean:' : '\nCheck the spelling — or, for a brand-new token, add its contract: <code>SYM@contract</code>.'}`,
+    kb([...sug.map(t => [btn(`${t.sym} · ${t.c}${t.liq ? ` · ${fmtBig(t.liq)} liquidity` : ''}`, again && again !== '/price' ? `m:${again} ${t.id}` : `tk:${t.id}`)]),
+      ...(again ? [[btn('✏️ Type it again', `ask:${again}`)]] : [])]));
+}
+function badAccount(env, B, chat, input, again = null) {
+  return say(env, B, chat, `🤔 <b>${esc(input)}</b> is not a WAX account name. Account names are 1–12 characters: a–z, the digits 1–5 and dots — e.g. <code>myaccount.wam</code> or <code>cheeseburger</code>.`,
+    again ? kb([[btn('✏️ Type it again', `ask:${again}`)]]) : null);
+}
+
 // ------------------------------------------------------------ token cards --
 async function tokenCard(env, B, t, { full = true } = {}) {
   const D = await data(env, B);
@@ -459,7 +494,7 @@ async function tokenCard(env, B, t, { full = true } = {}) {
     const ps = poolsOf(D, t.id).slice(0, 3);
     if (ps.length) lines.push('', '<b>Deepest pools</b>', ...ps.map(p => `• ${poolLink(p.dex, p.id, `${p.a}/${p.b}`)} ${VENUE[p.dex] || p.dex} ${(p.fee / 100).toFixed(2)}% · ${fmtBig(p.tvl)}`));
     const fs = D.farms.filter(f => f.rs === t.sym);
-    if (fs.length) lines.push(`🌾 ${fs.length} live farm${fs.length === 1 ? ' pays' : 's pay'} in ${esc(t.sym)} — /farms ${esc(t.sym)}`);
+    if (fs.length) lines.push(`🌾 ${fs.length} live farm${fs.length === 1 ? ' pays' : 's pay'} in ${esc(t.sym)} — tap 🌾 Farms`);
   }
   // Other tokens with the same symbol, from another contract: named, with a
   // button each, so the one that is meant is a tap away — and a copy of a
@@ -471,10 +506,9 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   const sameName = namesakes.slice(0, 3).map(x => [btn(`↔️ ${x.sym} from ${x.c}${x.liq ? ` · ${fmtBig(x.liq)}` : ''}`, `tk:${x.id}`)]);
   return { text: lines.join('\n'), markup: kb([
     ...sameName,
-    [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
-    [btn('🖼 Card', `cd:t:${t.id}:30d`), btn('🐋 Big swaps', `wh:${t.id}`)],
+    [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🖼 Share card', `cd:t:${t.id}:30d`)],
+    [btn(`🔔 Alerts for ${t.sym}`, `mn:ta:${t.id}`), btn('⭐ Favourite', `fv:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
-    [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
   ]) };
 }
 
@@ -562,7 +596,7 @@ async function chartImage(B, t, s, p, unit = 'usd') {
 async function sendChart(env, B, chat, input, periodIn = '1h', { unit = 'usd', edit = null } = {}) {
   const key = periodKey(periodIn), p = PERIODS[key];
   const t = await resolve(env, B, input);
-  if (!t) return say(env, B, chat, `No token <b>${esc(String(input).toUpperCase())}</b> that I know.`);
+  if (!t) return noToken(env, B, chat, input, '/chart');
   const s = await priceSeries(env, B, t, p);
   if (!s || s.usd.length < 2) {
     const msg = `Not enough trading on Alcor to draw ${esc(t.sym)} in ${p.label}.`;
@@ -670,7 +704,7 @@ async function sendCard(env, B, chat, qs, caption, markup, editMid = null) {
 }
 async function tokenCardImage(env, B, chat, input, per = '30d', editMid = null) {
   const t = await resolve(env, B, input);
-  if (!t) return say(env, B, chat, `No token <b>${esc(String(input).toUpperCase())}</b> that I know.`);
+  if (!t) return noToken(env, B, chat, input, '/card');
   const p = CARD_PERIODS.includes(per) ? per : '30d';
   const markup = kb([CARD_PERIODS.map(k => btn(k === p ? `• ${k}` : k, `cd:t:${t.id}:${k}`)),
     [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Alert', `mn:pa:${t.id}`)]]);
@@ -749,6 +783,9 @@ const back = (to = 'main') => [btn('⬅️ Back', `mn:${to}`)];
 const ASKS = {
   '/watch': ['Which WAX account should I watch?', 'e.g. myaccount.wam'],
   '/wallet': ['Which account?', 'e.g. myaccount.wam'],
+  '/res': ['CPU, NET and RAM of which account?', 'e.g. myaccount.wam'],
+  '/status': ['Positions of which account?', 'e.g. myaccount.wam'],
+  '/pools': ['Pools of which token?', 'e.g. CHEESE'],
   '/price': ['Which token?', 'e.g. CHEESE, TLM or SYM@contract'],
   '/card': ['Card of which token — or an Alcor pool number for a pair? Add 7d, 30d or 90d if you like.', 'e.g. CHEESE or 1252'],
   '/pnl': ['Position cards for which account?', 'e.g. myaccount.wam'],
@@ -778,7 +815,7 @@ async function answer(env, B, chat, action, text, isPrivate) {
   const t0 = text.trim();
   if (action === '#alert') {
     const t = await resolve(env, B, t0.split(/\s+/)[0]);
-    if (!t) return say(env, B, chat, `No token <b>${esc(t0.toUpperCase())}</b> that I know.`, kb([[btn('✏️ Try again', 'ask:#alert')]]));
+    if (!t) return noToken(env, B, chat, t0.split(/\s+/)[0], '#alert');
     return menu(env, B, chat, `pa:${t.id}`);
   }
   if (action.startsWith('#alertx:')) {
@@ -857,7 +894,7 @@ async function menu(env, B, chat, name, edit = null) {
         [btn('🔔 A price', 'ask:#alert'), btn('📊 Every ±10% move', 'ask:/move')],
         [btn('🐋 Big swaps', 'ask:/whale'), btn('💧 Liquidity moves', 'ask:/liq')],
         [btn('🆕 New pools', 'm:/newpools'), btn('🌾 New farms', 'm:/newfarms')],
-        [btn('🔎 An account moving', 'ask:/track'), btn('🖼 NFT floor', 'ask:/floor')],
+        [btn('🔎 An account moving', 'ask:/track'), btn('🖼 NFT floor price', 'ask:/floor')],
         [btn('🚨 Dumps on any token', 'mn:dumps')],
         [btn('👛 My wallet', 'mn:wallets'), btn('🔕 Mute', 'mn:mute')], back()];
       break;
@@ -878,6 +915,22 @@ async function menu(env, B, chat, name, edit = null) {
       rows = [[40, 50, 60, 80].map(v => btn(on === v ? `• ${v}%` : `${v}%`, `m:/dumps ${v}`)), ...(on ? [[btn('🔕 Turn off', 'm:/dumps off')]] : []), back('alerts')];
       break;
     }
+    case 'ta': {
+      const t = await resolve(env, B, arg);
+      if (!t) { text = 'Unknown token.'; rows = [back('alerts')]; break; }
+      text = `🔔 <b>Alerts for ${tokLink(t)}</b> <code>${esc(t.c)}</code> — what should I tell you?`;
+      rows = [[btn('🎯 When it reaches a price', `mn:pa:${t.id}`)], [btn('📊 Every time it moves 10%', `mv:${t.id}`)],
+        [btn('🐋 Every big swap ($250+)', `wh:${t.id}`)], [btn('💧 When liquidity goes in or out', `m:/liq ${t.id}`)],
+        [btn('📋 My alerts', 'm:/alerts')]];
+      break;
+    }
+    case 'acct': {
+      text = `👤 <b>${esc(arg)}</b> — what would you like to see?`;
+      rows = [[btn('💰 Wallet value', `m:/wallet ${arg}`), btn('📊 Positions', `m:/status ${arg}`)],
+        [btn('🧾 Transfers', `mn:tx:${arg}`), btn('🖼 NFTs', `m:/nfts ${arg}`), btn('⚙️ CPU / RAM', `m:/res ${arg}`)],
+        [watched.includes(arg) ? btn('🔔 Its alerts', `s:${arg}`) : btn('👀 Watch it — alerts for this wallet', `m:/watch ${arg}`)]];
+      break;
+    }
     case 'mute':
       text = c.mute_until > Date.now() ? `🔕 Muted until ${new Date(c.mute_until).toISOString().slice(0, 16).replace('T', ' ')} UTC.` : '🔕 Pause all alerts for…';
       rows = [[btn('1 hour', 'm:/mute 1h'), btn('8 hours', 'm:/mute 8h'), btn('1 day', 'm:/mute 1d'), btn('1 week', 'm:/mute 7d')],
@@ -887,7 +940,7 @@ async function menu(env, B, chat, name, edit = null) {
       text = '💧 <b>Liquidity</b>';
       rows = [[btn('💧 Where is a token’s liquidity?', 'ask:/liquidity')],
         [btn('🔔 Alert me when a token’s liquidity moves', 'ask:/liq')],
-        [btn('🐋 Any pool, $1,000+', 'm:/liq all 1000'), btn('🐋 Any pool, $10,000+', 'm:/liq all 10000')],
+        [btn('🐋 Big moves in any pool ($1k+)', 'm:/liq all 1000')], [btn('🐋 Very big moves in any pool ($10k+)', 'm:/liq all 10000')],
         [btn('📏 When a token’s total crosses a line', 'ask:#liqlvl')],
         [btn('🏊 One Alcor pool', 'ask:/pool')], back()];
       break;
@@ -1004,7 +1057,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   await chatRow(env, chat);
 
   if (cmd === '/start') {
-    await reply(`👋 <b>Welcome to WaxEDGE.</b>\n\nI watch WAX DeFi for you: positions out of range, fees to compound, new farms, money moving, prices, liquidity, whales.\n\nEverything is a tap away — use the buttons below. No commands to remember.`,
+    await reply(`👋 <b>Welcome to WaxEDGE.</b>\n\nI watch WAX DeFi for you: positions out of range, fees to compound, new farms, money moving, prices, dumps, NFT offers and airdrops.\n\n<b>Start here:</b> tap 👛 Wallets → ➕ Watch a wallet.\nOr just <b>type a token</b> (<code>cheese</code>) or <b>an account</b> (<code>myaccount.wam</code>) — any time.`,
       isPrivate ? KEYBOARD : null);
     return menu(env, B, chat, 'main');
   }
@@ -1015,7 +1068,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   // ---- wallets ----
   if (cmd === '/watch') {
     const acct = String(args[0] || '').toLowerCase();
-    if (!ACCOUNT_RE.test(acct)) return reply('Usage: /watch <i>account</i> — a WAX account name.');
+    if (!ACCOUNT_RE.test(acct)) return acct ? badAccount(env, B, chat, args[0], '/watch') : ask(env, B, chat, '/watch');
     const n = (await DB(env).prepare('SELECT COUNT(*) AS n FROM watches WHERE chat_id = ?').bind(chat).first()).n;
     if (n >= LIM.watch) return reply(`This chat watches ${LIM.watch} wallets already. /unwatch one first.`);
     const [acc, pos, D] = [await account(B, acct), await positions(B, acct), await data(env, B)];
@@ -1023,8 +1076,14 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     const st = { r: Object.fromEntries((pos || []).map(p => [p.id, p.inRange ? 1 : 0])), pl: [...new Set((pos || []).map(p => p.pool))] };
     await DB(env).prepare('INSERT OR REPLACE INTO watches (chat_id, account, state, created, opts) VALUES (?, ?, ?, ?, COALESCE((SELECT opts FROM watches WHERE chat_id = ? AND account = ?), \'{}\'))')
       .bind(chat, acct, JSON.stringify(st), now, chat, acct).run();
-    return reply(`👀 <b>Watching ${esc(acct)}.</b> You will hear about ranges, fees, farms, transfers, NFTs, resources and vote rewards — /settings ${esc(acct)} to choose.\n\n${pos ? summary(D, acct, pos) : 'Alcor did not answer for the positions just now; they are checked every few minutes.'}`,
-      kb([[btn('⚙️ Settings', `s:${acct}`), btn('👛 Wallet', `m:/wallet ${acct}`)]]));
+    await reply(`👀 <b>Watching ${esc(acct)}.</b> I will tell you about positions out of range, fees to compound, new farms, money and NFTs coming in or out, offers, airdrops, CPU/RAM and vote rewards.\n\n${pos ? summary(D, acct, pos) : 'Alcor did not answer for the positions just now; they are checked every few minutes.'}`,
+      kb([[btn('⚙️ Choose which alerts', `s:${acct}`), btn('💰 Wallet value', `m:/wallet ${acct}`)]]));
+    // The obvious next steps, once, for a chat that has not set them up.
+    const c0 = await chatRow(env, chat);
+    const hasDump = await DB(env).prepare("SELECT 1 FROM alerts WHERE chat_id = ? AND kind = 'dump' LIMIT 1").bind(chat).first();
+    const next = [...(c0.digest_hour < 0 ? [[btn('☀️ A daily summary each morning', 'mn:dg')]] : []), ...(!hasDump ? [[btn('🚨 Alerts when any token dumps', 'mn:dumps')]] : [])];
+    if (next.length) return reply('Also useful:', kb(next));
+    return null;
   }
   if (cmd === '/unwatch') {
     const acct = String(args[0] || '').toLowerCase();
@@ -1040,7 +1099,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/status') {
     const want = String(args[0] || '').toLowerCase();
-    if (want && !ACCOUNT_RE.test(want)) return reply('Usage: /status <i>account</i>');
+    if (want && !ACCOUNT_RE.test(want)) return badAccount(env, B, chat, args[0], '/status');
     const list = want ? [want] : (await DB(env).prepare('SELECT account FROM watches WHERE chat_id = ?').bind(chat).all()).results.map(r => r.account);
     if (!list.length) return reply('Nothing watched yet. /watch <i>account</i> first, or /status <i>account</i> for a one-off look.');
     const D = await data(env, B);
@@ -1053,7 +1112,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/wallet' || cmd === '/w') {
     const acct = String(args[0] || '').toLowerCase() || (await DB(env).prepare('SELECT account FROM watches WHERE chat_id = ? LIMIT 1').bind(chat).first())?.account;
-    if (!acct || !ACCOUNT_RE.test(acct)) return reply('Usage: /wallet <i>account</i>');
+    if (!acct || !ACCOUNT_RE.test(acct)) return acct ? badAccount(env, B, chat, acct, '/wallet') : ask(env, B, chat, '/wallet');
     const D = await data(env, B);
     const [toks, acc, pos] = [await hyp(B, `/v2/state/get_tokens?account=${acct}&limit=200`), await account(B, acct), await positions(B, acct)];
     if (!acc) return reply(`There is no WAX account <b>${esc(acct)}</b>.`);
@@ -1077,7 +1136,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/res' || cmd === '/resources') {
     const acct = String(args[0] || '').toLowerCase() || (await DB(env).prepare('SELECT account FROM watches WHERE chat_id = ? LIMIT 1').bind(chat).first())?.account;
-    if (!acct || !ACCOUNT_RE.test(acct)) return reply('Usage: /res <i>account</i>');
+    if (!acct || !ACCOUNT_RE.test(acct)) return acct ? badAccount(env, B, chat, acct, '/res') : ask(env, B, chat, '/res');
     const acc = await account(B, acct);
     if (!acc) return reply(`There is no WAX account <b>${esc(acct)}</b>.`);
     const r = resources(acc);
@@ -1092,13 +1151,14 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
 
   // ---- markets ----
   if (cmd === '/price' || cmd === '/p' || cmd === '/token' || cmd === '/t' || cmd === '/alert') {
-    if (!args[0]) return reply(cmd === '/alert' ? 'Usage: /alert <i>SYM</i> above|below <i>price</i> [wax] — e.g. /alert CHEESE above 0.01' : 'Usage: /price <i>SYM</i> — e.g. /price CHEESE');
+    if (!args[0]) return ask(env, B, chat, cmd === '/alert' ? '#alert' : '/price');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b> on WAX that I know. Use SYM@contract for a new one.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     if (args[1] || cmd === '/alert') {
       const dir = String(args[1] || '').toLowerCase();
       const value = Number(String(args[2] || '').replace(',', '.').replace('$', ''));
       const unit = String(args[3] || '').toLowerCase() === 'wax' ? 'wax' : 'usd';
+      if (!dir) return menu(env, B, chat, `pa:${t.id}`);
       if (!['above', 'below'].includes(dir) || !(value > 0)) return reply('Usage: /alert <i>SYM</i> above|below <i>price</i> [wax] — e.g. /alert CHEESE above 0.01, or /alert CHEESE below 1.2 wax');
       const lv = await live(B, t);
       const err = await addAlert(env, chat, 'price', t.id, t.sym, { dir, value, unit });
@@ -1170,9 +1230,9 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
       `<i>As of ${new Date(D.at).toISOString().slice(11, 16)} UTC</i> · <a href="${SITE}/tokens">All tokens</a>`].filter((x, i, arr) => x !== '' || arr[i - 1] !== '').join('\n'));
   }
   if (cmd === '/pools') {
-    if (!args[0]) return reply('Usage: /pools <i>SYM</i>');
+    if (!args[0]) return ask(env, B, chat, '/pools');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     const D = await data(env, B);
     const ps = poolsOf(D, t.id).slice(0, 8);
     if (!ps.length) return reply(`No pool with ${tokLink(t)} holds $20 or more.`);
@@ -1192,15 +1252,15 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
       '', `<a href="${SITE}/farms">All farms on WaxEDGE</a>`].join('\n'));
   }
   if (cmd === '/move') {
-    if (!args[0]) return reply('Usage: /move <i>SYM</i> [<i>percent</i>] — e.g. /move CHEESE 10: a message every time it moves 10% from the last one');
+    if (!args[0]) return ask(env, B, chat, '/move');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     return reply(await addMove(env, B, chat, t, Number(String(args[1] || '10').replace('%', '')) || 10));
   }
   if (cmd === '/whale') {
-    if (!args[0]) return reply('Usage: /whale <i>SYM</i> [<i>usd</i>] — every swap of that token above the amount (default $250)');
+    if (!args[0]) return ask(env, B, chat, '/whale');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     return reply(await addWhale(env, B, chat, t, Number(String(args[1] || '250').replace('$', '')) || 250));
   }
   if (cmd === '/newpools' || cmd === '/newfarms') {
@@ -1211,7 +1271,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
       return reply(`No more ${what} alerts.`);
     }
     const t = args[0] ? await resolve(env, B, args[0]) : null;
-    if (args[0] && !t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (args[0] && !t) return noToken(env, B, chat, args[0], cmd);
     const err = await addAlert(env, chat, kind, t ? t.id : '*', t ? t.sym : 'any', {});
     return reply(err || `🆕 I will tell you about every ${what}${t ? ` with ${tokLink(t)}` : ''}. /${kind}s off to stop.`);
   }
@@ -1221,6 +1281,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     const tpl = /^\d+$/.test(args[1] || '') ? args[1] : null;
     const rest = tpl ? args.slice(2) : args.slice(1);
     const below = Number(String(rest[1] || '').replace(',', '.'));
+    if (!args[0]) return ask(env, B, chat, '/floor');
     if (!ACCOUNT_RE.test(col) || String(rest[0] || '').toLowerCase() !== 'below' || !(below > 0)) {
       return reply('Usage: /floor <i>collection</i> [<i>template id</i>] below <i>WAX</i> — e.g. /floor alien.worlds 19552 below 5');
     }
@@ -1237,7 +1298,9 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   // ---- any account's transfers ----
   if (cmd === '/tx' || cmd === '/transfers' || cmd === '/track') {
     const acct = String(args[0] || '').toLowerCase();
-    if (!ACCOUNT_RE.test(acct)) {
+    if (!acct) return ask(env, B, chat, cmd === '/track' ? '/track' : '#tx');
+    if (!ACCOUNT_RE.test(acct)) return badAccount(env, B, chat, args[0], cmd === '/track' ? '/track' : '#tx');
+    if (false) {
       return reply(`Usage: ${cmd === '/track' ? '/track' : '/tx'} <i>account</i> [filters]\nFilters, any mix: a token (<code>CHEESE</code>), <code>in</code> / <code>out</code>, <code>swaps</code>, <code>nfts</code>, <code>&gt;100</code> (dollars), <code>from:acct</code> <code>to:acct</code> <code>with:acct</code>, <code>memo:text</code>\ne.g. <code>/tx hole.cheese CHEESE in &gt;1</code> · <code>/track somewhale out &gt;500</code>`);
     }
     const f = await parseFilter(env, B, args.slice(1));
@@ -1267,7 +1330,8 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   if (cmd === '/liq') {
     // /liq SYM|poolId|all [min $] [add|remove]   or   /liq SYM above|below $
     const what = String(args[0] || '');
-    if (!what) return reply('Usage:\n/liq <i>SYM</i> [<i>min $</i>] [add|remove] — every time liquidity goes in or out of its pools\n/liq <i>pool id</i> … — one Alcor pool\n/liq all 1000 — any pool, $1,000 and up\n/liq <i>SYM</i> above|below <i>$</i> — total liquidity crosses a line\n/liquidity <i>SYM</i> — where its liquidity is now');
+    if (!what) return ask(env, B, chat, '/liq');
+    if (false) return reply('Usage:\n/liq <i>SYM</i> [<i>min $</i>] [add|remove] — every time liquidity goes in or out of its pools\n/liq <i>pool id</i> … — one Alcor pool\n/liq all 1000 — any pool, $1,000 and up\n/liq <i>SYM</i> above|below <i>$</i> — total liquidity crosses a line\n/liquidity <i>SYM</i> — where its liquidity is now');
     const rest = args.slice(1).map(x => x.toLowerCase());
     if (rest[0] === 'above' || rest[0] === 'below') {
       const value = Number(String(rest[1] || '').replace(/[$,k]/g, '')) * (/k$/.test(rest[1] || '') ? 1000 : 1);
@@ -1281,15 +1345,15 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     let target, label;
     if (what.toLowerCase() === 'all') { target = '*'; label = 'any pool'; }
     else if (/^\d+$/.test(what)) { const pl = await alcorPoolInfo(B, await data(env, B), what); if (!pl) return reply(`No Alcor pool ${esc(what)}.`); target = `alcor:${what}`; label = `${pl.a}/${pl.b}`; }
-    else { const t = await resolve(env, B, what); if (!t) return reply(`No token <b>${esc(what.toUpperCase())}</b>.`); target = t.id; label = t.sym; }
+    else { const t = await resolve(env, B, what); if (!t) return noToken(env, B, chat, what, cmd); target = t.id; label = t.sym; }
     if (target === '*' && min < 100) return reply('For every pool, set a floor of at least $100: /liq all 1000');
     const err = await addAlert(env, chat, 'liq', target, label, { min, side });
     return reply(err || `💧 I will tell you when liquidity is ${side === 'add' ? 'added to' : side === 'remove' ? 'taken out of' : 'added to or taken out of'} ${esc(label)}${target.startsWith('alcor:') || target === '*' ? '' : '’s pools'}${min ? `, from ${fmtUsd(min)}` : ''} — Alcor and TacoSwap.`);
   }
   if (cmd === '/liquidity') {
-    if (!args[0]) return reply('Usage: /liquidity <i>SYM</i>');
+    if (!args[0]) return ask(env, B, chat, '/liquidity');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     const D = await data(env, B);
     const ps = poolsOf(D, t.id);
     const byVenue = {};
@@ -1313,9 +1377,9 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
 
   // ---- tokens: holders, supply ----
   if (cmd === '/holders') {
-    if (!args[0]) return reply('Usage: /holders <i>SYM</i>');
+    if (!args[0]) return ask(env, B, chat, '/holders');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     const [h, st] = [await hyp(B, `/v2/state/get_top_holders?contract=${t.c}&symbol=${t.sym}&limit=15`), await chain(B, 'get_currency_stats', { code: t.c, symbol: t.sym })];
     const sup = parseQty(st?.[t.sym]?.supply).n, max = parseQty(st?.[t.sym]?.max_supply).n;
     if (!h?.holders?.length) return reply('The holder index did not answer. Try again in a minute.');
@@ -1326,7 +1390,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/pool') {
     const id = String(args[0] || '');
-    if (!/^\d+$/.test(id)) return reply('Usage: /pool <i>Alcor pool id</i> — the number in the pool’s link');
+    if (!/^\d+$/.test(id)) return id ? say(env, B, chat, `🤔 <b>${esc(id)}</b> is not a pool number. It is the number at the end of the pool’s link, e.g. 1252.`, kb([[btn('✏️ Type it again', 'ask:/pool')]])) : ask(env, B, chat, '/pool');
     const D = await data(env, B);
     const pl = await alcorPoolInfo(B, D, id);
     if (!pl) return reply(`No Alcor pool ${esc(id)}.`);
@@ -1344,7 +1408,7 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
   if (cmd === '/nfts') {
     const acct = String(args[0] || '').toLowerCase();
-    if (!ACCOUNT_RE.test(acct)) return reply('Usage: /nfts <i>account</i>');
+    if (!ACCOUNT_RE.test(acct)) return acct ? badAccount(env, B, chat, acct, '/nfts') : ask(env, B, chat, '/nfts');
     const d = await get(B, `${AA}/atomicassets/v1/accounts/${acct}`);
     const cols = (d?.data?.collections || []).sort((a, b) => Number(b.assets) - Number(a.assets));
     if (!d) return reply('AtomicAssets did not answer. Try again in a minute.');
@@ -1358,9 +1422,9 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   if (cmd === '/fav' || cmd === '/unfav') {
     const c = await chatRow(env, chat);
     let favs = j(c.favs, []);
-    if (!args[0]) return reply('Usage: /fav <i>SYM</i> — then /favs shows them all, and the daily digest carries them.');
+    if (!args[0]) return ask(env, B, chat, '/fav');
     const t = await resolve(env, B, args[0]);
-    if (!t) return reply(`No token <b>${esc(args[0].toUpperCase())}</b>.`);
+    if (!t) return noToken(env, B, chat, args[0], cmd);
     if (cmd === '/unfav') favs = favs.filter(x => x !== t.id);
     else if (!favs.includes(t.id)) { if (favs.length >= LIM.favs) return reply(`${LIM.favs} favourites is the limit. /unfav one first.`); favs.push(t.id); }
     await DB(env).prepare('UPDATE chats SET favs = ? WHERE chat_id = ?').bind(JSON.stringify(favs), chat).run();
@@ -1410,11 +1474,23 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
   }
 
   // A bare token symbol in a private chat is a price question.
-  if (isPrivate && /^[A-Za-z0-9]{2,7}(@[a-z1-5.]{1,12})?$/.test(cmdRaw) && !cmdRaw.startsWith('/')) {
-    const t = await resolve(env, B, cmdRaw);
-    if (t) { const c = await tokenCard(env, B, t); return reply(c.text, c.markup); }
+  // Plain text in a private chat: a word people use for help, a token, or an
+  // account. Anything typed should lead somewhere.
+  if (isPrivate && !cmdRaw.startsWith('/')) {
+    const word = text.trim().toLowerCase();
+    if (['menu', 'start', 'hi', 'hello', 'hey', 'hallo', 'help', 'home'].includes(word)) return menu(env, B, chat, 'main');
+    if (['faq', '?', 'how', 'what'].includes(word)) return menu(env, B, chat, 'faq');
+    if (!args.length && /^[A-Za-z0-9]{1,7}(@[a-z1-5.]{1,12})?$/.test(cmdRaw)) {
+      const t = await resolve(env, B, cmdRaw);
+      if (t) { const c = await tokenCard(env, B, t); return reply(c.text, c.markup); }
+    }
+    if (!args.length && ACCOUNT_RE.test(word) && (await account(B, word))) return menu(env, B, chat, `acct:${word}`);
+    if (!args.length && /^[A-Za-z0-9]{2,7}$/.test(cmdRaw)) return noToken(env, B, chat, cmdRaw, '/price');
   }
-  if (cmdRaw.startsWith('/') || isPrivate) return reply('I did not understand that. Tap a button below, or ☰ Menu.', kb([[btn('☰ Menu', 'mn:main'), btn('❓ FAQ', 'mn:faq')]]));
+  if (cmdRaw.startsWith('/') || isPrivate) {
+    return reply('🤔 I did not catch that. You can type a <b>token</b> (e.g. <code>cheese</code>) or a <b>WAX account</b> (e.g. <code>myaccount.wam</code>) at any time — or use the buttons.',
+      kb([[btn('☰ Menu', 'mn:main'), btn('❓ FAQ', 'mn:faq')]]));
+  }
 }
 
 async function addMove(env, B, chat, t, p) {
@@ -1458,7 +1534,7 @@ async function alertsMessage(env, B, chat, edit = null) {
   if (c?.digest_hour >= 0) lines.push(`☀️ digest at ${String(c.digest_hour).padStart(2, '0')}:00 (UTC${c.tz >= 0 ? '+' : '−'}${Math.abs(c.tz / 60)})`);
   if (c?.mute_until > Date.now()) lines.push(`🔕 muted until ${new Date(c.mute_until).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
   if (lines.length === 1) lines.push('Nothing yet. /help shows what I can do.');
-  else lines.push('', 'Tap one to remove it.');
+  else lines.push('', 'Tap ❌ to remove one, ⚙️ to change a wallet’s alerts.');
   const markup = kb([
     ...w.map(x => [btn(`⚙️ ${x.account}`, `s:${x.account}`), btn(`❌ ${x.account}`, `u:${x.account}`)]),
     ...a.map(x => [btn(`❌ ${describe(x)}`.slice(0, 60), `d:${x.id}`)]),
@@ -1491,6 +1567,8 @@ async function onCallback(env, B, cq) {
   await chatRow(env, chat);
   if (d === 'x') { await toast('Saved'); return tg(env, B, 'editMessageReplyMarkup', { chat_id: chat, message_id: mid, reply_markup: kb([]) }); }
   if (d.startsWith('m:')) { await toast(); return command(env, B, chat, d.slice(2), { isPrivate: cq.message.chat.type === 'private' }); }
+  // A menu opened from a card (a token's alerts) comes as a new message, so the card stays.
+  if (d.startsWith('mn:ta:') || d.startsWith('mn:pa:') && !cq.message?.text?.startsWith('🔔 Alerts for')) { await toast(); return menu(env, B, chat, d.slice(3)); }
   if (d.startsWith('mn:')) { await toast(); return menu(env, B, chat, d.slice(3), mid); }
   if (d.startsWith('ask:')) { await toast(); return ask(env, B, chat, d.slice(4)); }
   if (d.startsWith('cd:') || d.startsWith('cx:')) {
