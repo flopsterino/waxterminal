@@ -202,11 +202,13 @@ function drawCandles(ctx, candles, x, y, w, h) {
   // Grid and the price scale.
   ctx.font = '500 17px Inter, system-ui, sans-serif';
   ctx.textBaseline = 'middle';
+  const lastY = Y(candles[n - 1].c);
   for (let i = 0; i <= 4; i++) {
     const v = lo + (hi - lo) * (i / 4), yy = Y(v);
     ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + cw, yy); ctx.stroke();
-    ctx.fillStyle = MUTED; ctx.fillText(fmtAxis(v), x + cw + 12, yy);
+    // A scale label the last-price tag would cover is left out.
+    if (Math.abs(yy - lastY) >= 24) { ctx.fillStyle = MUTED; ctx.fillText(fmtAxis(v), x + cw + 12, yy); }
   }
   const step = cw / n, body = Math.max(2, Math.min(18, step * 0.66));
   candles.forEach((c, i) => {

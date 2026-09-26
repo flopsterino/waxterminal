@@ -24,6 +24,8 @@
 // megabyte files, and live prices one token at a time from Alcor.
 // =============================================================================
 
+import puppeteer from '@cloudflare/puppeteer';
+
 const SITE = 'https://waxedge.app';
 const ALCOR = 'https://wax.alcor.exchange/api/v2';
 const RPC = ['https://wax.greymass.com', 'https://wax.cryptolions.io'];
@@ -384,7 +386,7 @@ async function tokenCard(env, B, t, { full = true } = {}) {
   if (t.others) lines.push(`<i>${t.others} other token${t.others === 1 ? '' : 's'} use this symbol; this is the most liquid. Use SYM@contract for another.</i>`);
   return { text: lines.join('\n'), markup: kb([
     [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Price alert', `mn:pa:${t.id}`), btn('📊 Every ±10%', `mv:${t.id}`)],
-    [btn('🐋 Big swaps', `wh:${t.id}`)],
+    [btn('🖼 Card', `cd:t:${t.id}:30d`), btn('🐋 Big swaps', `wh:${t.id}`)],
     [btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`), btn('🌾 Farms', `m:/farms ${t.id}`)],
     [btn('⭐ Favourite', `fv:${t.id}`), btn('💧 Alert on liquidity moves', `m:/liq ${t.id}`)],
   ]) };
@@ -500,7 +502,7 @@ async function sendChart(env, B, chat, input, periodIn = '1h', { unit = 'usd', e
   const markup = kb([
     Object.keys(PERIODS).map(k => btn(k === key ? `• ${k}` : k, cb(k))),
     [...(s.wax && t.id !== 'WAX@eosio.token' ? [btn(u === 'usd' ? '• $' : '$', cb(key, 'usd')), btn(u === 'wax' ? '• WAX' : 'WAX', cb(key, 'wax'))] : []), btn('🔄', cb(key))],
-    [btn('🔔 Alert', `mn:pa:${t.id}`), btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`)],
+    [btn('🖼 Card', `cd:t:${t.id}:30d`), btn('🔔 Alert', `mn:pa:${t.id}`), btn('💧 Liquidity', `m:/liquidity ${t.id}`), btn('👥 Holders', `m:/holders ${t.id}`)],
   ]);
   if (!url) return say(env, B, chat, `${caption}\n\n<i>The chart service did not answer; the numbers above are current.</i>`, markup);
   if (edit) {
@@ -508,6 +510,102 @@ async function sendChart(env, B, chat, input, periodIn = '1h', { unit = 'usd', e
     if (r?.ok) return r;
   }
   return tg(env, B, 'sendPhoto', { chat_id: chat, photo: url, caption, parse_mode: 'HTML', reply_markup: markup });
+}
+
+// ------------------------------------------------------------------- cards --
+// The site's share cards as pictures in the chat. The Worker cannot draw, so
+// Cloudflare's headless browser opens waxedge.app/card.html — a page that
+// draws exactly one card from the lightest reads (1–4 s) — and the Worker
+// screenshots it. Free plan: about ten minutes of browser a day, so each card
+// is cached for ten minutes; past the limit the bot sends the card's link.
+const CARD_PERIODS = ['7d', '30d', '90d'];
+async function renderCard(env, qs) {
+  const cache = caches.default;
+  const key = new Request(`https://cards.waxedge.invalid/${qs}&slot=${Math.floor(Date.now() / 600e3)}`);
+  const hit = await cache.match(key);
+  if (hit) return new Uint8Array(await hit.arrayBuffer());
+  const browser = await openBrowser(env);
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1200, height: 630 });
+    await page.goto(`${env.CARD_URL || `${SITE}/card.html`}?${qs}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForSelector('#card[data-ready], #msg[data-error]', { timeout: 18000 });
+    const err = await page.$('#msg[data-error]');
+    if (err) throw new Error(await page.$eval('#msg', e => e.textContent));
+    const png = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 1200, height: 630 } });
+    await cache.put(key, new Response(png, { headers: { 'content-type': 'image/png', 'cache-control': 'max-age=600' } }));
+    return png;
+  } finally {
+    // Left running for its keep-alive rather than closed, so the next card
+    // (another timeframe, the other unit) reuses it: the Free plan allows a new
+    // browser only every ~20 seconds, and refuses in between.
+    try { browser.disconnect(); } catch { /* already gone */ }
+  }
+}
+async function openBrowser(env) {
+  try {
+    const free = (await puppeteer.sessions(env.BROWSER)).filter(x => !x.connectionId);
+    for (const x of free) { try { return await puppeteer.connect(env.BROWSER, x.sessionId); } catch { /* taken meanwhile */ } }
+  } catch { /* no session list: launch */ }
+  try { return await puppeteer.launch(env.BROWSER, { keep_alive: 60000 }); }
+  catch (e) {
+    if (!/429|rate limit/i.test(String(e.message))) throw e;
+    await new Promise(r => setTimeout(r, 20000));
+    return puppeteer.launch(env.BROWSER, { keep_alive: 60000 });
+  }
+}
+// A photo upload (multipart): a new message, or the same message redrawn.
+async function tgPhoto(env, B, chat, png, caption, markup, editMid = null) {
+  if (B) { if (B.left <= 0) return null; B.left--; }
+  const fd = new FormData();
+  fd.append('chat_id', String(chat));
+  if (editMid) {
+    fd.append('message_id', String(editMid));
+    fd.append('media', JSON.stringify({ type: 'photo', media: 'attach://card', caption, parse_mode: 'HTML' }));
+    fd.append('card', new Blob([png], { type: 'image/png' }), 'waxedge.png');
+  } else {
+    fd.append('photo', new Blob([png], { type: 'image/png' }), 'waxedge.png');
+    fd.append('caption', caption); fd.append('parse_mode', 'HTML');
+  }
+  if (markup) fd.append('reply_markup', JSON.stringify(markup));
+  const r = await fetch(`${env.TG_API || 'https://api.telegram.org'}/bot${env.BOT_TOKEN}/${editMid ? 'editMessageMedia' : 'sendPhoto'}`, { method: 'POST', body: fd }).catch(() => null);
+  return r?.ok ? r.json() : null;
+}
+async function sendCard(env, B, chat, qs, caption, markup, editMid = null) {
+  await tg(env, B, 'sendChatAction', { chat_id: chat, action: 'upload_photo' });
+  let png;
+  try { png = await renderCard(env, qs); }
+  catch (e) {
+    return say(env, B, chat, `🖼 I could not draw this card just now (${esc(String(e.message).slice(0, 120))}).\n<a href="${SITE}/card.html?${esc(qs)}">Open it on WaxEDGE</a> — it draws there.`);
+  }
+  const r = await tgPhoto(env, B, chat, png, caption, markup, editMid);
+  if (!r?.ok && editMid) return tgPhoto(env, B, chat, png, caption, markup);
+  return r;
+}
+async function tokenCardImage(env, B, chat, input, per = '30d', editMid = null) {
+  const t = await resolve(env, B, input);
+  if (!t) return say(env, B, chat, `No token <b>${esc(String(input).toUpperCase())}</b> that I know.`);
+  const p = CARD_PERIODS.includes(per) ? per : '30d';
+  const markup = kb([CARD_PERIODS.map(k => btn(k === p ? `• ${k}` : k, `cd:t:${t.id}:${k}`)),
+    [btn('📈 Chart', `ch:${t.id}:1h:usd`), btn('🔔 Alert', `mn:pa:${t.id}`)]]);
+  return sendCard(env, B, chat, `t=token&id=${encodeURIComponent(t.id)}&p=${p}`,
+    `🖼 <b>${tokLink(t)}</b> · <a href="${SITE}/token/${encodeURIComponent(t.id)}">open on WaxEDGE</a>`, markup, editMid);
+}
+async function pairCardImage(env, B, chat, pool, per = '30d', editMid = null) {
+  const p = CARD_PERIODS.includes(per) ? per : '30d';
+  const D = await data(env, B);
+  const pl = D.poolById.get(`alcor:${pool}`);
+  if (!pl) return say(env, B, chat, `No Alcor pool ${esc(pool)} with liquidity in the snapshot.`);
+  const markup = kb([CARD_PERIODS.map(k => btn(k === p ? `• ${k}` : k, `cd:p:${pool}:${k}`))]);
+  return sendCard(env, B, chat, `t=pair&pool=${encodeURIComponent(pool)}&p=${p}`,
+    `🖼 ${poolLink('alcor', pool, `${pl.a}/${pl.b}`)} · Alcor #${esc(pool)}`, markup, editMid);
+}
+async function positionCardImage(env, B, chat, acct, pos, unit = 'wax', editMid = null) {
+  const u = unit === 'usd' ? 'usd' : 'wax';
+  const markup = kb([[btn(u === 'wax' ? '• in WAX' : 'in WAX', `cx:${acct}:${pos}:wax`), btn(u === 'usd' ? '• in $' : 'in $', `cx:${acct}:${pos}:usd`)],
+    [btn('📋 All positions', `m:/pnl ${acct}`)]]);
+  return sendCard(env, B, chat, `t=pos&acct=${encodeURIComponent(acct)}&pos=${encodeURIComponent(pos)}&unit=${u}`,
+    `🖼 Position #${esc(pos)} · ${walletLink(acct, 'open the wallet on WaxEDGE')}`, markup, editMid);
 }
 
 // ----------------------------------------------------------------- help ---
@@ -521,6 +619,8 @@ const HELP = [
   '',
   '<b>📈 Markets</b>',
   '/chart <i>SYM</i> [5m|15m|1h|4h|1D|1W] — a candle chart; tap another timeframe to redraw it',
+  '/card <i>SYM</i> or <i>pool id</i> [7d|30d|90d] — the WaxEDGE share card as a picture',
+  '/pnl <i>account</i> — position cards with profit since opening',
   '/price <i>SYM</i> · /top · /pools <i>SYM</i> · /farms [<i>SYM</i>] · /wax',
   '/alert <i>SYM</i> above|below <i>price</i> [wax]',
   '/move <i>SYM</i> [<i>10</i>] — every ±10% move',
@@ -563,6 +663,8 @@ const ASKS = {
   '/watch': ['Which WAX account should I watch?', 'e.g. myaccount.wam'],
   '/wallet': ['Which account?', 'e.g. myaccount.wam'],
   '/price': ['Which token?', 'e.g. CHEESE, TLM or SYM@contract'],
+  '/card': ['Card of which token — or an Alcor pool number for a pair? Add 7d, 30d or 90d if you like.', 'e.g. CHEESE or 1252'],
+  '/pnl': ['Position cards for which account?', 'e.g. myaccount.wam'],
   '/chart': ['Chart of which token? Add a timeframe if you like: 5m, 15m, 1h, 4h, 1D, 1W.', 'e.g. CHEESE 4h'],
   '/fav': ['Which token should be a favourite?', 'e.g. CHEESE'],
   '/move': ['Which token? I will write every time it moves 10%.', 'e.g. CHEESE'],
@@ -633,6 +735,7 @@ async function menu(env, B, chat, name, edit = null) {
       rows = [];
       for (let i = 0; i < fb.length; i += 4) rows.push(fb.slice(i, i + 4));
       rows.push([btn('🔍 Price of a token', 'ask:/price'), btn('📈 Chart of a token', 'ask:/chart')],
+        [btn('🖼 Share card of a token', 'ask:/card')],
         [btn('📈 Top movers', 'm:/top'), btn('🌾 Best farms', 'm:/farms'), btn('💲 WAX', 'm:/wax')],
         [btn('⭐ Favourites board', 'm:/favs'), btn('➕ Add a favourite', 'ask:/fav')], back());
       break;
@@ -645,7 +748,7 @@ async function menu(env, B, chat, name, edit = null) {
     case 'w':
       text = `👛 <b>${esc(arg)}</b>`;
       rows = [[btn('📊 Positions', `m:/status ${arg}`), btn('💰 Value', `m:/wallet ${arg}`), btn('⚙️ CPU / RAM', `m:/res ${arg}`)],
-        [btn('🧾 Transfers', `mn:tx:${arg}`), btn('🖼 NFTs', `m:/nfts ${arg}`)],
+        [btn('🧾 Transfers', `mn:tx:${arg}`), btn('🖼 NFTs', `m:/nfts ${arg}`), btn('💹 Position cards', `m:/pnl ${arg}`)],
         watched.includes(arg) ? [btn('🔔 Which alerts', `s:${arg}`), btn('❌ Stop watching', `mn:unw:${arg}`)] : [btn('👀 Watch this wallet', `m:/watch ${arg}`)],
         back('wallets')];
       break;
@@ -904,6 +1007,22 @@ async function command(env, B, chat, text, { isPrivate = true } = {}) {
     }
     const c = await tokenCard(env, B, t);
     return reply(c.text, c.markup);
+  }
+  if (cmd === '/card') {
+    if (!args[0]) return ask(env, B, chat, '/card');
+    if (/^\d+$/.test(args[0])) return pairCardImage(env, B, chat, args[0], args[1]);
+    return tokenCardImage(env, B, chat, args[0], args[1]);
+  }
+  if (cmd === '/pnl' || cmd === '/positions') {
+    const acct = String(args[0] || '').toLowerCase() || (await DB(env).prepare('SELECT account FROM watches WHERE chat_id = ? LIMIT 1').bind(chat).first())?.account;
+    if (!acct || !ACCOUNT_RE.test(acct)) return ask(env, B, chat, '/pnl');
+    const pos = await positions(B, acct);
+    if (!pos) return reply('Alcor did not answer for the positions. Try again in a minute.');
+    if (!pos.length) return reply(`<b>${esc(acct)}</b> has no open Alcor positions.`);
+    if (pos.length === 1 || args[1]) return positionCardImage(env, B, chat, acct, args[1] || pos[0].id, args[2]);
+    const shown = pos.filter(p => p.value >= 1).slice(0, 12);
+    return reply(`🖼 <b>${esc(acct)}</b> — which position? A card shows its profit since it was opened.`,
+      kb(shown.map(p => [btn(`${p.inRange ? '✅' : '⚠️'} ${p.pair} · ${fmtUsd(p.value)}`, `cx:${acct}:${p.id}:wax`)])));
   }
   if (cmd === '/chart' || cmd === '/c') {
     if (!args[0]) return ask(env, B, chat, '/chart');
@@ -1262,6 +1381,15 @@ async function onCallback(env, B, cq) {
   if (d.startsWith('m:')) { await toast(); return command(env, B, chat, d.slice(2), { isPrivate: cq.message.chat.type === 'private' }); }
   if (d.startsWith('mn:')) { await toast(); return menu(env, B, chat, d.slice(3), mid); }
   if (d.startsWith('ask:')) { await toast(); return ask(env, B, chat, d.slice(4)); }
+  if (d.startsWith('cd:') || d.startsWith('cx:')) {
+    // cd:t:<token>:<period> · cd:p:<pool>:<period> · cx:<account>:<pos>:<unit>
+    await toast('Drawing…');
+    const editMid = cq.message?.photo ? mid : null;
+    if (d.startsWith('cx:')) { const [, a, pos, u] = d.split(':'); return positionCardImage(env, B, chat, a, pos, u, editMid); }
+    const parts = d.slice(3).split(':');
+    const kind = parts.shift(), per = parts.pop(), target = parts.join(':');
+    return kind === 'p' ? pairCardImage(env, B, chat, target, per, editMid) : tokenCardImage(env, B, chat, target, per, editMid);
+  }
   if (d.startsWith('ch:')) {
     // ch:<SYM@contract>:<timeframe>[:<unit>] — redraws the chart in the same message.
     const parts = d.slice(3).split(':');
@@ -1689,14 +1817,16 @@ async function tick(env, when) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (req.method === 'POST' && url.pathname === '/telegram') {
       // Only Telegram knows this secret; anything else is not a message.
       if (req.headers.get('x-telegram-bot-api-secret-token') !== env.TG_SECRET) return new Response('no', { status: 401 });
       const u = await req.json().catch(() => null);
       const B = budget(40);
-      try {
+      // Answered at once, worked on after: a card takes the browser a few
+      // seconds, and Telegram retries an update that is slow to be answered.
+      ctx.waitUntil((async () => { try {
         const m = u?.message;
         if (m?.text) {
           const chat = m.chat.id, isPrivate = m.chat.type === 'private', text = m.text.trim();
@@ -1714,10 +1844,14 @@ export default {
           }
         }
         else if (u?.callback_query) await onCallback(env, B, u.callback_query);
-      } catch (e) { console.log('update failed', e?.message); }
+      } catch (e) { console.log('update failed', e?.message); } })());
       return new Response('ok');
     }
     // Local testing only: wrangler dev exposes /__scheduled; this reports the run.
+    if (env.DEV === '1' && url.pathname === '/rendertest') {
+      try { return new Response(await renderCard(env, url.search.slice(1)), { headers: { 'content-type': 'image/png' } }); }
+      catch (e) { return new Response(`render failed: ${e.message}`, { status: 500 }); }
+    }
     if (env.DEV === '1' && url.pathname === '/tick') return Response.json(await tick(env, Number(url.searchParams.get('at')) || Date.now()));
     return new Response('WaxEDGE alerts — talk to the bot on Telegram.', { status: 200 });
   },

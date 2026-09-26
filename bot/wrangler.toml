@@ -4,6 +4,12 @@ name = "waxedge-bot"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
+compatibility_flags = ["nodejs_compat"]
+
+# Cloudflare's headless browser, for the share cards (/card, /pnl). Free plan:
+# a few minutes of browser a day, past which it simply refuses.
+[browser]
+binding = "BROWSER"
 
 [triggers]
 crons = ["* * * * *"]   # every minute; each run does a small rotating share (see tick)

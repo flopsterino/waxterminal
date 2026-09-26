@@ -1,0 +1,8 @@
+{
+  "name": "waxedge-bot",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/puppeteer": "^0.0.14"
+  }
+}
