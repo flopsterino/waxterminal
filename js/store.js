@@ -385,7 +385,7 @@ async function loadSnapshot() {
       turnover: (p.v1 > 0 && p.vr > 0) ? p.v1 / p.vr : null,
       depth1: p.d1 ?? null, bornAt: p.bd ?? null,
       // Taco and NeftyBlocks positions are LP tokens valued as a share of this.
-      lpSupply: p.d === 'taco' || p.d === 'nefty' ? p.l : undefined,
+      lpSupply: p.d === 'taco' || p.d === 'nefty' || p.d === 'defibox' ? p.l : undefined,
     };
   });
   state.pools = pools;
@@ -877,6 +877,60 @@ async function neftyPositions(account, byId) {
   return out.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 }
 
+// The LP token of a constant-product pool, which is also how its liquidity
+// providers are found (as that token's holders). Defibox names its LP token
+// after the pair number in letters — pair 1 is BOXA, 23 BOXW, 1305 BOXAXE —
+// issued by lptoken.box with no decimals.
+export function boxLpCode(pairId) {
+  let n = Number(pairId), s = '';
+  while (n > 0) { n -= 1; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26); }
+  return `BOX${s}`;
+}
+export function boxPairOf(code) {
+  const letters = String(code).replace(/^BOX/, '');
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+export function lpTokenOf(pool) {
+  if (!pool) return null;
+  if (pool.dex === 'taco') return { contract: TACO, symbol: String(pool.id), decimals: pool.lpDecimals ?? 4 };
+  if (pool.dex === 'nefty') return { contract: 'lp.nefty', symbol: String(pool.id), decimals: 0 };
+  if (pool.dex === 'defibox') return { contract: 'lptoken.box', symbol: boxLpCode(pool.id), decimals: 0 };
+  return null;
+}
+
+// Defibox positions: the BOX… LP tokens the wallet holds on lptoken.box, each
+// valued against its pair as the chain holds it now (one read per position, so
+// a pair the snapshot left out is still found). Taking it out is sending the LP
+// token back to swap.box with an empty memo — read off a real withdrawal
+// (ibmfm.wam, 12-09): the contract retires it and returns both tokens.
+async function boxPositions(account, byId) {
+  const out = [];
+  try {
+    const held = (await getAllRows('lptoken.box', account, 'accounts')).map(r => parseAsset(r.balance))
+      .filter(b => b.amount > 0 && /^BOX[A-Z]+$/.test(b.symbol));
+    for (const bal of held) {
+      const id = boxPairOf(bal.symbol);
+      const row = (await getRows(BOX, BOX, 'pairs', { lower: String(id), limit: 1 })).rows?.[0];
+      if (!row || Number(row.id) !== id) continue;
+      const [fresh] = normaliseBox([row], new Map(state.tokens));
+      const known = byId.get(`defibox:${id}`) || {};
+      const pa = state.prices.get(fresh.tokenA)?.usd ?? null, pb = state.prices.get(fresh.tokenB)?.usd ?? null;
+      const pool = { ...known, ...fresh, priceUsdA: known.priceUsdA ?? pa, priceUsdB: known.priceUsdB ?? pb,
+        tvl: pa != null && pb != null ? fresh.reserveA * pa + fresh.reserveB * pb : (known.tvl ?? null), tvlReal: known.tvlReal ?? null };
+      if (!(pool.lpSupply > 0)) continue;
+      const share = bal.amount / pool.lpSupply;
+      out.push({ dex: 'defibox', pool, balance: bal.amount, lpSymbol: bal.symbol, share,
+        amountA: pool.reserveA * share, amountB: pool.reserveB * share,
+        valueUsd: pool.tvl != null ? pool.tvl * share : null,
+        valueRealUsd: pool.tvlReal != null ? pool.tvlReal * share : null,
+        inRange: true, side: 'in' });
+    }
+  } catch { /* no Defibox LP is the common case */ }
+  return out.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
+}
+
 export async function walletPositions(account, { onProgress = () => {}, skipAlcor = false } = {}) {
   if (skipAlcor) {
     // Only the Taco side is wanted; skip the Alcor sweep entirely.
@@ -896,7 +950,8 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
       }
     } catch {}
     taco.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
-    return { alcor: [], taco, nefty: await neftyPositions(account, byId), poolsChecked: 0 };
+    const [nefty, box] = await Promise.all([neftyPositions(account, byId), boxPositions(account, byId)]);
+    return { alcor: [], taco, nefty, box, poolsChecked: 0 };
   }
   const poolIds = new Set();
   onProgress({ msg: 'Finding pools you have touched' });
@@ -977,7 +1032,8 @@ export async function walletPositions(account, { onProgress = () => {}, skipAlco
   out.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
   tacoLp.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
   const nefty = await neftyPositions(account, new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p])));
-  return { alcor: out, taco: tacoLp, nefty, poolsChecked: ids.length };
+  const box = await boxPositions(account, new Map(state.pools.map(p => [`${p.dex}:${p.id}`, p])));
+  return { alcor: out, taco: tacoLp, nefty, box, poolsChecked: ids.length };
 }
 
 // ------------------------------------------------------------- activity -----

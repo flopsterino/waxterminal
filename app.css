@@ -2314,3 +2314,26 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .bannermore { font-size: 12px; color: var(--accent-ink); text-decoration: none; margin-top: 4px; }
 .bannermore:hover { text-decoration: underline; }
 @media (max-width: 700px) { .bannerrow { gap: 10px; } }
+
+/* --- wallet: holdings that fit, and sending from a row or the header -------- */
+.holdtable table { width: 100%; table-layout: fixed; }
+.holdtable td:nth-child(2) { width: 92px; }
+.holdtable td:nth-child(3) { width: 76px; }
+.holdtable td.holdpct { width: 54px; }
+.holdtable td { white-space: nowrap; }
+.holdtable td { padding-left: 7px; padding-right: 7px; }
+/* The token column gives way first (its name gets "…"); the numbers never do. */
+.holdtable td.holdtok { overflow: hidden; text-overflow: ellipsis; }
+.holdtable td.holdsend { width: 62px; padding-left: 4px; }
+.holdtable .btn.sm { padding: 3px 9px; font-size: 11.5px; min-height: 0; }
+@media (max-width: 560px) { .holdtable td.holdpct { display: none; } }
+.hdrsend { padding: 5px 11px; font-size: 12.5px; }
+@media (max-width: 760px) { .hdrsend { padding: 5px 8px; } }
+.sendamt { display: flex; gap: 8px; align-items: center; }
+.sendamt input { flex: 1; min-width: 0; }
+/* The leaderboard rule above freezes column 1 as a rank and forces column 2 to
+   148px as a pair name. In the holdings list column 2 is the amount, and that
+   forced width is what pushed the dollar column out of the card. */
+.tablewrap.holdtable table td:first-child { position: static; width: auto; min-width: 0; }
+.tablewrap.holdtable table td:nth-child(2) { position: static; width: 92px; min-width: 0; max-width: none; }
+.tablewrap.holdtable table td:nth-child(2)::after { display: none; }

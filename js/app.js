@@ -3,7 +3,7 @@
 // directly; there is no server anywhere in this application.
 // =============================================================================
 
-import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, positionLedger, positionPnl, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD, freshAlcorPool } from './store.js';
+import { loadCore, state, walletPositions, recentSwaps, clearCache, farmGroups, groupStakedUsd, loadHistory, SNAPSHOT_ONLY, toCandles, tokenTable, walletPositionsFast, positionLedger, positionPnl, tradeRoutes, swapsFromDeltas, tokenSeries, poolSeries, poolLiquidityEvents, perDay, venueDeltas, chartDeltas, alcorCandles, TRADE_VENUES, MIN_STAKE_FOR_APR_USD, freshAlcorPool, lpTokenOf } from './store.js';
 import { harvestFor, planCompound, stakedIncentives, farmGap, pendingFarms, pendingAt, accrualPerSec } from './compound.js';
 import { earningsHistory, summariseEarnings } from './rewards.js';
 import * as wallet from './wallet.js';
@@ -443,6 +443,8 @@ const rowClick = fn => e => { if (e && e.target && e.target.closest && e.target.
 // Safe to swallow the event here because all four of these are plain spans
 // wrapping a name — no button, input or link lives inside one.
 document.addEventListener('click', e => {
+  // A button inside a row (Send on a holdings row) is its own action, not the row's.
+  if (e.target.closest?.('button,input,select,textarea')) return;
   const t = e.target.closest?.('[data-tokid]');
   if (t && t.dataset.tokid) { e.stopPropagation(); openToken(t.dataset.tokid); return; }
   const k = e.target.closest?.('[data-poolkey]');
@@ -7041,27 +7043,15 @@ async function renderWalletBalances(account) {
         </span></h3>
         <div id="balPie"></div></div>
       <div class="card"><h3>What you hold <span class="dim">&mdash; ${usd(v.priced)}</span></h3>
-        <div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px"><tbody>${
+        <div class="tablewrap holdtable" style="max-height:340px;border:0"><table style="font-size:12.5px"><tbody>${
           priced.slice(0, 40).map(r => `<tr class="clickable" data-tokid="${esc(r.id)}">
-            <td><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span></td>
+            <td class="holdtok"><span data-pm="${esc(r.id)}|${esc(r.symbol)}"></span><span class="pairbig">${esc(r.symbol)}</span></td>
             <td class="r num">${qty(r.amount)}</td>
             <td class="r num">${usd(r.usd)}</td>
-            <td class="r num dim">${v.priced > 0 ? (r.usd / v.priced * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>
+            <td class="r num dim holdpct">${v.priced > 0 ? (r.usd / v.priced * 100).toFixed(1) + '%' : '—'}</td>
+            ${isMine(account) ? `<td class="r holdsend"><button class="btn ghost sm" data-send="${esc(r.id)}" title="Send ${esc(r.symbol)}">Send</button></td>` : ''}</tr>`).join('')}</tbody></table></div>
         <p class="sub" style="margin:9px 0 0">${priced.length} priced &middot; ${v.unpriced} unpriceable &middot; ${info.zeroed.toLocaleString()} at zero</p></div>
 
-      ${isMine(account) ? `<div class="card"><h3>Send</h3>
-        <div class="filters" style="display:grid;gap:8px;margin:0">
-          <label>Token<select id="sendTok">${v.rows.filter(r => r.amount > 0).map(r =>
-            `<option value="${esc(r.id)}">${esc(r.symbol)} — ${qty(r.amount)} available</option>`).join('')}</select></label>
-          <label>To<input id="sendTo" placeholder="account name" autocomplete="off" spellcheck="false"></label>
-          <label>Amount<input id="sendAmt" type="number" step="any" min="0" placeholder="0.0000" inputmode="decimal"></label>
-          <label>Memo<input id="sendMemo" placeholder="optional — required by most exchanges" autocomplete="off"></label>
-        </div>
-        <div id="sendOut" style="margin-top:10px"></div>
-        <div class="toolbar" style="margin:10px 0 0">
-          <button class="btn" id="sendGo">Review</button>
-        </div>
-      </div>` : ''}
     </div>
   </div>`;
 
@@ -7096,10 +7086,48 @@ async function renderWalletBalances(account) {
   fillMarks($('#walletBalances'));
   out.querySelectorAll('tr[data-tokid]').forEach(tr => tr.onclick = rowClick(() => openToken(tr.dataset.tokid)));
 
-  const balOf = id => v.rows.find(r => r.id === id)?.amount ?? 0;
-  const sg = $('#sendGo');
-  if (sg) sg.onclick = () => reviewSend(account, v.rows);
+  out.querySelectorAll('button[data-send]').forEach(b => b.onclick = e => { e.stopPropagation(); openSend(account, v.rows, b.dataset.send); });
   lockForeign(account);
+}
+
+// Sending, as a window rather than a column: from a token's row (that token,
+// its full balance shown with a Max) or from the header (the connected
+// wallet's balances, read on opening). The review and signing are unchanged.
+async function openSend(account, rows = null, tokenId = null) {
+  document.querySelector('.sendmodal')?.remove();
+  const m = document.createElement('div');
+  m.className = 'sharemodal sendmodal';
+  m.innerHTML = `<div class="sharebox" role="dialog" aria-label="Send tokens" style="max-width:460px">
+    <div class="pfhead"><h3>Send from <span class="mono">${esc(account)}</span></h3><button class="btn ghost" data-sclose>Close</button></div>
+    <div class="sendbody"><div class="loading"><span class="spinner"></span><span>Reading your balances…</span></div></div></div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  m.addEventListener('click', e => { if (e.target === m) close(); });
+  m.querySelector('[data-sclose]').onclick = close;
+  if (!rows) {
+    try { rows = valueBalances((await accountInfo(account)).balances, state.prices, state.depth).rows; }
+    catch (e) { m.querySelector('.sendbody').innerHTML = `<div class="err">Could not read the balances: ${esc(e.message)}</div>`; return; }
+  }
+  const have = rows.filter(r => r.amount > 0).sort((a, b) => (b.usd || 0) - (a.usd || 0));
+  if (!have.length) { m.querySelector('.sendbody').innerHTML = '<div class="empty">Nothing in this wallet to send.</div>'; return; }
+  const pick = have.find(r => r.id === tokenId) || have[0];
+  m.querySelector('.sendbody').innerHTML = `
+    <div class="filters" style="display:grid;grid-template-columns:1fr;gap:8px;margin:0">
+      <label>Token<select id="sendTok">${have.map(r => `<option value="${esc(r.id)}"${r.id === pick.id ? ' selected' : ''}>${esc(r.symbol)} — ${qty(r.amount)} available</option>`).join('')}</select></label>
+      <label>To<input id="sendTo" placeholder="account name, e.g. myfriend.wam" autocomplete="off" spellcheck="false"></label>
+      <label>Amount<span class="sendamt"><input id="sendAmt" type="number" step="any" min="0" placeholder="0" inputmode="decimal"><button class="linkbtn" id="sendMax">Max</button></span></label>
+      <span class="sub" id="sendAvail"></span>
+      <label>Memo<input id="sendMemo" placeholder="optional — required by most exchanges" autocomplete="off"></label>
+    </div>
+    <div id="sendOut" style="margin-top:10px"></div>
+    <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="sendGo">Review</button></div>`;
+  const row = () => have.find(r => r.id === $('#sendTok').value);
+  const avail = () => { const r = row(); $('#sendAvail').textContent = r ? `${qty(r.amount)} ${r.symbol} available${r.usd != null ? ` · ${usd(r.usd)}` : ''}` : ''; };
+  $('#sendTok').onchange = () => { avail(); $('#sendAmt').value = ''; $('#sendOut').innerHTML = ''; };
+  $('#sendMax').onclick = () => { const r = row(); if (r) $('#sendAmt').value = String(r.amount); };
+  $('#sendGo').onclick = () => reviewSend(account, have);
+  avail();
+  setTimeout(() => $('#sendTo')?.focus(), 30);
 }
 
 // Two clicks, on purpose. The first builds the transfer and shows it back in
@@ -8029,11 +8057,12 @@ function neftyLpCard(p, mine = false) {
   const vA = p.amountA * (pool.priceUsdA || 0), vB = p.amountB * (pool.priceUsdB || 0);
   const tot = vA + vB;
   const wA = tot > 0 ? vA / tot : 0.5;
-  return `<article class="poscard" data-find="${esc(`${pool.symA}/${pool.symB} ${pool.symA} ${pool.symB} neftyblocks nefty ${pool.id}`)}">
+  const venue = p.dex === 'defibox' ? ['Defibox', 'defibox'] : ['Nefty', 'nefty'];
+  return `<article class="poscard" data-find="${esc(`${pool.symA}/${pool.symB} ${pool.symA} ${pool.symB} ${venue[0]} ${venue[1]} ${pool.id}`)}">
     <header class="pc-head">
       <span class="pc-mark" data-pm="${esc(pool.tokenA)}|${esc(pool.symA)}|${esc(pool.tokenB)}|${esc(pool.symB)}"></span>
       <div class="pc-id">
-        <div class="pc-pair">${pairLinks(pool)}<span class="venue nefty">Nefty</span></div>
+        <div class="pc-pair">${pairLinks(pool)}<span class="venue ${venue[1]}">${venue[0]}</span></div>
         <div class="pc-meta">${qty(p.balance)} ${esc(p.lpSymbol)} LP &middot; ${(p.share * 100).toPrecision(3)}% of the pair</div>
       </div>
       <div class="pc-val"><span class="v">${p.valueUsd != null ? usdExact(p.valueUsd) : '&mdash;'}</span></div>
@@ -8046,7 +8075,7 @@ function neftyLpCard(p, mine = false) {
     </div>
     ${mine ? `<footer class="pc-act">
       <span class="dim" style="font-size:12px">Take out</span>
-      ${[25, 50, 100].map(pc => `<button class="btn ${pc === 100 ? '' : 'ghost'}" data-neftyout="${esc(p.lpSymbol)}:${pc}">${pc === 100 ? 'All' : `${pc}%`}</button>`).join('')}
+      ${[25, 50, 100].map(pc => `<button class="btn ${pc === 100 ? '' : 'ghost'}" data-lpout="${esc(p.dex)}:${esc(p.lpSymbol)}:${pc}">${pc === 100 ? 'All' : `${pc}%`}</button>`).join('')}
     </footer><div class="neftyoutbox"></div>` : ''}
   </article>`;
 }
@@ -8080,10 +8109,10 @@ async function lookupWallet(account) {
     // deposited. Reading the chain ourselves is the fallback, not the default.
     const alcor = await walletPositionsFast(account);
     const slow = await walletPositions(account, { onProgress: () => {}, skipAlcor: true }).catch(() => ({ alcor: [], taco: [], poolsChecked: 0 }));
-    res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, nefty: slow.nefty || [], poolsChecked: slow.poolsChecked };
+    res = { alcor: alcor.length ? alcor : slow.alcor, taco: slow.taco, nefty: slow.nefty || [], box: slow.box || [], poolsChecked: slow.poolsChecked };
     // The pie can now offer to include what is inside the positions, which it
     // could not while this was still sweeping.
-    walletPositionsFor = { account, list: [...res.alcor, ...res.taco, ...(res.nefty || [])] };
+    walletPositionsFor = { account, list: [...res.alcor, ...res.taco, ...(res.nefty || []), ...(res.box || [])] };
     redrawBalancePie();
   } catch {
     try { res = await walletPositions(account, { onProgress: p => { const m = $('#wmsg'); if (m) m.textContent = p.msg; } }); }
@@ -8096,7 +8125,8 @@ async function lookupWallet(account) {
   }
 
   res.nefty = res.nefty || [];
-  const all = [...res.alcor, ...res.taco, ...res.nefty];
+  res.box = res.box || [];
+  const all = [...res.alcor, ...res.taco, ...res.nefty, ...res.box];
   if (!all.length) aggSet(account, 'lpx', { oorCount: 0, gaps: 0, dailyFees: 0 });
   aggSet(account, 'lp', {
     usd: all.reduce((s2, p) => s2 + (p.valueUsd || 0) * (p.pool?.tvl > 0 && p.pool.tvlReal != null ? Math.min(1, p.pool.tvlReal / p.pool.tvl) : 1), 0),
@@ -8240,6 +8270,7 @@ async function lookupWallet(account) {
   for (const p of res.alcor) html += positionCard(p, mine);
   for (const p of res.taco) html += tacoCard(p, mine);
   for (const p of res.nefty) html += neftyLpCard(p, mine);
+  for (const p of res.box || []) html += neftyLpCard(p, mine);
   html += '</div><div class="empty filternone" hidden>No position matches.</div></div>';
   out.innerHTML = html;
   // Forty positions is a scroll, not a list. The filter matches the pair, the
@@ -8294,23 +8325,27 @@ async function lookupWallet(account) {
       buildV2Remove({ account, dex: 'taco', code: id, lp, lpDecimals: pair.lpDecimals }), 'Taken out. Both tokens are back in your wallet.');
   });
 
-  // Taking liquidity out of a NeftyBlocks pair: LP tokens back to swap.nefty.
-  out.querySelectorAll('[data-neftyout]').forEach(b => b.onclick = () => {
-    const [sym, pcS] = b.dataset.neftyout.split(':');
-    const p = res.nefty.find(x => x.lpSymbol === sym);
+  // Taking liquidity out of a NeftyBlocks or Defibox pair: the LP tokens go
+  // back to the exchange with an empty memo and both tokens come back (read off
+  // real withdrawals on each).
+  const LP_OUT = { nefty: { token: 'lp.nefty', to: 'swap.nefty' }, defibox: { token: 'lptoken.box', to: 'swap.box' } };
+  out.querySelectorAll('[data-lpout]').forEach(b => b.onclick = () => {
+    const [dex, sym, pcS] = b.dataset.lpout.split(':');
+    const p = (dex === 'defibox' ? res.box || [] : res.nefty).find(x => x.lpSymbol === sym);
+    const via = LP_OUT[dex];
     const box = b.closest('.poscard')?.querySelector('.neftyoutbox');
-    if (!p || !box) return;
+    if (!p || !box || !via) return;
     const pc = Number(pcS) / 100;
     const lp = pc >= 1 ? p.balance : Math.floor(p.balance * pc);
     if (!(lp > 0)) { box.innerHTML = '<div class="err">That is less than one LP token.</div>'; return; }
     const got = lp / p.balance;
     box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft);margin-top:10px">
-      Send ${lp.toLocaleString('en-US')} ${esc(sym)} LP back to <span class="mono">swap.nefty</span> and receive about
+      Send ${lp.toLocaleString('en-US')} ${esc(sym)} LP back to <span class="mono">${via.to}</span> and receive about
       <b>${qty(p.amountA * got)} ${esc(p.pool.symA)}</b> and <b>${qty(p.amountB * got)} ${esc(p.pool.symB)}</b>.
       <div class="toolbar" style="margin:10px 0 0"><button class="btn" data-neftydo>Sign and take out</button></div></div>`;
     box.querySelector('[data-neftydo]').onclick = () => runStakeTx(box, [{
-      account: 'lp.nefty', name: 'transfer', authorization: [{ actor: account, permission: 'active' }],
-      data: { from: account, to: 'swap.nefty', quantity: `${lp} ${sym}`, memo: '' },
+      account: via.token, name: 'transfer', authorization: [{ actor: account, permission: 'active' }],
+      data: { from: account, to: via.to, quantity: `${lp} ${sym}`, memo: '' },
     }], 'Taken out. Both tokens are back in your wallet.');
   });
 
@@ -8562,6 +8597,7 @@ function wireConnect() {
   wallet.onSession(s => {
     const a = wallet.account();
     btn.hidden = !!a; chip.hidden = !a;
+    const hs = $('#hdrSend'); if (hs) hs.hidden = !a;
     if (a) $('#acctName').textContent = a;
     // The compound page is per-account: connecting should fill it in, not make
     // the user retype what the wallet already told us.
@@ -8579,6 +8615,8 @@ function wireConnect() {
     finally { btn.disabled = false; btn.textContent = 'Connect wallet'; }
   };
   $('#disconnectBtn').onclick = () => wallet.disconnect();
+  const hs = $('#hdrSend');
+  if (hs) hs.onclick = () => { const a = wallet.account(); if (a) openSend(a); };
   if (!SNAPSHOT_ONLY) wallet.restore();
 
   if (!wallet.isSecure()) {
@@ -12185,7 +12223,7 @@ async function openPool(key) {
       <p class="sub" id="poolDepthNote" style="margin:8px 0 0">&nbsp;</p></div>` : ''}
     <div class="card" style="margin-top:12px"><h3>This pool over time</h3>
       <div id="poolHist"><div class="loading"><span class="spinner"></span><span>Reading the record…</span></div></div></div>
-    ${p.dex === 'alcor' ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
+    ${p.dex === 'alcor' || lpTokenOf(p) ? `<div class="card" style="margin-top:12px"><h3>Who provides the liquidity here</h3>
       <div id="poolLPs"><div class="loading"><span class="spinner"></span><span>Reading positions…</span></div></div></div>` : ''}
     <div id="newFarmBox" style="margin-top:12px"></div>
     <div id="farmParts" style="margin-top:12px"></div>
@@ -12485,6 +12523,39 @@ async function openPool(key) {
   // The rung that was missing from the chain: a pool knew its tokens and its
   // farms, and said nothing about the people whose money is in it.
   if (p.dex === 'alcor' && $('#poolLPs')) renderPoolLPs(p).catch(() => {});
+  else if (lpTokenOf(p) && $('#poolLPs')) renderPoolLPHolders(p).catch(() => { const b = $('#poolLPs'); if (b) b.innerHTML = '<div class="empty">Could not read who holds this pool\u2019s LP token.</div>'; });
+}
+
+// Taco, NeftyBlocks and Defibox: a share of the pool is an LP token, so the
+// liquidity providers are that token's holders — read from the light API, the
+// same list a token page's holders come from. Value is the holder's share of
+// what the pool holds now.
+async function renderPoolLPHolders(p) {
+  const box = $('#poolLPs');
+  const lt = lpTokenOf(p);
+  const [holders, stat] = await Promise.all([
+    topHolders(lt.contract, lt.symbol, 50),
+    getRows(lt.contract, lt.symbol, 'stat', { limit: 1 }).then(d => d.rows?.[0]).catch(() => null),
+  ]);
+  const supply = stat ? Number(String(stat.supply).split(' ')[0]) : (p.lpSupply || 0);
+  const list = holders.filter(h => h.balance > 0);
+  if (!list.length || !(supply > 0)) { box.innerHTML = '<div class="empty">Nobody holds liquidity in this pool right now.</div>'; return; }
+  const worth = p.tvlReal ?? p.tvl;
+  const big = n => (n >= 1e15 ? `${(n / 1e15).toFixed(2)}Q` : n >= 1e12 ? `${(n / 1e12).toFixed(2)}T` : qty(n));
+  // LP sent to eosio.null can never be taken out: that liquidity is locked for good.
+  const role = h => (h.account === 'eosio.null' ? '🔥 burned — locked for good' : h.contractRole);
+  box.innerHTML = `<div class="tablewrap" style="max-height:340px;border:0"><table style="font-size:12.5px">
+    <thead><tr><th></th><th>Wallet</th><th class="r">Share</th><th class="r">Value</th><th class="r">LP tokens</th></tr></thead>
+    <tbody>${list.slice(0, 30).map((h, i) => {
+      const sh = h.balance / supply;
+      return `<tr>
+      <td class="rank">${i + 1}</td>
+      <td class="mono">${acctLink(h.account)}${role(h) ? ` <span class="dim">(${esc(role(h))})</span>` : ''}</td>
+      <td class="r num">${(sh * 100).toFixed(sh < 0.001 ? 3 : 1)}%</td>
+      <td class="r num">${worth != null ? usd(worth * sh) : '—'}</td>
+      <td class="r num dim">${big(h.balance)} <span class="mono">${esc(lt.symbol)}</span></td></tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="sub" style="margin:9px 0 0">${list.length >= 50 ? 'The 50 largest' : list.length} holder${list.length === 1 ? '' : 's'} of <span class="mono">${esc(lt.symbol)}</span> on <span class="mono">${esc(lt.contract)}</span> &middot; ${big(supply)} LP tokens in all.</p>`;
 }
 
 async function renderPoolLPs(p) {
