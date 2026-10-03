@@ -125,7 +125,11 @@ export async function fusionState({ now = Date.now() } = {}) {
     aprPct, rewardsPerDay: waxPerSec * 86400, aprCapPct: g2 ? (Number(g2.max_staker_apr_1e6) || 0) / 1e6 : null,
     paused: !!g2?.panic,
     epochs, openEpoch, nextEpoch,
-    lastEpochStart: startedAt * 1000,
+    // The epoch a request made now would see. The contract moves on only when
+    // somebody acts (sync_epoch, at the start of reqredeem and the rest) and
+    // then by one week at most; a quiet contract can lag its own calendar, so
+    // the page takes that one step itself.
+    lastEpochStart: (now / 1000 >= startedAt + Number(g.seconds_between_epochs) ? startedAt + Number(g.seconds_between_epochs) : startedAt) * 1000,
     rewardPool: r ? amt(r.rewardPool) : null,
     top21At: top ? Number(top.last_update) * 1000 : null,
     producers: (top?.block_producers || []).length,

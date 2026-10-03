@@ -4748,22 +4748,35 @@ function fusionTimeline(st) {
 function fusionEpochTable(st) {
   const eps = redemptionEpochs(st);
   if (!eps.length) return '';
+  const now = Date.now();
   const first = eps.find(e => e.open && e.free > 0);
-  const d = t => new Date(t).toISOString().slice(5, 10).replace('-', '/');
+  const d = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  // "12–14 Oct, 18:06": the 48-hour window in one short line.
+  const win = e => {
+    const a = new Date(e.windowFrom), b = new Date(e.windowTo);
+    const same = a.getUTCMonth() === b.getUTCMonth();
+    return `${same ? a.getUTCDate() : d(a)}–${d(b)}, ${a.toISOString().slice(11, 16)}`;
+  };
+  // Each epoch rents WAX out as CPU from its start until it unstakes, then the
+  // WAX takes three days to come back and is paid out in a 48-hour window.
+  const status = e => (now < e.startsAt ? '<span class="pill">next</span>'
+    : now < e.unstakeAt ? '<span class="pill good">running now</span>'
+      : now < e.windowTo ? '<span class="pill">unstaking</span>' : '<span class="pill">ended</span>');
   const rows = eps.map(e => {
     const pctUsed = e.bucket > 0 ? Math.min(100, e.requested / e.bucket * 100) : 0;
     return `<tr class="${e === first ? 'next' : ''}${!e.open ? ' shut' : ''}">
-      <td>${d(e.startsAt)} <span class="dim mono">${esc(e.cpuWallet)}</span>${e === first ? ' <span class="pill good">a request now lands here</span>' : ''}</td>
+      <td><span class="mono">${esc(e.cpuWallet)}</span> ${status(e)}</td>
+      <td>${d(e.startsAt)} &rarr; ${d(e.unstakeAt)}</td>
       <td class="num"><b>${qty(e.bucket)}</b></td>
       <td class="num">${qty(e.requested)}<div class="fuused"><i style="width:${pctUsed.toFixed(1)}%"></i></div></td>
-      <td class="num ${e.open && e.free > 0 ? 'pos' : 'dim'}">${e.open ? qty(e.free) : 'closed'}</td>
-      <td title="Unstakes ${d(e.unstakeAt)}">${d(e.windowFrom)} ${new Date(e.windowFrom).toISOString().slice(11, 16)} &rarr; ${d(e.windowTo)}</td></tr>`;
+      <td class="num ${e.open && e.free > 0 ? 'pos' : 'dim'}">${e.open ? qty(e.free) : 'closed'}${e === first ? '<div class="landhere">&larr; a request lands here</div>' : ''}</td>
+      <td>${win(e)}</td></tr>`;
   }).join('');
   const total = eps.filter(e => e.open).reduce((t, e) => t + e.free, 0);
   return `<h4 style="margin:14px 0 6px">WAX freed per epoch</h4>
-    <p class="sub" style="margin:0 0 8px">Each epoch stakes WAX as CPU for 14 days. When it unstakes, that WAX comes back — the part people requested goes to them in the epoch's redemption period, the rest is rented out again. A request can still take <b>${qty(total)} WAX</b> across the open epochs${st.availableForRentals > 0 ? `, plus ${qty(st.availableForRentals)} WAX paid on the spot from the rental pool` : ''}.</p>
+    <p class="sub" style="margin:0 0 8px">A new epoch starts every week and rents WAX out as CPU on its own wallet; when the rental ends the WAX comes back and is paid out to whoever requested it. A request can still take <b>${qty(total)} WAX</b>${st.availableForRentals > 0 ? `, plus ${qty(st.availableForRentals)} WAX paid on the spot` : ''}.</p>
     <div class="tablewrap"><table class="futable">
-      <thead><tr><th>Epoch</th><th class="num">Comes free</th><th class="num">Already requested</th><th class="num">Still requestable</th><th>Paid out (UTC)</th></tr></thead>
+      <thead><tr><th>CPU wallet</th><th>Rented out</th><th class="num">Comes free</th><th class="num">Already requested</th><th class="num">Still requestable</th><th>Paid out (UTC)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 
