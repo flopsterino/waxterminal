@@ -34,6 +34,8 @@ const AA = 'https://wax.api.atomicassets.io';
 const LIM = { watch: 5, alerts: 15, favs: 12 };
 const ACCOUNT_RE = /^[a-z1-5.]{1,12}$/;
 const DAY = 86400e3, HOUR = 3600e3;
+const RANGE_HOLD_S = 30 * 60;       // in/out of range must hold this long before it is news
+const MAX_PER_HOUR = 8;             // alert messages per chat per hour, then one notice and a pause
 
 // What a watched wallet alerts on, until someone changes it in /settings.
 // fees and xfer are dollar thresholds; -1 / 0 switches them off.
@@ -160,7 +162,9 @@ async function positions(B, account) {
   return rows.filter(p => !p.closed).map(p => {
     const A = parseQty(p.amountA), Bq = parseQty(p.amountB), fA = parseQty(p.feesA), fB = parseQty(p.feesB);
     return { id: String(p.id), pool: String(p.pool), pair: `${A.sym}/${Bq.sym}`, inRange: !!p.inRange,
-      value: Number(p.totalValue) || 0, a: A.n, b: Bq.n, fa: fA.n, fb: fB.n, symA: A.sym, symB: Bq.sym };
+      value: Number(p.totalValue) || 0, a: A.n, b: Bq.n, fa: fA.n, fb: fB.n, symA: A.sym, symB: Bq.sym,
+      // Range width as a price ratio: ±0.1% (ticks −10…10) is 1.002, full range enormous.
+      width: Math.pow(1.0001, (Number(p.tickUpper) || 0) - (Number(p.tickLower) || 0)) };
   }).sort((a, b) => b.value - a.value);
 }
 // Fees in dollars, and how lopsided the position is, from the snapshot's prices.
@@ -1711,8 +1715,19 @@ async function tick(env, when) {
   const MAX_SENDS = 15;
   const send = async (chat, text, markup) => {
     if ((chats.get(chat)?.mute_until || 0) > now || B.sends >= MAX_SENDS) return false;
+    // A ceiling per chat per hour. Past it nothing more is sent this hour —
+    // one-off alerts (a price, a floor) stay set and fire next hour — and the
+    // chat is told once, with the way to fewer alerts.
+    const hr = Math.floor(now / HOUR), key = `rl:${chat}`, v = cur.get(key) || 0;
+    const n = Math.floor(v / 1000) === hr ? v % 1000 : 0;
+    if (n >= MAX_PER_HOUR) return false;
+    setCur(key, hr * 1000 + n + 1);
     B.sends++;
     await say(env, B, chat, text, markup);
+    if (n + 1 === MAX_PER_HOUR) {
+      await say(env, B, chat, `🔕 That is ${MAX_PER_HOUR} alerts this hour — I am holding the rest until the next hour.`,
+        kb([[btn('⚙️ Fewer wallet alerts', 'mn:wallets'), btn('📋 My alerts', 'm:/alerts')], [btn('🔕 Mute for 8 hours', 'm:/mute 8h')]]));
+    }
     return true;
   };
   const D = await data(env, B);
@@ -1736,25 +1751,45 @@ async function tick(env, when) {
       for (const w of watchesOf(a)) {
         const o = optsOf(w), st = stateOf(w), msgs = [];
         st.e = st.e || {}; st.f = st.f || {}; st.fe = st.fe || {};
+        st.rp = st.rp || {}; st.ra = st.ra || {}; st.em = st.em || {};
+        const nowS = Math.floor(now / 1000);
         for (const p of pos) {
-          const was = st.r[p.id];
           const lnk = `${poolLink('alcor', p.pool, p.pair)} (${fmtUsd(p.value)})`;
-          if (o.range && was === 1 && !p.inRange) msgs.push(`⚠️ ${lnk} is <b>out of range</b> — no fees until the price returns, or until you move the range.`);
-          if (o.range && was === 0 && p.inRange) msgs.push(`✅ ${lnk} is <b>back in range</b> and earning again.`);
+          // Dust says nothing worth a message.
+          const big = p.value >= 5;
+          // A range narrower than ±2% (a stablecoin pair at ±0.1%) sits at its
+          // edge by design and crosses it with every small swap.
+          const narrow = p.width < 1.04;
+          // In or out of range only counts once it has held for 30 minutes: a
+          // price hovering at the edge crosses it every few minutes, and each
+          // crossing used to be a message. "Back in range" only follows an
+          // "out of range" that was actually sent.
+          const nowIn = p.inRange ? 1 : 0;
+          if (st.r[p.id] === undefined) st.r[p.id] = nowIn;
+          else if (nowIn !== st.r[p.id]) {
+            const pend = st.rp[p.id];
+            if (!pend || pend.s !== nowIn) st.rp[p.id] = { s: nowIn, t: nowS };
+            else if (nowS - pend.t >= RANGE_HOLD_S) {
+              st.r[p.id] = nowIn; delete st.rp[p.id];
+              if (!nowIn && o.range && big) { msgs.push(`⚠️ ${lnk} is <b>out of range</b> — no fees until the price returns, or until you move the range.`); st.ra[p.id] = 1; }
+              if (nowIn && st.ra[p.id]) { if (o.range) msgs.push(`✅ ${lnk} is <b>back in range</b> and earning again.`); delete st.ra[p.id]; }
+            }
+          } else delete st.rp[p.id];
           const v = valued(D, p);
-          // In range but nearly all one token: the price is at one edge.
-          if (p.inRange && v.shareA != null) {
+          // In range but nearly all one token: the price is at one edge. Once,
+          // and again only after it has been back in the middle and a day passed.
+          if (p.inRange && v.shareA != null && big && !narrow) {
             const side = v.shareA > 0.92 ? 'lower' : v.shareA < 0.08 ? 'upper' : null;
-            if (side && !st.e[p.id] && o.edge) { msgs.push(`⏳ ${lnk} is close to the <b>${side} edge</b> of its range — ${((side === 'lower' ? v.shareA : 1 - v.shareA) * 100).toFixed(0)}% ${esc(side === 'lower' ? p.symA : p.symB)} already.`); st.e[p.id] = 1; }
-            if (!side && v.shareA > 0.15 && v.shareA < 0.85) delete st.e[p.id];
+            const may = !st.e[p.id] || (st.em[p.id] && nowS - st.e[p.id] > 86400);
+            if (side && may && o.edge) { msgs.push(`⏳ ${lnk} is close to the <b>${side} edge</b> of its range — ${((side === 'lower' ? v.shareA : 1 - v.shareA) * 100).toFixed(0)}% ${esc(side === 'lower' ? p.symA : p.symB)} already.`); st.e[p.id] = nowS; delete st.em[p.id]; }
+            if (!side && v.shareA > 0.15 && v.shareA < 0.85 && st.e[p.id]) st.em[p.id] = 1;
           }
-          if (o.fees > 0 && v.fees != null) {
+          if (o.fees > 0 && v.fees != null && big) {
             if (v.fees >= o.fees && !st.f[p.id]) { msgs.push(`💰 ${fmtUsd(v.fees)} in fees waiting on ${poolLink('alcor', p.pool, p.pair)} — <a href="${SITE}/wallet/${encodeURIComponent(a)}">compound them</a>.`); st.f[p.id] = 1; }
             if (v.fees < o.fees / 2) delete st.f[p.id];
           }
-          st.r[p.id] = p.inRange ? 1 : 0;
         }
-        for (const id of Object.keys(st.r)) if (!byId.has(id)) { delete st.r[id]; delete st.e[id]; delete st.f[id]; }
+        for (const id of Object.keys(st.r)) if (!byId.has(id)) { delete st.r[id]; delete st.e[id]; delete st.f[id]; delete st.rp[id]; delete st.ra[id]; delete st.em[id]; }
         st.pl = [...new Set(pos.map(p => p.pool))];
         if (o.farm) {
           for (const f of D.farms) {
