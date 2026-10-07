@@ -4093,8 +4093,6 @@ async function renderFunToken(symbol) {
             <div><dt>Curve progress</dt><dd id="ftProg">${progress != null ? `${(progress * 100).toFixed(2)}%` : '—'}</dd></div>
             <div><dt>Curve fee</dt><dd id="ftFee">1% of what you send</dd></div>
           </dl>
-          <div class="memoline"><span class="dim">Memo</span><code id="ftMemo"></code>
-            <button class="linkbtn" id="ftCopy" title="Copy the memo">Copy</button></div>
           <div id="ftOut"></div>
           <button class="btn" id="ftGo">Review</button>
           <p class="sub">Nothing here holds your tokens: a buy is WAX to <span class="mono">main.waxfun</span>, a sell is the token back to it, and the curve does the arithmetic.</p>
@@ -4110,9 +4108,6 @@ async function renderFunToken(symbol) {
         <div class="card">
           <h3>Where it is on the curve</h3>
           <div id="ftCurve"></div>
-          <div class="funbar" style="margin-top:10px"><span style="width:${((progress || 0) * 100).toFixed(1)}%"></span></div>
-          <div class="funbarnote"><span>${qty(t.supply || 0)} of ${qty(DEX_GOAL_TOKENS)} ${esc(t.symbol)} sold</span>
-            <span class="dim">${progress != null ? `${(progress * 100).toFixed(1)}% of the way to Alcor` : ''}</span></div>
           <dl class="ftrows wide">
             <div><dt>Sold on the curve</dt><dd>${qty(t.supply || 0)} ${esc(t.symbol)}</dd></div>
             <div><dt>Still to be sold</dt><dd>${left != null ? `${qty(left)} ${esc(t.symbol)}` : '—'}${
@@ -4204,13 +4199,12 @@ function wireFunTrade(t) {
   let side = 'buy', waxBal = null, tokBal = null;
   const amt = () => Math.max(0, Number($('#ftAmt')?.value) || 0);
   // The curve's own slippage guard, at the setting that fills whatever the
-  // trade comes to. It is in the memo on screen and in the wallet's own
-  // confirmation, so it needs no dial here: the number that matters is what
+  // trade comes to. It is in the wallet's own confirmation, so it needs no
+  // dial here: the number that matters is what
   // you get, and that is quoted above it.
   const slip = () => 100;
   const priceNow = t.supply != null ? curvePrice(t.supply, t.curveConfig) : null;
 
-  const memo = () => JSON.stringify({ action: side, token: t.symbol, contract: t.contract, max_slippage: slip() });
 
   const paintQuick = () => {
     const q = $('#ftQuick');
@@ -4239,8 +4233,6 @@ function wireFunTrade(t) {
   const quote = () => {
     const v = amt();
     const get = $('#ftGet'), sub = $('#ftGetSub'), after = $('#ftPxAfter'), imp = $('#ftImpact'), prog = $('#ftProg'), fee = $('#ftFee');
-    const code = $('#ftMemo');
-    if (code) code.textContent = memo();
     if (!get) return;
     if (!(v > 0) || t.supply == null) {
       get.textContent = '—';
@@ -4295,9 +4287,6 @@ function wireFunTrade(t) {
   };
   panel.querySelectorAll('#ftSide [data-side]').forEach(b => b.onclick = () => setSide(b.dataset.side));
   $('#ftAmt')?.addEventListener('input', quote);
-  $('#ftCopy') && ($('#ftCopy').onclick = async () => {
-    try { await navigator.clipboard.writeText(memo()); $('#ftCopy').textContent = 'Copied'; setTimeout(() => { const c = $('#ftCopy'); if (c) c.textContent = 'Copy'; }, 1500); } catch {}
-  });
   setSide('buy');
 
   // Balances, once a wallet is there. Two reads, and only for the account that
