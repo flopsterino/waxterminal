@@ -4706,7 +4706,7 @@ function fusionTimeline(st) {
   // A date under every period, and the one that is open (or next) carries the
   // hour it opens and the hour it shuts — which is the whole question a
   // timeline of 48-hour doors is asked.
-  const clock = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const clock = t => fusionWhen(t);
   const marked = st.openEpoch || st.nextEpoch;
   const doors = st.epochs
     .filter(e => e.windowTo > from && e.windowFrom < to)
@@ -4719,7 +4719,7 @@ function fusionTimeline(st) {
       return `<div class="fuperiod ${cls}" style="left:${left}%;width:${width}%"
         title="Epoch that started ${new Date(e.startsAt).toISOString().slice(0, 10)} — its redemption period runs ${clock(e.windowFrom)} to ${clock(e.windowTo)}"></div>
         <span class="fuperiodlab ${cls}${isMarked ? ' full' : ''}" style="left:${(left + width / 2).toFixed(2)}%">${
-          isMarked ? `${clock(e.windowFrom)} &rarr; ${clock(e.windowTo)}` : new Date(e.windowFrom).toISOString().slice(5, 10)}</span>`;
+          isMarked ? `${clock(e.windowFrom)} &rarr; ${clock(e.windowTo)}` : fusionDay(e.windowFrom)}</span>`;
     }).join('');
   return `<div class="furail">
     <div class="furailbg"></div>
@@ -4739,7 +4739,7 @@ function fusionEpochTable(st) {
   if (!eps.length) return '';
   const now = Date.now();
   const first = eps.find(e => e.open && e.free > 0);
-  const d = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const d = t => fusionDay(t);
   // "12–14 Oct, 18:06": the 48-hour window in one short line.
   const win = e => {
     const a = new Date(e.windowFrom), b = new Date(e.windowTo);
@@ -4765,7 +4765,7 @@ function fusionEpochTable(st) {
   return `<h4 style="margin:14px 0 6px">WAX freed per epoch</h4>
     <p class="sub" style="margin:0 0 8px">A new epoch starts every week and rents WAX out as CPU on its own wallet; when the rental ends the WAX comes back and is paid out to whoever requested it. A request can still take <b>${qty(total)} WAX</b>${st.availableForRentals > 0 ? `, plus ${qty(st.availableForRentals)} WAX paid on the spot` : ''}.</p>
     <div class="tablewrap"><table class="futable">
-      <thead><tr><th>CPU wallet</th><th>Rented out</th><th class="num">Comes free</th><th class="num">Already requested</th><th class="num">Still requestable</th><th>Paid out (UTC)</th></tr></thead>
+      <thead><tr><th>CPU wallet</th><th>Rented out</th><th class="num">Comes free</th><th class="num">Already requested</th><th class="num">Still requestable</th><th>Withdraw window (UTC)</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 
@@ -4776,7 +4776,81 @@ function fusionEpochTable(st) {
 let fusionGen = 0;
 
 // A redemption window, the way every other date here is written, in UTC.
-const fusionWhen = ms => new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+// One way to write a moment on this page, the same for every reader: UTC,
+// "Mon 12 Oct, 18:06 UTC". (The timeline once showed local time while the
+// text said UTC — two different hours for one window.)
+const fusionWhen = ms => {
+  const d = new Date(ms);
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' })} ${d.getUTCDate()} ${d.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })}, ${d.toISOString().slice(11, 16)} UTC`;
+};
+const fusionDay = ms => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const fusionZone = () => 'UTC';
+const fusionIn = ms => {
+  const m = Math.round((ms - Date.now()) / 60e3);
+  if (m <= 0) return 'now';
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
+  return d ? `in ${d} day${d === 1 ? '' : 's'}${h ? ` ${h} h` : ''}` : h ? `in ${h} h${mi ? ` ${mi} min` : ''}` : `in ${mi} min`;
+};
+// A live countdown: "2d 21:14:05". One timer for every countdown on the page;
+// when one reaches zero the page is redrawn, so a window that just opened shows
+// its Withdraw button without a reload.
+const fusionCount = ms => {
+  let t = Math.max(0, Math.floor((ms - Date.now()) / 1000));
+  const d = Math.floor(t / 86400); t %= 86400;
+  const p2 = n => String(n).padStart(2, '0');
+  const hms = `${p2(Math.floor(t / 3600))}:${p2(Math.floor((t % 3600) / 60))}:${p2(t % 60)}`;
+  return d ? `${d}d ${hms}` : hms;
+};
+const fusionCountdown = ms => `<span class="fucount" data-until="${ms}">${fusionCount(ms)}</span>`;
+let fusionTimer = null;
+function startFusionCountdowns() {
+  clearInterval(fusionTimer);
+  fusionTimer = setInterval(() => {
+    const els = document.querySelectorAll('.fucount[data-until]');
+    if (!els.length) { clearInterval(fusionTimer); fusionTimer = null; return; }
+    let rolled = false;
+    els.forEach(el => {
+      const until = Number(el.dataset.until);
+      el.textContent = fusionCount(until);
+      if (until <= Date.now() && !el.dataset.done) { el.dataset.done = '1'; rolled = true; }
+    });
+    if (rolled) setTimeout(() => renderFusion().catch(() => {}), 1500);
+  }, 1000);
+}
+
+// The window as a calendar entry, with a reminder an hour before it opens.
+function fusionIcs(amount, e) {
+  const z = t => new Date(t).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//WaxEDGE//WaxFusion//EN', 'BEGIN:VEVENT',
+    `UID:waxfusion-${e.id}@waxedge.app`, `DTSTAMP:${z(Date.now())}`, `DTSTART:${z(e.windowFrom)}`, `DTEND:${z(e.windowTo)}`,
+    `SUMMARY:Withdraw ${qty(amount)} WAX from WaxFusion`, 'URL:https://waxedge.app/apps/fusion',
+    'DESCRIPTION:Your redemption window is open for 48 hours. Withdraw on waxedge.app/apps/fusion — miss it and the WAX stays staked.',
+    'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:WaxFusion window opens in an hour', 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+  const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: 'waxfusion-withdraw.ics' });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// The three things anyone redeeming wants to know, before any chart: where a
+// request made now goes, until when that holds, and whether a window is open
+// right now for requests made earlier.
+function fusionRules(st) {
+  const now = Date.now(), week = st.epochSeconds * 1000;
+  const land = redemptionEpochs(st).find(e => e.open && e.free > 0);
+  const after = land ? (st.epochs.find(e => e.startsAt === land.startsAt + week) || { windowFrom: land.windowFrom + week, windowTo: land.windowTo + week }) : null;
+  const rows = [];
+  if (land) {
+    rows.push(['Request now', `withdraw between <b>${fusionWhen(land.windowFrom)}</b> and <b>${fusionWhen(land.windowTo)}</b> <span class="dim">&mdash; room for ${qty(land.free)} WAX more</span>`]);
+    rows.push(['Requests for that window', `taken until <b>${fusionWhen(land.windowFrom)}</b> &mdash; ${fusionCountdown(land.windowFrom)} left; after that a request goes to the ${new Date(after.windowFrom).getUTCDate()}–${fusionDay(after.windowTo)} window`]);
+  } else rows.push(['Request now', '<span class="dim">no epoch has room left; the contract would pay it from the rental pool if it can</span>']);
+  if (st.openEpoch) rows.push(['Open right now', `<b class="pos">withdraw window for earlier requests</b> until <b>${fusionWhen(st.openEpoch.windowTo)}</b> &mdash; closes in ${fusionCountdown(st.openEpoch.windowTo)}`]);
+  const nextOpen = st.epochs.filter(e => e.windowFrom > now).sort((a, b) => a.windowFrom - b.windowFrom)[0];
+  if (nextOpen) rows.unshift(['Next withdraw window', `opens in ${fusionCountdown(nextOpen.windowFrom)} <span class="dim">&mdash; ${fusionWhen(nextOpen.windowFrom)}</span>`]);
+  rows.push(['After the window', 'unclaimed requests stay staked as sWAX &mdash; nothing is lost, request again']);
+  return `<dl class="furules">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+}
 
 async function renderFusion() {
   const out = $('#fusionOut');
@@ -4793,17 +4867,6 @@ async function renderFusion() {
   const waxUsd = state.waxUsd || null;
   const inUsd = wax => (waxUsd ? usd(wax * waxUsd) : `${qty(wax)} WAX`);
   const win = st.openEpoch || st.nextEpoch;
-  const windowLine = st.openEpoch
-    ? `<b class="pos">Redemption period open</b> until ${fusionWhen(st.openEpoch.windowTo)} &middot; ${forDays((st.openEpoch.windowTo - Date.now()) / 86400e3)} left`
-    : st.nextEpoch
-      ? `Next redemption period opens ${fusionWhen(st.nextEpoch.windowFrom)} &middot; in ${forDays((st.nextEpoch.windowFrom - Date.now()) / 86400e3)}`
-      : 'No redemption period is scheduled in what the contract still holds.';
-  // The next period is not necessarily where a new request goes: that is the
-  // earliest epoch that still has WAX to give.
-  const landing = redemptionEpochs(st).find(e => e.open && e.free > 0);
-  const landLine = landing && landing !== st.nextEpoch && landing.id !== st.nextEpoch?.id
-    ? ` A request made now is paid in the period from <b>${fusionWhen(landing.windowFrom)}</b>.` : '';
-
   // The shape of the thing, drawn once so the words underneath have something
   // to point at: WAX goes in and becomes sWAX, sWAX pays you, and LSWAX is the
   // same sWAX with the rewards folded back in instead.
@@ -4846,7 +4909,7 @@ async function renderFusion() {
       </div>
 
       <div class="card fuwindow"><h3>Redemption periods</h3>
-        <p class="sub" style="margin:0 0 4px">${windowLine}.${landLine}</p>
+        ${fusionRules(st)}
         ${fusionTimeline(st)}
         ${fusionEpochTable(st)}
       </div>
@@ -4889,6 +4952,7 @@ async function renderFusion() {
     document.querySelectorAll('[data-fyield="swax"]').forEach(el => { el.textContent = y.swaxPct != null ? `earned ${f(y.swaxPct)} (30d)` : 'pays WAX'; });
   }).catch(() => document.querySelectorAll('[data-fyield]').forEach(el => { el.textContent = '—'; }));
   paintKeeperTiming(st);
+  startFusionCountdowns();
   drawFusionPrice(st).catch(() => {});
   out.querySelectorAll('[data-keeper]').forEach(b => b.onclick = async () => {
     const box = $('#keeperOut');
@@ -5033,7 +5097,7 @@ async function paintFusionUser(st, stale) {
         <div><span class="k">Instantly</span><b>${bal(lsInstant * st.lswaxInSwax * 0.999 * (1 - st.feePct / 100))} WAX</b>
           <span class="dim">${lsInstant < u.lswax ? `for ${bal(lsInstant)} of your LSWAX — the instant pool holds no more` : `all of it, ${st.feePct}% fee`}</span></div>
         <div><span class="k">By request</span><b>${bal(lswaxInWax)} WAX</b>
-          <span class="dim">${(() => { const p = planRequest(st, lswaxInWax); return p.parts.length ? `paid ${fusionWhen(p.parts[0].epoch.windowFrom).slice(5, 16)} → ${fusionWhen(p.parts[p.parts.length - 1].epoch.windowTo).slice(5, 16)} UTC` : 'no fee, paid in a redemption period'; })()}</span></div>
+          <span class="dim">${(() => { const p = planRequest(st, lswaxInWax); return p.parts.length ? `withdraw ${fusionWhen(p.parts[0].epoch.windowFrom)} → ${fusionWhen(p.parts[p.parts.length - 1].epoch.windowTo)}` : 'no fee, paid in a redemption period'; })()}</span></div>
         <div><span class="k">On Alcor</span><b id="fusionAlcorOut">…</b><span class="dim">sold now, no wait</span></div>
       </div>
       <div class="toolbar" style="margin:8px 0 0"><button class="btn" data-fgo="insta">Redeem instantly</button><button class="btn ghost" data-fgo="req">Request a redemption</button></div>
@@ -5043,17 +5107,28 @@ async function paintFusionUser(st, stale) {
       <div><dt>WaxFusion owes you</dt><dd class="${u.claimable > 0 ? 'pos' : ''}">${bal(u.claimable)} WAX${val(u.claimable)}</dd></div>` : ''}
       ${req > 0 ? `<div><dt>Asked to redeem</dt><dd>${bal(req)} WAX <span class="dim">across ${u.requests.length} epoch${u.requests.length === 1 ? '' : 's'}</span></dd></div>` : ''}
     </dl>
-    ${u.requests.length ? `<div class="tablewrap" style="border:0;max-height:none"><table style="font-size:12.5px">
-      <thead><tr><th>Epoch</th><th class="r">Asked for</th><th>Redemption period</th><th></th></tr></thead>
-      <tbody>${u.requests.map(r => {
-        const e = st.epochs.find(x => x.id === r.epochId);
-        const open = e && e.windowFrom <= Date.now() && Date.now() < e.windowTo;
-        const missed = e && Date.now() >= e.windowTo;
-        return `<tr><td class="dim">${e ? new Date(e.startsAt).toISOString().slice(0, 10) : r.epochId}</td>
-          <td class="r num">${bal(r.amount)} WAX</td>
-          <td>${e ? `${new Date(e.windowFrom).toISOString().slice(5, 16).replace('T', ' ')} &rarr; ${new Date(e.windowTo).toISOString().slice(5, 16).replace('T', ' ')}` : '—'}</td>
-          <td>${open ? '<span class="badge good">withdraw now</span>' : missed ? '<span class="badge bad">period passed</span>' : '<span class="dim">waiting</span>'}</td></tr>`;
-      }).join('')}</tbody></table></div>` : ''}
+    ${u.requests.length ? `<div class="furqs"><h4>Your redemptions</h4>${u.requests.map(r => {
+      const e = st.epochs.find(x => x.id === r.epochId);
+      const now2 = Date.now();
+      const state2 = !e ? 'unknown' : now2 < e.windowFrom ? 'waiting' : now2 < e.windowTo ? 'open' : 'missed';
+      const short = st.forRedemption < r.amount;
+      return `<div class="furq ${state2}">
+        <div class="furqtop"><b>${bal(r.amount)} WAX</b>${
+          state2 === 'open' ? '<span class="pill good">ready to withdraw</span>' : state2 === 'waiting' ? '<span class="pill">waiting</span>' : state2 === 'missed' ? '<span class="pill bad">window missed</span>' : ''}</div>
+        ${state2 === 'waiting' ? `<div>Withdraw between <b>${fusionWhen(e.windowFrom)}</b> and <b>${fusionWhen(e.windowTo)}</b></div>
+          <div class="furqcount">You can withdraw in ${fusionCountdown(e.windowFrom)}</div>
+          <div class="dim">Until then it stays sWAX and keeps earning.</div>
+          <div class="toolbar" style="margin:8px 0 0"><button class="btn" disabled>Withdraw &mdash; not open yet</button>
+            <button class="btn ghost" data-fics="${r.epochId}">&#128197; Add to calendar</button></div>` : ''}
+        ${state2 === 'open' ? `<div>The window is open until <b>${fusionWhen(e.windowTo)}</b>.</div>
+          <div class="furqcount">Window closes in ${fusionCountdown(e.windowTo)}</div>
+          <div class="toolbar" style="margin:8px 0 0"><button class="btn" data-fredeem="${r.epochId}">Withdraw ${bal(r.amount)} WAX now</button></div>
+          ${short ? `<div class="dim" style="margin-top:6px">The WAX is still on its way back from CPU rental${st.refundable > 0 ? '; withdrawing collects it first, in the same transaction' : ' — if withdrawing fails, try again in a few minutes'}.</div>` : ''}` : ''}
+        ${state2 === 'missed' ? `<div>The window closed on <b>${fusionWhen(e.windowTo)}</b>. The WAX was not withdrawn, so it stayed staked as sWAX &mdash; nothing is lost.</div>
+          <div class="toolbar" style="margin:8px 0 0"><button class="btn ghost" data-fagain="${r.amount}">Request it again</button></div>` : ''}
+        ${state2 === 'unknown' ? `<div class="dim">Booked in epoch ${r.epochId}, which the contract no longer lists.</div>` : ''}
+      </div>`;
+    }).join('')}<div id="fusionRqOut"></div></div>` : ''}
     <div class="toolbar" style="margin:10px 0 0">
       ${u.claimable > 0 ? `<button class="btn" data-fclaim="wax">Claim ${bal(u.claimable)} WAX</button>
         <button class="btn ghost" data-fclaim="swax">Claim and restake</button>
@@ -5061,6 +5136,22 @@ async function paintFusionUser(st, stale) {
     </div>
     <div id="fusionClaimOut"></div>`;
 
+  you.querySelectorAll('[data-fics]').forEach(b => b.onclick = () => {
+    const r = u.requests.find(x => String(x.epochId) === b.dataset.fics), e = r && st.epochs.find(x => x.id === r.epochId);
+    if (r && e) fusionIcs(r.amount, e);
+  });
+  you.querySelectorAll('[data-fredeem]').forEach(b => b.onclick = async () => {
+    const r = u.requests.find(x => String(x.epochId) === b.dataset.fredeem);
+    // Collecting the returned CPU WAX is anyone's to do; when it has not been
+    // done yet the withdrawal would find the pot short, so it goes first.
+    const actions = [...(st.forRedemption < (r?.amount || 0) && st.refundable > 0 ? buildFusionKeeper({ account: me, name: 'claimrefunds' }) : []), ...buildFusionRedeem({ account: me })];
+    const ok = await runStakeTx($('#fusionRqOut'), actions, `Withdrawn — ${bal(r?.amount || 0)} WAX is in your wallet.`);
+    if (ok) setTimeout(() => renderFusion().catch(() => {}), 3000);
+  });
+  you.querySelectorAll('[data-fagain]').forEach(b => b.onclick = () => {
+    deskApi?.redeemSwax?.(Number(b.dataset.fagain));
+    $('#fusionDesk')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   you.querySelectorAll('[data-fclaim]').forEach(b => b.onclick = async () => {
     const box = $('#fusionClaimOut');
     const as = b.dataset.fclaim;
@@ -5077,6 +5168,7 @@ async function paintFusionUser(st, stale) {
     .then(l => { const el = $('#fusionAlcorOut'); if (el) el.innerHTML = l?.expect ? `${bal(l.expect)} WAX <span class="${l.expect < lswaxInWax * 0.97 ? 'neg' : 'dim'}" style="font-size:12px">${((l.expect / lswaxInWax - 1) * 100).toFixed(1)}%</span>` : 'no route'; })
     .catch(() => { const el = $('#fusionAlcorOut'); if (el) el.textContent = '—'; });
   const deskApi = drawFusionDesk(st, u);
+  startFusionCountdowns();
   you.querySelectorAll('[data-fgo]').forEach(b => b.onclick = () => {
     deskApi?.redeemLswax(b.dataset.fgo === 'insta' ? Math.floor(Math.min(u.lswax, instantCapLswax) * 1e4) / 1e4 : Math.floor(u.lswax * 1e8) / 1e8);
     $('#fusionDesk')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -5279,6 +5371,12 @@ function drawFusionDesk(st, u) {
   paint();
   // "Redeem" from the position card: the desk opens on it, filled in.
   return {
+    redeemSwax(amount) {
+      mode = 'redeem'; from = 'swax';
+      paint();
+      const el = $('#fusionAmt');
+      if (el) { el.value = String(amount); el.dispatchEvent(new Event('input')); }
+    },
     redeemLswax(amount) {
       mode = 'redeem'; from = 'lswax';
       paint();
