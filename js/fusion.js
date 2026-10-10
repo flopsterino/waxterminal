@@ -23,8 +23,8 @@
 // Miss it and you wait for the next one — exactly the sort of thing a dead
 // front end turns into lost money.
 //
-// The keeper actions (compound, createfarms, stakeallcpu, claimrefunds,
-// updatetop21) are permissionless: the history shows strangers calling them,
+// The keeper actions (compound, createfarms, stakeallcpu, unstakecpu,
+// claimrefunds, updatetop21) are permissionless: the history shows strangers calling them,
 // and the protocol depends on somebody doing it.
 // =============================================================================
 
@@ -36,6 +36,10 @@ export const LSWAX = { symbol: 'LSWAX', contract: 'token.fusion', decimals: 8 };
 const WAX = { symbol: 'WAX', contract: 'eosio.token', decimals: 8 };
 
 const amt = q => parseFloat(String(q || '').split(' ')[0]) || 0;
+// The same amount in raw units (8 decimals), for arithmetic that has to land on
+// the contract's own integer to the last unit.
+const raw = q => { const [i, f = ''] = String(q || '0').split(' ')[0].split('.'); return BigInt(i + f.padEnd(8, '0').slice(0, 8)); };
+const REFUND_DELAY_MS = 3 * 86400e3;
 const asset = (v, decimals, symbol) => `${(Math.floor(Number(v) * 10 ** decimals) / 10 ** decimals).toFixed(decimals)} ${symbol}`;
 
 // Everything the protocol says about itself, in three reads.
@@ -65,6 +69,35 @@ export async function fusionState({ now = Date.now() } = {}) {
   const openEpoch = epochs.find(e => e.windowFrom <= now && now < e.windowTo) || null;
   const nextEpoch = epochs.filter(e => e.windowFrom > now).sort((a, b) => a.windowFrom - b.windowFrom)[0] || null;
 
+  // Where the WAX for each coming window actually is. An epoch's CPU stake has
+  // to be unstaked (unstakecpu — anyone may, from time_to_unstake on), sit out
+  // the chain's three-day refund, and be collected (claimrefunds) before its
+  // window can pay. Nobody runs these on a schedule any more, so the page reads
+  // the CPU wallets themselves: what is still delegated, and what is refunding.
+  const wallets = [...new Set([...(g.cpu_contracts || []), ...epochs.map(e => e.cpuWallet)])].filter(Boolean);
+  const pending = epochs.filter(e => e.toRefund > 0 && e.added < e.toRefund && e.windowTo > now);
+  const [refunds, staked] = await Promise.all([
+    Promise.all(wallets.map(w => getRows('eosio', w, 'refunds', { limit: 1 }).then(d => {
+      const r = d.rows?.[0];
+      return r ? [w, { amount: amt(r.cpu_amount) + amt(r.net_amount), readyAt: Date.parse(String(r.request_time).replace(/Z?$/, 'Z')) + REFUND_DELAY_MS }] : [w, null];
+    }).catch(() => [w, undefined]))).then(x => new Map(x)),
+    Promise.all([...new Set(pending.map(e => e.cpuWallet))].map(w => getRows('eosio', w, 'delband', { limit: 50 })
+      .then(d => [w, (d.rows || []).reduce((t, r) => t + amt(r.cpu_weight) + amt(r.net_weight), 0)]).catch(() => [w, undefined]))).then(x => new Map(x)),
+  ]);
+  for (const e of epochs) {
+    const ref = refunds.get(e.cpuWallet), st = staked.get(e.cpuWallet);
+    e.payout = e.toRefund <= 0 ? 'none'
+      : e.added >= e.toRefund ? 'back'
+      : ref === undefined ? 'unknown'
+      : ref ? (ref.readyAt <= now ? 'collect' : 'returning')
+      : st === undefined ? 'unknown'
+      : st > 0 ? (e.unstakeAt <= now ? 'release' : 'rented') : 'back';
+    e.backAt = ref ? ref.readyAt : null;
+    e.stillStaked = st || 0;
+    // The last moment a release still gets the WAX home before the window shuts.
+    e.releaseBy = e.windowTo - REFUND_DELAY_MS;
+  }
+
   // Synthetix-shaped reward accounting. rewardPerTokenStored grows by
   // rewardRate·1e8/totalSupply a second (measured between two updates), and a
   // staker earns balance·Δ(rewardPerToken)/1e16 WAX — pinned on a real claim:
@@ -84,6 +117,7 @@ export async function fusionState({ now = Date.now() } = {}) {
   return {
     earning: amt(g.swax_currently_earning),
     backing, liquified,
+    backingRaw: String(raw(g.swax_currently_backing_lswax)), liquifiedRaw: String(raw(g.liquified_swax)),
     // What one LSWAX is worth in sWAX. It only goes up: rewards on the sWAX
     // behind it are compounded rather than paid out.
     lswaxInSwax: liquified > 0 ? backing / liquified : 1,
@@ -133,9 +167,12 @@ export async function fusionState({ now = Date.now() } = {}) {
     rewardPool: r ? amt(r.rewardPool) : null,
     top21At: top ? Number(top.last_update) * 1000 : null,
     producers: (top?.block_producers || []).length,
-    // Refunds the CPU contracts owe back: an epoch whose unstaking has
-    // finished but whose WAX has not been collected.
-    refundable: epochs.filter(e => e.toRefund > 0 && e.unstakeAt <= now).reduce((s2, e) => s2 + e.toRefund, 0),
+    // WAX that has finished unstaking and only needs collecting
+    // (claimrefunds), read off the CPU wallets' own refund rows.
+    refundable: [...refunds.values()].filter(r => r && r.readyAt <= now).reduce((s2, r) => s2 + r.amount, 0),
+    refunding: [...refunds.values()].filter(r => r && r.readyAt > now).sort((a, b) => a.readyAt - b.readyAt)[0] || null,
+    // An epoch with requests booked whose CPU stake nobody has released yet.
+    toRelease: epochs.filter(e => e.payout === 'release').sort((a, b) => a.windowFrom - b.windowFrom)[0] || null,
   };
 }
 
@@ -229,12 +266,24 @@ export function buildFusionUnliquify({ account, lswax, minSwax = null, auth = nu
   }];
 }
 
+// LSWAX to sWAX exactly as unliquify computes it — floor(backing x lswax /
+// liquified) in raw units, on the very quantity the transfer will carry. The
+// ratio never falls between a read and the transaction (compounding only adds
+// backing; liquify and unliquify both round in the pool's favour), so this is
+// never more than the contract pays, and redeeming it leaves nothing behind.
+export function lswaxToSwax(st, lswax) {
+  if (!st?.backingRaw || !st?.liquifiedRaw || BigInt(st.liquifiedRaw) === 0n) return Number(lswax) * (st?.lswaxInSwax || 1) * 0.999;
+  const q = raw(asset(lswax, 8, 'LSWAX'));
+  const out = q * BigInt(st.backingRaw) / BigInt(st.liquifiedRaw);
+  return Number(`${out / 100000000n}.${String(out % 100000000n).padStart(8, '0')}`);
+}
+
 // Redeeming what most people actually hold: LSWAX. Unliquify with an exact
 // floor, then redeem exactly that floor — the sWAX is guaranteed to be there
 // because the unliquify refuses to give less. Instantly (instaredeem, for the
 // fee) or as a request for the next redemption period. One transaction.
-export function buildFusionRedeemFromLswax({ account, lswax, lswaxInSwax, instant = true, replace = false, auth = null }) {
-  const floor = Math.floor(Number(lswax) * Number(lswaxInSwax) * 0.999 * 1e8) / 1e8;
+export function buildFusionRedeemFromLswax({ account, lswax, lswaxInSwax, swaxOut = null, instant = true, replace = false, auth = null }) {
+  const floor = swaxOut != null ? Number(swaxOut) : Math.floor(Number(lswax) * Number(lswaxInSwax) * 0.999 * 1e8) / 1e8;
   if (!(floor > 0)) throw new Error('Too little LSWAX to redeem.');
   const swax = floor;
   return {
@@ -288,6 +337,8 @@ export const KEEPER = [
     what: 'Hands the ecosystem share to the Alcor incentives it funds.' },
   { name: 'stakeallcpu', args: () => ({}), title: 'Put idle WAX to work',
     what: 'Stakes idle WAX to the CPU wallets so it earns.' },
+  { name: 'unstakecpu', args: () => ({ epoch_id: 0, limit: 0 }), title: 'Release the next window\u2019s WAX',
+    what: 'Unstakes the CPU behind the coming withdraw window. It is back three days later.' },
   { name: 'claimrefunds', args: () => ({}), title: 'Collect refunds',
     what: 'Pulls back WAX that finished unstaking.' },
   { name: 'updatetop21', args: () => ({}), title: 'Refresh the producer list',
@@ -296,11 +347,16 @@ export const KEEPER = [
     what: 'Frees the sWAX behind a request whose period has passed.' },
 ];
 
-export function buildFusionKeeper({ account, name, auth = null }) {
+export function buildFusionKeeper({ account, name, data = null, auth = null }) {
   const k = KEEPER.find(x => x.name === name);
   if (!k) throw new Error(`Unknown protocol action ${name}`);
-  return [{ account: FUSION, name: k.name, authorization: auth1(account, auth), data: k.args(account) }];
+  return [{ account: FUSION, name: k.name, authorization: auth1(account, auth), data: data || k.args(account) }];
 }
+
+// Release one epoch's CPU stake by name rather than "the one before the
+// current" — a click a minute before the weekly roll still hits the right one.
+export const buildFusionRelease = ({ account, epochId, auth = null }) =>
+  buildFusionKeeper({ account, name: 'unstakecpu', data: { epoch_id: Number(epochId), limit: 0 }, auth });
 
 // ---- where a redemption request lands ---------------------------------------
 // Straight from reqredeem (dapp.fusion source, fusion.cpp): it looks at three

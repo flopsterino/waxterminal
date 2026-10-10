@@ -2361,3 +2361,6 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .furqcount { font-size: 14px; }
 .furqcount .fucount { font-size: 16px; }
 .furq .btn:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.6); }
+.fupay { margin-top: 6px; }
+.fupay.warn { border: 1px solid var(--warn, #c98500); border-radius: 10px; padding: 8px 10px; background: color-mix(in srgb, var(--warn, #c98500) 10%, transparent); }
+.furules .fupay { margin-top: 0; }
