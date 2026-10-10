@@ -1713,7 +1713,19 @@ async function tick(env, when) {
   const writes = [];
   const setCur = (k, v) => { cur.set(k, v); dirty.set(k, v); };
   const MAX_SENDS = 15;
-  const send = async (chat, text, markup) => {
+  // Everything decided so far — latches, cursors, the hourly count, a one-off
+  // alert's own deletion — is written before a message leaves. On the Free
+  // plan a run can be cut off at its CPU limit at any point; written at the
+  // end only, a cut-off run sent its messages and forgot it had, so the next
+  // run sent them again, every minute (10-10: "farm ends" on a loop).
+  const inflight = [];
+  const flush = async () => {
+    for (const [k, v] of dirty) writes.push(DB(env).prepare('INSERT OR REPLACE INTO cursor (k, v) VALUES (?, ?)').bind(k, v));
+    dirty.clear();
+    const out = writes.splice(0);
+    for (let i = 0; i < out.length; i += 40) await DB(env).batch(out.slice(i, i + 40));
+  };
+  const send = async (chat, text, markup, commit = []) => {
     if ((chats.get(chat)?.mute_until || 0) > now || B.sends >= MAX_SENDS) return false;
     // A ceiling per chat per hour. Past it nothing more is sent this hour —
     // one-off alerts (a price, a floor) stay set and fire next hour — and the
@@ -1723,6 +1735,8 @@ async function tick(env, when) {
     if (n >= MAX_PER_HOUR) return false;
     setCur(key, hr * 1000 + n + 1);
     B.sends++;
+    writes.push(...commit);
+    await flush();
     await say(env, B, chat, text, markup);
     if (n + 1 === MAX_PER_HOUR) {
       await say(env, B, chat, `🔕 That is ${MAX_PER_HOUR} alerts this hour — I am holding the rest until the next hour.`,
@@ -1737,13 +1751,14 @@ async function tick(env, when) {
     if (!list.length) return [];
     const start = (cur.get(key) || 0) % list.length;
     setCur(key, (start + n) % list.length);         // advanced first: a run that dies on one item moves past it
+    inflight.push(DB(env).prepare('INSERT OR REPLACE INTO cursor (k, v) VALUES (?, ?)').bind(key, (start + n) % list.length).run().catch(() => {}));
     return [...list, ...list].slice(start, start + Math.min(n, list.length));
   };
   const saveWatch = (w, st) => { const s = JSON.stringify(st); if (s !== w.state) { w.state = s; writes.push(DB(env).prepare('UPDATE watches SET state = ? WHERE chat_id = ? AND account = ?').bind(s, w.chat_id, w.account)); } };
 
   const jobs = [];
   // ---- positions: ranges, edges, fees, farms ending ------------------------
-  jobs.push(async () => {
+  jobs.push(Object.assign(async () => {
     for (const a of rotate('pos', accounts, 3)) {
       const pos = await positions(B, a);
       if (!pos) continue;
@@ -1799,15 +1814,15 @@ async function tick(env, when) {
             st.fe[f.id] = 1;
           }
         }
-        if (msgs.length) await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${msgs.slice(0, 10).join('\n')}\n\n${walletLink(a)}`);
         saveWatch(w, st);
+        if (msgs.length) await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${msgs.slice(0, 10).join('\n')}\n\n${walletLink(a)}`);
       }
     }
-  });
+  }, { label: 'positions ranges' }));
 
   // ---- transfers, swaps and NFTs: watched wallets and /track ----------------
   const tracks = A.filter(x => x.kind === 'track');
-  jobs.push(async () => {
+  jobs.push(Object.assign(async () => {
     const want = [...new Set([
       ...accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.xfer >= 0 || o.nft || o.drops; })),
       ...tracks.map(x => x.target)])].sort();
@@ -1843,11 +1858,11 @@ async function tick(env, when) {
         if (mine.length) await send(x.chat_id, `🔎 <b>${esc(a)}</b> <i>(${filterText(f)})</i>\n${list(mine)}\n\n${walletLink(a)}`);
       }
     }
-  });
+  }, { label: 'transfers' }));
 
   // ---- liquidity in and out (even minutes) ----------------------------------
   const liqAlerts = A.filter(x => x.kind === 'liq');
-  if (minute % 2 === 0 && liqAlerts.length) jobs.push(async () => {
+  if (minute % 2 === 0 && liqAlerts.length) jobs.push(Object.assign(async () => {
     const needTaco = liqAlerts.some(x => !x.target.startsWith('alcor:'));
     for (const [filter, key] of LIQ_FEEDS.filter(([fl]) => needTaco || fl.startsWith('swap.alcor'))) {
       const d = await hyp(B, `/v2/history/get_actions?filter=${filter}&limit=40&sort=desc`);
@@ -1881,10 +1896,10 @@ async function tick(env, when) {
         }
       }
     }
-  });
+  }, { label: 'liquidity in and out even mi' }));
 
   // ---- resources and vote rewards (every 5 minutes) ------------------------
-  if (minute % 5 === 0) jobs.push(async () => {
+  if (minute % 5 === 0) jobs.push(Object.assign(async () => {
     const want = accounts.filter(a => watchesOf(a).some(w => { const o = optsOf(w); return o.res || o.claim; }));
     for (const a of rotate('res', want, 6)) {
       const acc = await account(B, a);
@@ -1905,15 +1920,15 @@ async function tick(env, when) {
           if (!r.voting && r.staked >= 100 && !st.nv) { msgs.push(`💤 ${fmtAmt(r.staked)} WAX is staked but not voting, so it earns no vote rewards. <a href="${SITE}/staking">Vote or pick a proxy</a>.`); st.nv = 1; }
           if (r.voting) delete st.nv;
         }
-        if (msgs.length) await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${msgs.join('\n')}`);
         saveWatch(w, st);
+        if (msgs.length) await send(w.chat_id, `👛 <b>${esc(a)}</b>\n${msgs.join('\n')}`);
       }
     }
-  });
+  }, { label: 'resources and vote rewards e' }));
 
   // ---- price and move alerts (every 2 minutes) ------------------------------
   const priceAlerts = A.filter(x => x.kind === 'price' || x.kind === 'move');
-  if (minute % 2 === 0 && priceAlerts.length) jobs.push(async () => {
+  if (minute % 2 === 0 && priceAlerts.length) jobs.push(Object.assign(async () => {
     const targets = [...new Set(priceAlerts.map(x => x.target))].sort();
     for (const id of rotate('tok', targets, 12)) {
       const t = D.tok.get(id) || { id, sym: id.split('@')[0], c: id.split('@')[1] };
@@ -1925,24 +1940,22 @@ async function tick(env, when) {
           const v = p.unit === 'wax' ? lv.wax : lv.usd;
           if (v == null || !(p.dir === 'above' ? v >= p.value : v <= p.value)) continue;
           const f = n => (p.unit === 'wax' ? `${fmtAmt(n)} WAX` : fmtUsd(n));
-          if (await send(x.chat_id, `🔔 <b>${tokLink(t)}</b> is ${p.dir} ${f(p.value)} — now <b>${f(v)}</b>.`, kb([[btn('📊 Keep me posted: ±10%', `mv:${id}`)]]))) {
-            writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
-          }
+          await send(x.chat_id, `🔔 <b>${tokLink(t)}</b> is ${p.dir} ${f(p.value)} — now <b>${f(v)}</b>.`, kb([[btn('📊 Keep me posted: ±10%', `mv:${id}`)]]),
+            [DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id)]);
         } else {
           const ref = s.ref || lv.usd, ch = (lv.usd / ref - 1) * 100;
           if (!s.ref) { writes.push(DB(env).prepare('UPDATE alerts SET state = ? WHERE id = ?').bind(JSON.stringify({ ref: lv.usd }), x.id)); continue; }
           if (Math.abs(ch) < p.pct) continue;
-          if (await send(x.chat_id, `${ch > 0 ? '📈' : '📉'} <b>${tokLink(t)}</b> ${pct(ch)} since ${fmtUsd(ref)} — now <b>${fmtUsd(lv.usd)}</b>${lv.wax ? ` · ${fmtAmt(lv.wax)} WAX` : ''}.`)) {
-            writes.push(DB(env).prepare('UPDATE alerts SET state = ? WHERE id = ?').bind(JSON.stringify({ ref: lv.usd, at: now }), x.id));
-          }
+          await send(x.chat_id, `${ch > 0 ? '📈' : '📉'} <b>${tokLink(t)}</b> ${pct(ch)} since ${fmtUsd(ref)} — now <b>${fmtUsd(lv.usd)}</b>${lv.wax ? ` · ${fmtAmt(lv.wax)} WAX` : ''}.`, undefined,
+            [DB(env).prepare('UPDATE alerts SET state = ? WHERE id = ?').bind(JSON.stringify({ ref: lv.usd, at: now }), x.id)]);
         }
       }
     }
-  });
+  }, { label: 'price and move alerts every ' }));
 
   // ---- whale swaps (odd minutes) ---------------------------------------------
   const whales = A.filter(x => x.kind === 'whale');
-  if (minute % 2 === 1 && whales.length) jobs.push(async () => {
+  if (minute % 2 === 1 && whales.length) jobs.push(Object.assign(async () => {
     const pools = [...new Set(whales.flatMap(x => j(x.params).pools || []))].sort();
     for (const pid of rotate('wh', pools, 8)) {
       const rows = await get(B, `${ALCOR}/swap/pools/${pid}/swaps?limit=25`);
@@ -1971,10 +1984,10 @@ async function tick(env, when) {
         await send(x.chat_id, `🐋 <b>${tokLink(t)}</b> on ${poolLink('alcor', pid, `${pl.a}/${pl.b}`)}\n${lines.join('\n')}`);
       }
     }
-  });
+  }, { label: 'whale swaps odd minutes' }));
 
   // ---- new pools and new farms (every 5 minutes) ----------------------------
-  if (minute % 5 === 0) jobs.push(async () => {
+  if (minute % 5 === 0) jobs.push(Object.assign(async () => {
     const feedP = A.filter(x => x.kind === 'newpool'), feedF = A.filter(x => x.kind === 'newfarm');
     const farmWatch = W.filter(w => optsOf(w).farm && (stateOf(w).pl || []).length);
     if (feedP.length) {
@@ -2019,11 +2032,11 @@ async function tick(env, when) {
         }
       }
     }
-  });
+  }, { label: 'new pools and new farms ever' }));
 
   // ---- NFT floors (every 5 minutes, offset) ---------------------------------
   const floors = A.filter(x => x.kind === 'floor');
-  if (minute % 5 === 2 && floors.length) jobs.push(async () => {
+  if (minute % 5 === 2 && floors.length) jobs.push(Object.assign(async () => {
     for (const x of rotate('fl', floors.map(f => f.id).sort((a, b) => a - b), 6).map(id => floors.find(f => f.id === id))) {
       const p = j(x.params);
       const q = new URLSearchParams({ state: '1', collection_name: x.target, sort: 'price', order: 'asc', limit: '1', symbol: 'WAX' });
@@ -2032,30 +2045,27 @@ async function tick(env, when) {
       if (!s) continue;
       const price = Number(s.price.amount) / 10 ** s.price.token_precision;
       if (price > p.below) continue;
-      if (await send(x.chat_id, `🖼 <b>${esc(x.label)}</b> listed at <b>${fmtAmt(price)} WAX</b> (your line: ${fmtAmt(p.below)})\n${esc(s.assets?.[0]?.name || '')} #${esc(s.assets?.[0]?.template_mint || '')}\n<a href="https://wax.atomichub.io/market/sale/wax-mainnet/${s.sale_id}">Open the sale</a>`)) {
-        writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
-      }
+      await send(x.chat_id, `🖼 <b>${esc(x.label)}</b> listed at <b>${fmtAmt(price)} WAX</b> (your line: ${fmtAmt(p.below)})\n${esc(s.assets?.[0]?.name || '')} #${esc(s.assets?.[0]?.template_mint || '')}\n<a href="https://wax.atomichub.io/market/sale/wax-mainnet/${s.sale_id}">Open the sale</a>`, undefined,
+        [DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id)]);
     }
-  });
+  }, { label: 'nft floors every  minutes' }));
 
   // ---- total liquidity crossing a line (from the snapshot; no requests) -----
   const levels = A.filter(x => x.kind === 'liqlvl');
-  if (minute % 5 === 1 && levels.length) jobs.push(async () => {
+  if (minute % 5 === 1 && levels.length) jobs.push(Object.assign(async () => {
     for (const x of levels) {
       const p = j(x.params), t = D.tok.get(x.target);
       const v = t?.liq ?? 0;
       if (!(p.dir === 'above' ? v >= p.value : v <= p.value)) continue;
-      if (await send(x.chat_id, `💧 <b>${t ? tokLink(t) : esc(x.label)}</b> liquidity is ${p.dir} ${fmtBig(p.value)} — now <b>${fmtBig(v)}</b> across its pools.`,
-        kb([[btn('💧 Pools', `m:/liquidity ${x.target}`)]]))) {
-        writes.push(DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id));
-      }
+      await send(x.chat_id, `💧 <b>${t ? tokLink(t) : esc(x.label)}</b> liquidity is ${p.dir} ${fmtBig(p.value)} — now <b>${fmtBig(v)}</b> across its pools.`,
+        kb([[btn('💧 Pools', `m:/liquidity ${x.target}`)]]), [DB(env).prepare('DELETE FROM alerts WHERE id = ?').bind(x.id)]);
     }
-  });
+  }, { label: 'total liquidity crossing a l' }));
 
   // ---- NFT buy offers and trade offers (every 5 minutes, offset 4) ----------
   // AtomicMarket buy offers on the wallet's NFTs, and AtomicAssets trade offers
   // sent to it — with the memo, which is the message AtomicHub shows with it.
-  if (minute % 5 === 4) jobs.push(async () => {
+  if (minute % 5 === 4) jobs.push(Object.assign(async () => {
     const want = accounts.filter(a => watchesOf(a).some(w => optsOf(w).offers));
     for (const a of rotate('off', want, 4)) {
       const [bo, to] = [await get(B, `${AA}/atomicmarket/v1/buyoffers?seller=${a}&state=0&sort=created&order=desc&limit=10`),
@@ -2084,7 +2094,7 @@ async function tick(env, when) {
           kb([[btn('🔕 No offer alerts', `o:${a}:offers`)]]));
       }
     }
-  });
+  }, { label: 'nft buy offers and trade off' }));
 
   // ---- dumps: any token down 60% (or the chat's own line) ------------------
   // Every 5 minutes, Alcor's live price for every token against 24 hours ago
@@ -2094,7 +2104,7 @@ async function tick(env, when) {
   // in 12 hours. Keyed by symbol AND contract, so an imitation token's dump
   // never reads as the real one's.
   const dumpAlerts = A.filter(x => x.kind === 'dump');
-  if (minute % 5 === 3 && dumpAlerts.length) jobs.push(async () => {
+  if (minute % 5 === 3 && dumpAlerts.length) jobs.push(Object.assign(async () => {
     const all = await get(B, `${ALCOR}/tokens`, { ttl: 120 });
     if (!Array.isArray(all)) return;
     const hour = Math.floor(now / HOUR);
@@ -2130,21 +2140,24 @@ async function tick(env, when) {
             [btn('⚙️ Dump alert settings', 'mn:dumps')]]));
       }
     }
-  });
+  }, { label: 'dumps any token down  or the' }));
 
   // ---- daily digests ------------------------------------------------------
-  jobs.push(async () => {
+  jobs.push(Object.assign(async () => {
     const due = C.filter(c => c.digest_hour >= 0 && localHour(now, c.tz || 0) === c.digest_hour && c.digest_day !== localDay(now, c.tz || 0)).slice(0, 2);
     for (const c of due) {
       writes.push(DB(env).prepare('UPDATE chats SET digest_day = ? WHERE chat_id = ?').bind(localDay(now, c.tz || 0), c.chat_id));
       await send(c.chat_id, await digest(env, B, c));
     }
-  });
+  }, { label: 'daily digests' }));
 
-  for (const job of jobs) { try { await job(); } catch (e) { console.log('job failed', e?.message); } }
-  for (const [k, v] of dirty) writes.push(DB(env).prepare('INSERT OR REPLACE INTO cursor (k, v) VALUES (?, ?)').bind(k, v));
-  for (let i = 0; i < writes.length; i += 40) await DB(env).batch(writes.slice(i, i + 40));
-  return { left: B.left, sends: B.sends, writes: writes.length };
+  for (const [i, job] of jobs.entries()) {
+    console.log(`job ${i}/${jobs.length} ${job.label || ''}`);
+    try { await job(); } catch (e) { console.log('job failed', e?.message); }
+    await flush().catch(e => console.log('flush failed', e?.message));
+  }
+  await Promise.all(inflight);
+  return { left: B.left, sends: B.sends };
 }
 
 export default {
