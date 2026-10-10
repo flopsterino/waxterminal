@@ -2364,3 +2364,42 @@ body:has(#view-wallet.active [data-wpane="all"]:not([hidden]) .inview-banner) #c
 .fupay { margin-top: 6px; }
 .fupay.warn { border: 1px solid var(--warn, #c98500); border-radius: 10px; padding: 8px 10px; background: color-mix(in srgb, var(--warn, #c98500) 10%, transparent); }
 .furules .fupay { margin-top: 0; }
+
+/* --- WaxFusion: the way out, first ------------------------------------- */
+.fuexit { margin-bottom: 12px; display: grid; gap: 10px; }
+.fuexit h3 { margin: 4px 0 0; }
+.fuxhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 10px 24px; }
+.fuxhold, .fuxreward { display: grid; gap: 2px; }
+.fuxhold .k, .fuxreward .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.fuxhold b { font-size: 22px; letter-spacing: -.01em; }
+.fuxreward { justify-items: end; text-align: right; }
+.fuxreward b { font-size: 15px; }
+.fuxreward .btn { padding: 4px 12px; min-height: 0; font-size: 12.5px; }
+.fusteps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fusteps li { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface-2); opacity: .7; }
+.fusteps li > div { display: grid; gap: 2px; min-width: 0; font-size: 12.5px; }
+.fusteps li b { font-size: 14px; }
+.fusteps .n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; border: 1px solid var(--line); color: var(--muted); }
+.fusteps li.now { opacity: 1; border-color: var(--accent); background: var(--accent-soft); }
+.fusteps li.now .n { background: var(--accent); border-color: var(--accent); color: var(--bg, #111); }
+.fusteps li.done { opacity: 1; }
+.fusteps li.done .n { background: var(--good, #2EBD85); border-color: var(--good, #2EBD85); color: #fff; }
+.fusteps li.warn { border-color: var(--warn, #c98500); background: color-mix(in srgb, var(--warn, #c98500) 12%, transparent); }
+.fusteps li.warn .n { background: var(--warn, #c98500); border-color: var(--warn, #c98500); }
+.fusteps .furqcount { font-size: 15px; font-weight: 650; }
+.fuxact { margin: 0; }
+.fuxact .btn { min-width: 220px; }
+.fuxnote { font-size: 12.5px; }
+.fuxalt { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); }
+.fuxalt b { color: var(--ink); }
+.fuxconfirm { border-color: var(--accent); background: var(--accent-soft); }
+.fuxnone { margin: 8px 0 4px; font-size: 12.5px; }
+.fudetails { margin-top: 12px; }
+.fudetails > summary { cursor: pointer; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); background: var(--surface); font-weight: 650; font-size: 13px; list-style-position: inside; }
+.fudetails > summary:hover { color: var(--ink); }
+.fudetails[open] > summary { margin-bottom: 12px; }
+@media (max-width: 720px) {
+  .fusteps { grid-template-columns: 1fr; }
+  .fuxreward { justify-items: start; text-align: left; }
+  .fuxact .btn { width: 100%; min-width: 0; }
+}
