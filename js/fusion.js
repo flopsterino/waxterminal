@@ -353,6 +353,21 @@ export function buildFusionKeeper({ account, name, data = null, auth = null }) {
   return [{ account: FUSION, name: k.name, authorization: auth1(account, auth), data: data || k.args(account) }];
 }
 
+// The release a request needs before it can ever be paid: for each epoch the
+// request lands in whose CPU stake is due but still delegated, unstakecpu —
+// re-read from the CPU wallet at signing time, because unstakecpu refuses (and
+// takes the whole transaction with it) once somebody else has released it.
+export async function releaseActionsFor({ account, epochs, now = Date.now(), auth = null }) {
+  const due = [...new Map(epochs.filter(e => e && e.toRefund >= 0 && e.unstakeAt <= now && now < e.windowTo).map(e => [e.id, e])).values()];
+  const out = [];
+  for (const e of due) {
+    const still = await getRows('eosio', e.cpuWallet, 'delband', { limit: 50 })
+      .then(d => (d.rows || []).reduce((t, r) => t + amt(r.cpu_weight) + amt(r.net_weight), 0)).catch(() => 0);
+    if (still > 0) out.push(...buildFusionRelease({ account, epochId: e.id, auth }));
+  }
+  return out;
+}
+
 // Release one epoch's CPU stake by name rather than "the one before the
 // current" — a click a minute before the weekly roll still hits the right one.
 export const buildFusionRelease = ({ account, epochId, auth = null }) =>

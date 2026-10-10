@@ -31,7 +31,7 @@ import { resourcesOf, useFraction, cpuTransactions, bytes, micros } from './reso
 import { markets as obMarkets, marketFor, book, ordersOf } from './orderbook.js';
 import { waxdaoStakes, waxdaoStakerCount, claimableNow, buildWaxdaoClaims, waxdaoFarms, buildWaxdaoUnstake, locksFor, buildLockWithdraw, buildTokenLock } from './waxdao.js';
 import { fusionState, fusionUser, fusionKeeperRuns, buildFusionStake, buildFusionLiquify, buildFusionUnliquify, buildFusionClaim,
-  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, fusionYield, buildFusionStakeLiquify, buildFusionRedeemFromLswax, redemptionEpochs, planRequest, lswaxToSwax, buildFusionRelease } from './fusion.js';
+  buildFusionReqRedeem, buildFusionRedeem, buildFusionInstaRedeem, buildFusionKeeper, KEEPER, fusionYield, buildFusionStakeLiquify, buildFusionRedeemFromLswax, redemptionEpochs, planRequest, lswaxToSwax, buildFusionRelease, releaseActionsFor } from './fusion.js';
 import { pepperStakes, buildPepperClaim, pepperPools, pepperPoolAssets, buildPepperStakeTokens, buildPepperUnstake, pepperUnstakes, buildPepperRefund } from './pepperstake.js';
 import { balanceOf, getAllRows, getRows } from './chain.js';
 import { csvButton } from './csv.js';
@@ -4839,6 +4839,11 @@ function fusionIcs(amount, e) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+// When a withdrawal from this window can really go through: its start, or —
+// while the pot is short — the moment its unstaking WAX is back.
+const fusionReadyAt = (st, e, amount = 0) => (e && e.payout === 'returning' && e.backAt && st.forRedemption < (amount || e.toRefund || 0)
+  ? Math.max(e.windowFrom, e.backAt) : e?.windowFrom);
+
 // Where one window's WAX is right now, and the button that moves it along.
 // Without someone releasing the CPU stake (anyone may) the window opens on an
 // empty pot and every withdrawal in it is refused.
@@ -4850,7 +4855,7 @@ function fusionPayout(e) {
     : 'Released now it comes back after this window closes.'}
     <div class="toolbar" style="margin:8px 0 0"><button class="btn" data-frelease="${e.id}">Release it now</button></div></div>`;
   if (e.payout === 'rented') return `<div class="dim">The WAX comes off CPU rental from ${fusionWhen(e.unstakeAt)}.</div>`;
-  if (e.payout === 'returning') return `<div class="fupay">The WAX is unstaking: back <b>${fusionWhen(e.backAt)}</b> &mdash; ${fusionCountdown(e.backAt)}.</div>`;
+  if (e.payout === 'returning') return `<div class="fupay">The WAX is unstaking: back <b>${fusionWhen(e.backAt)}</b> &mdash; ${fusionCountdown(e.backAt)}${e.backAt >= e.windowTo ? ' <b class="neg">&mdash; after this window closes</b>' : ''}.</div>`;
   if (e.payout === 'collect') return '<div class="fupay">The WAX is back; withdrawing collects it in the same transaction.</div>';
   return '';
 }
@@ -4864,7 +4869,7 @@ function fusionRules(st) {
   const after = land ? (st.epochs.find(e => e.startsAt === land.startsAt + week) || { windowFrom: land.windowFrom + week, windowTo: land.windowTo + week }) : null;
   const rows = [];
   if (land) {
-    rows.push(['Request now', `withdraw between <b>${fusionWhen(land.windowFrom)}</b> and <b>${fusionWhen(land.windowTo)}</b> <span class="dim">&mdash; room for ${qty(land.free)} WAX more</span>`]);
+    rows.push(['Request now', `withdraw between <b>${fusionWhen(fusionReadyAt(st, st.epochs.find(e => e.id === land.id) || land))}</b> and <b>${fusionWhen(land.windowTo)}</b> <span class="dim">&mdash; room for ${qty(land.free)} WAX more</span>`]);
     rows.push(['Requests for that window', `taken until <b>${fusionWhen(land.windowFrom)}</b> &mdash; ${fusionCountdown(land.windowFrom)} left; after that a request goes to the ${new Date(after.windowFrom).getUTCDate()}–${fusionDay(after.windowTo)} window`]);
   } else rows.push(['Request now', '<span class="dim">no epoch has room left; the contract would pay it from the rental pool if it can</span>']);
   if (st.openEpoch) rows.push(['Open right now', `<b class="pos">withdraw window for earlier requests</b> until <b>${fusionWhen(st.openEpoch.windowTo)}</b> &mdash; closes in ${fusionCountdown(st.openEpoch.windowTo)}`]);
@@ -5152,18 +5157,23 @@ async function paintFusionUser(st, stale) {
       const now2 = Date.now();
       const state2 = !e ? 'unknown' : now2 < e.windowFrom ? 'waiting' : now2 < e.windowTo ? 'open' : 'missed';
       const short = st.forRedemption < r.amount;
+      // With the pot short, a withdrawal works only once this window's WAX is back.
+      const readyAt = fusionReadyAt(st, e, r.amount);
+      const late = e && readyAt >= e.windowTo;
       return `<div class="furq ${state2}">
         <div class="furqtop"><b>${bal(r.amount)} WAX</b>${
           state2 === 'open' ? '<span class="pill good">ready to withdraw</span>' : state2 === 'waiting' ? '<span class="pill">waiting</span>' : state2 === 'missed' ? '<span class="pill bad">window missed</span>' : ''}</div>
-        ${state2 === 'waiting' ? `<div>Withdraw between <b>${fusionWhen(e.windowFrom)}</b> and <b>${fusionWhen(e.windowTo)}</b></div>
-          <div class="furqcount">You can withdraw in ${fusionCountdown(e.windowFrom)}</div>
+        ${state2 === 'waiting' ? `<div>Withdraw between <b>${fusionWhen(readyAt)}</b> and <b>${fusionWhen(e.windowTo)}</b>${late ? ' <b class="neg">&mdash; the WAX is back too late for this window</b>' : ''}</div>
+          <div class="furqcount">You can withdraw in ${fusionCountdown(readyAt)}</div>
           <div class="dim">Until then it stays sWAX and keeps earning.</div>
-          ${fusionPayout(e)}
+          ${e.payout === 'returning' && readyAt === e.backAt ? '' : fusionPayout(e)}
           <div class="toolbar" style="margin:8px 0 0"><button class="btn" disabled>Withdraw &mdash; not open yet</button>
             <button class="btn ghost" data-fics="${r.epochId}">&#128197; Add to calendar</button></div>` : ''}
         ${state2 === 'open' ? `<div>The window is open until <b>${fusionWhen(e.windowTo)}</b>.</div>
           <div class="furqcount">Window closes in ${fusionCountdown(e.windowTo)}</div>
-          <div class="toolbar" style="margin:8px 0 0"><button class="btn" data-fredeem="${r.epochId}">Withdraw ${bal(r.amount)} WAX now</button></div>
+          ${readyAt > now2 && !late ? `<div class="furqcount">The WAX is back in ${fusionCountdown(readyAt)}</div>
+          <div class="toolbar" style="margin:8px 0 0"><button class="btn" disabled>Withdraw &mdash; ${fusionWhen(readyAt)}</button></div>`
+          : `<div class="toolbar" style="margin:8px 0 0"><button class="btn" data-fredeem="${r.epochId}">Withdraw ${bal(r.amount)} WAX now</button></div>`}
           ${short ? fusionPayout(e) || '<div class="dim" style="margin-top:6px">The WAX is still on its way back from CPU rental &mdash; if withdrawing fails, try again in a few minutes.</div>' : ''}` : ''}
         ${state2 === 'missed' ? `<div>The window closed on <b>${fusionWhen(e.windowTo)}</b>. The WAX was not withdrawn, so it stayed staked as sWAX &mdash; nothing is lost.</div>
           <div class="toolbar" style="margin:8px 0 0"><button class="btn ghost" data-fagain="${r.amount}">Request it again</button></div>` : ''}
@@ -5180,7 +5190,7 @@ async function paintFusionUser(st, stale) {
   bindFusionRelease(you);
   you.querySelectorAll('[data-fics]').forEach(b => b.onclick = () => {
     const r = u.requests.find(x => String(x.epochId) === b.dataset.fics), e = r && st.epochs.find(x => x.id === r.epochId);
-    if (r && e) fusionIcs(r.amount, e);
+    if (r && e) fusionIcs(r.amount, { ...e, windowFrom: fusionReadyAt(st, e, r.amount) });
   });
   you.querySelectorAll('[data-fredeem]').forEach(b => b.onclick = async () => {
     const r = u.requests.find(x => String(x.epochId) === b.dataset.fredeem);
@@ -5378,16 +5388,27 @@ function drawFusionDesk(st, u) {
       if (from === 'lswax' && v < st.minUnliquify) { box.innerHTML = `<div class="err">The contract unliquifies at least ${qty(st.minUnliquify)} LSWAX.</div>`; return; }
       const replace = !!$('#fusionReplace')?.checked;
       const sw = asSwax(v);
+      const plan = planRequest(st, sw);
+      const lands = plan.parts.map(x => st.epochs.find(e => e.id === x.epoch.id) || x.epoch);
+      const freeing = lands.filter(e => e.payout === 'release');
+      const backAt = Date.now() + 3 * 86400e3;
       box.innerHTML = `<div class="err" style="border-color:var(--accent);background:var(--accent-soft)">
         Request a redemption of <b>${bal(sw)} sWAX</b>${from === 'lswax' ? ` (from ${bal(v)} LSWAX, unliquified in the same transaction)` : ''}.
         ${(() => { const p = planRequest(st, sw); return p.impossible > 0
           ? `<br><b class="neg">The open epochs and the rental pool together hold ${bal(sw - p.impossible)} WAX, so the contract will refuse ${bal(sw)}.</b>`
           : `<br>It is booked into ${p.parts.map(x => `<b>${bal(x.amount)} WAX</b> in the period <b>${fusionWhen(x.epoch.windowFrom)} &rarr; ${fusionWhen(x.epoch.windowTo)}</b>`).join(' and ')}${p.paidNow > 0 ? `${p.parts.length ? ', and ' : ''}<b>${qty(p.paidNow)} WAX</b> is paid right away from the rental pool` : ''}.`; })()}
-        Come back during that 48-hour period and withdraw, or the request expires and the sWAX stays staked.
+        ${freeing.length ? `<br>The WAX for that period is still staked; this transaction releases it too, so it is back <b>${fusionWhen(backAt)}</b>.
+          <b>Withdraw between ${fusionWhen(Math.max(backAt, freeing[0].windowFrom))} and ${fusionWhen(freeing[0].windowTo)}.</b>${backAt > freeing[0].windowTo ? ' <b class="neg">That is after the period closes.</b>' : ''}`
+          : lands.length && fusionReadyAt(st, lands[0], sw) > lands[0].windowFrom
+            ? `<br><b>Withdraw between ${fusionWhen(fusionReadyAt(st, lands[0], sw))} and ${fusionWhen(lands[0].windowTo)}</b> &mdash; the WAX for that period is back then. Miss it and the sWAX stays staked.`
+            : 'Come back during that 48-hour period and withdraw, or the request expires and the sWAX stays staked.'}
         <div class="toolbar" style="margin:10px 0 0"><button class="btn" id="fusionReq">Sign and request</button></div></div>`;
-      $('#fusionReq').onclick = () => run(from === 'lswax'
-        ? buildFusionRedeemFromLswax({ account: me(), lswax: v, lswaxInSwax: st.lswaxInSwax, swaxOut: lswaxToSwax(st, v), instant: false, replace }).actions
-        : buildFusionReqRedeem({ account: me(), swax: v, replace }), 'Requested — come back when its window opens.');
+      $('#fusionReq').onclick = async () => {
+        const release = freeing.length ? await releaseActionsFor({ account: me(), epochs: freeing }) : [];
+        run([...release, ...(from === 'lswax'
+          ? buildFusionRedeemFromLswax({ account: me(), lswax: v, lswaxInSwax: st.lswaxInSwax, swaxOut: lswaxToSwax(st, v), instant: false, replace }).actions
+          : buildFusionReqRedeem({ account: me(), swax: v, replace }))], 'Requested — come back when its window opens.');
+      };
     };
     const insta = $('#fusionInsta');
     if (insta) insta.onclick = async () => {
